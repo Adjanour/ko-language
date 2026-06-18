@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-ko",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Kō language",
+  "main": "bindings/node",
+  "keywords": [
+    "tree-sitter",
+    "ko",
+    "parser",
+    "grammar"
+  ],
+  "tree-sitter": [
+    {
+      "scope": "source.ko",
+      "file-types": ["ko"],
+      "injection-regex": "^ko$"
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.22.0"
+  }
+}
