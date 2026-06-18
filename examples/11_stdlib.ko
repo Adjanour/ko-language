@@ -1,0 +1,37 @@
+// stdlib_test.ko — Testing the standard library
+
+fn main =
+  // String operations
+  let s = "hello world"
+  println (len s)                    // 11
+  println (concat "hello" " world")  // hello world
+  println (char_at s 0)              // 'h'
+  println (substring s 0 5)          // hello
+  println (contains s "world")       // true
+  println (to_upper s)               // HELLO WORLD
+  println (to_lower s)               // hello world
+  println (trim "  spaces  ")        // spaces
+  println (starts_with s "hello")    // true
+  println (ends_with s "world")      // true
+  println (repeat "ha" 3)            // hahaha
+
+  // Math operations
+  println (abs (-5))                 // 5
+  println (min 3 7)                  // 3
+  println (max 3 7)                  // 7
+  println (pow 2 10)                 // 1024
+  println (sqrt 16)                  // 4
+  println (floor 3.7)                // 3
+  println (ceil 3.2)                 // 4
+  println (mod 10 3)                 // 1
+
+  // Type conversion
+  println (to_string 42)             // 42
+  println (to_int "123")             // 123
+  println (to_float 42)              // 42
+
+  // Type checking
+  println (type_of 42)               // int
+  println (type_of "hello")          // string
+  println (is_int 42)                // true
+  println (is_string "hello")        // true

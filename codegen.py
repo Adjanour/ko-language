@@ -118,6 +118,8 @@ class CodeGen:
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <ctype.h>
+#include <math.h>
 
 // Value representation
 typedef enum {
@@ -195,6 +197,278 @@ void print_value(Value v) {
 void println_value(Value v) {
     print_value(v);
     printf("\\n");
+}
+
+// ===== Standard Library =====
+
+// String operations
+Value len(Value v) {
+    if (v.type == VAL_STRING) return make_int(strlen(v.as.string_val));
+    if (v.type == VAL_CHAR) return make_int(1);
+    fprintf(stderr, "len: expected string or char\\n");
+    exit(1);
+}
+
+Value concat(Value a, Value b) {
+    if (a.type == VAL_STRING && b.type == VAL_STRING) {
+        char* result = malloc(strlen(a.as.string_val) + strlen(b.as.string_val) + 1);
+        strcpy(result, a.as.string_val);
+        strcat(result, b.as.string_val);
+        return make_string(result);
+    }
+    fprintf(stderr, "concat: expected two strings\\n");
+    exit(1);
+}
+
+Value char_at(Value s, Value i) {
+    if (s.type == VAL_STRING && i.type == VAL_INT) {
+        long idx = i.as.int_val;
+        if (idx < 0 || idx >= strlen(s.as.string_val)) {
+            fprintf(stderr, "char_at: index out of bounds\\n");
+            exit(1);
+        }
+        return make_char(s.as.string_val[idx]);
+    }
+    fprintf(stderr, "char_at: expected string and int\\n");
+    exit(1);
+}
+
+Value substring(Value s, Value start, Value end) {
+    if (s.type == VAL_STRING && start.type == VAL_INT && end.type == VAL_INT) {
+        long s_idx = start.as.int_val;
+        long e_idx = end.as.int_val;
+        long len = strlen(s.as.string_val);
+        if (s_idx < 0 || e_idx > len || s_idx > e_idx) {
+            fprintf(stderr, "substring: invalid range\\n");
+            exit(1);
+        }
+        char* result = malloc(e_idx - s_idx + 1);
+        strncpy(result, s.as.string_val + s_idx, e_idx - s_idx);
+        result[e_idx - s_idx] = '\\0';
+        return make_string(result);
+    }
+    fprintf(stderr, "substring: expected string and two ints\\n");
+    exit(1);
+}
+
+Value contains(Value s, Value sub) {
+    if (s.type == VAL_STRING && sub.type == VAL_STRING) {
+        return make_bool(strstr(s.as.string_val, sub.as.string_val) != NULL);
+    }
+    fprintf(stderr, "contains: expected two strings\\n");
+    exit(1);
+}
+
+Value to_upper(Value v) {
+    if (v.type == VAL_STRING) {
+        char* s = v.as.string_val;
+        char* result = malloc(strlen(s) + 1);
+        for (int i = 0; s[i]; i++) result[i] = toupper(s[i]);
+        result[strlen(s)] = '\\0';
+        return make_string(result);
+    }
+    fprintf(stderr, "to_upper: expected string\\n");
+    exit(1);
+}
+
+Value to_lower(Value v) {
+    if (v.type == VAL_STRING) {
+        char* s = v.as.string_val;
+        char* result = malloc(strlen(s) + 1);
+        for (int i = 0; s[i]; i++) result[i] = tolower(s[i]);
+        result[strlen(s)] = '\\0';
+        return make_string(result);
+    }
+    fprintf(stderr, "to_lower: expected string\\n");
+    exit(1);
+}
+
+Value trim(Value v) {
+    if (v.type == VAL_STRING) {
+        char* s = v.as.string_val;
+        while (*s && isspace(*s)) s++;
+        char* end = s + strlen(s) - 1;
+        while (end > s && isspace(*end)) end--;
+        int len = end - s + 1;
+        char* result = malloc(len + 1);
+        strncpy(result, s, len);
+        result[len] = '\\0';
+        return make_string(result);
+    }
+    fprintf(stderr, "trim: expected string\\n");
+    exit(1);
+}
+
+Value starts_with(Value s, Value prefix) {
+    if (s.type == VAL_STRING && prefix.type == VAL_STRING) {
+        return make_bool(strncmp(s.as.string_val, prefix.as.string_val, strlen(prefix.as.string_val)) == 0);
+    }
+    fprintf(stderr, "starts_with: expected two strings\\n");
+    exit(1);
+}
+
+Value ends_with(Value s, Value suffix) {
+    if (s.type == VAL_STRING && suffix.type == VAL_STRING) {
+        size_t s_len = strlen(s.as.string_val);
+        size_t suffix_len = strlen(suffix.as.string_val);
+        if (suffix_len > s_len) return make_bool(false);
+        return make_bool(strcmp(s.as.string_val + s_len - suffix_len, suffix.as.string_val) == 0);
+    }
+    fprintf(stderr, "ends_with: expected two strings\\n");
+    exit(1);
+}
+
+Value repeat(Value s, Value n) {
+    if (s.type == VAL_STRING && n.type == VAL_INT) {
+        long count = n.as.int_val;
+        if (count < 0) count = 0;
+        size_t s_len = strlen(s.as.string_val);
+        char* result = malloc(s_len * count + 1);
+        result[0] = '\\0';
+        for (long i = 0; i < count; i++) strcat(result, s.as.string_val);
+        return make_string(result);
+    }
+    fprintf(stderr, "repeat: expected string and int\\n");
+    exit(1);
+}
+
+// Math operations
+Value ko_abs(Value v) {
+    if (v.type == VAL_INT) return make_int(labs(v.as.int_val));
+    if (v.type == VAL_FLOAT) return make_float(fabs(v.as.float_val));
+    fprintf(stderr, "abs: expected number\\n");
+    exit(1);
+}
+
+Value ko_min(Value a, Value b) {
+    if (a.type == VAL_INT && b.type == VAL_INT) return make_int(a.as.int_val < b.as.int_val ? a.as.int_val : b.as.int_val);
+    if (a.type == VAL_FLOAT && b.type == VAL_FLOAT) return make_float(a.as.float_val < b.as.float_val ? a.as.float_val : b.as.float_val);
+    fprintf(stderr, "min: expected two numbers of same type\\n");
+    exit(1);
+}
+
+Value ko_max(Value a, Value b) {
+    if (a.type == VAL_INT && b.type == VAL_INT) return make_int(a.as.int_val > b.as.int_val ? a.as.int_val : b.as.int_val);
+    if (a.type == VAL_FLOAT && b.type == VAL_FLOAT) return make_float(a.as.float_val > b.as.float_val ? a.as.float_val : b.as.float_val);
+    fprintf(stderr, "max: expected two numbers of same type\\n");
+    exit(1);
+}
+
+Value ko_pow(Value base, Value exp) {
+    if (base.type == VAL_INT && exp.type == VAL_INT) {
+        long result = 1;
+        for (long i = 0; i < exp.as.int_val; i++) result *= base.as.int_val;
+        return make_int(result);
+    }
+    if (base.type == VAL_FLOAT || exp.type == VAL_FLOAT) {
+        double b = base.type == VAL_FLOAT ? base.as.float_val : (double)base.as.int_val;
+        double e = exp.type == VAL_FLOAT ? exp.as.float_val : (double)exp.as.int_val;
+        return make_float(pow(b, e));
+    }
+    fprintf(stderr, "pow: expected numbers\\n");
+    exit(1);
+}
+
+Value ko_sqrt(Value v) {
+    if (v.type == VAL_INT) return make_float(sqrt((double)v.as.int_val));
+    if (v.type == VAL_FLOAT) return make_float(sqrt(v.as.float_val));
+    fprintf(stderr, "sqrt: expected number\\n");
+    exit(1);
+}
+
+Value ko_floor(Value v) {
+    if (v.type == VAL_FLOAT) return make_int((long)floor(v.as.float_val));
+    if (v.type == VAL_INT) return v;
+    fprintf(stderr, "floor: expected number\\n");
+    exit(1);
+}
+
+Value ko_ceil(Value v) {
+    if (v.type == VAL_FLOAT) return make_int((long)ceil(v.as.float_val));
+    if (v.type == VAL_INT) return v;
+    fprintf(stderr, "ceil: expected number\\n");
+    exit(1);
+}
+
+Value mod(Value a, Value b) {
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        if (b.as.int_val == 0) { fprintf(stderr, "mod: division by zero\\n"); exit(1); }
+        return make_int(a.as.int_val % b.as.int_val);
+    }
+    fprintf(stderr, "mod: expected two ints\\n");
+    exit(1);
+}
+
+// Conversion
+Value to_string(Value v) {
+    char* buf = malloc(64);
+    switch (v.type) {
+        case VAL_INT: sprintf(buf, "%ld", v.as.int_val); break;
+        case VAL_FLOAT: sprintf(buf, "%g", v.as.float_val); break;
+        case VAL_BOOL: strcpy(buf, v.as.bool_val ? "true" : "false"); break;
+        case VAL_CHAR: sprintf(buf, "%c", v.as.char_val); break;
+        case VAL_UNIT: strcpy(buf, "()"); break;
+        default: strcpy(buf, "<unknown>"); break;
+    }
+    return make_string(buf);
+}
+
+Value to_int(Value v) {
+    if (v.type == VAL_INT) return v;
+    if (v.type == VAL_FLOAT) return make_int((long)v.as.float_val);
+    if (v.type == VAL_STRING) return make_int(atol(v.as.string_val));
+    fprintf(stderr, "to_int: cannot convert to int\\n");
+    exit(1);
+}
+
+Value to_float(Value v) {
+    if (v.type == VAL_FLOAT) return v;
+    if (v.type == VAL_INT) return make_float((double)v.as.int_val);
+    if (v.type == VAL_STRING) return make_float(atof(v.as.string_val));
+    fprintf(stderr, "to_float: cannot convert to float\\n");
+    exit(1);
+}
+
+// Type checking
+Value type_of(Value v) {
+    switch (v.type) {
+        case VAL_INT: return make_string("int");
+        case VAL_FLOAT: return make_string("float");
+        case VAL_BOOL: return make_string("bool");
+        case VAL_STRING: return make_string("string");
+        case VAL_CHAR: return make_string("char");
+        case VAL_UNIT: return make_string("unit");
+        case VAL_CONSTRUCTOR: return make_string("constructor");
+        default: return make_string("unknown");
+    }
+}
+
+Value is_int(Value v) { return make_bool(v.type == VAL_INT); }
+Value is_float(Value v) { return make_bool(v.type == VAL_FLOAT); }
+Value is_string(Value v) { return make_bool(v.type == VAL_STRING); }
+Value is_bool(Value v) { return make_bool(v.type == VAL_BOOL); }
+
+// I/O
+Value input(Value prompt) {
+    if (prompt.type == VAL_STRING) printf("%s", prompt.as.string_val);
+    char buf[1024];
+    if (fgets(buf, sizeof(buf), stdin)) {
+        buf[strcspn(buf, "\\n")] = '\\0';
+        return make_string(strdup(buf));
+    }
+    return make_string("");
+}
+
+// Random
+#include <time.h>
+Value random_int(Value min_val, Value max_val) {
+    if (min_val.type == VAL_INT && max_val.type == VAL_INT) {
+        long min_v = min_val.as.int_val;
+        long max_v = max_val.as.int_val;
+        return make_int(min_v + rand() % (max_v - min_v + 1));
+    }
+    fprintf(stderr, "random_int: expected two ints\\n");
+    exit(1);
 }
 
 // Forward declaration for CONSTRUCTOR_NAMES
@@ -491,6 +765,26 @@ void inspect_value(Value v) {
                 if expr.args:
                     return f"(inspect_value({self.generate_expr(expr.args[0])}), make_unit())"
                 return "make_unit()"
+
+            # Standard library functions
+            STDLIB = {
+                'len': 'len', 'concat': 'concat', 'char_at': 'char_at',
+                'substring': 'substring', 'contains': 'contains',
+                'to_upper': 'to_upper', 'to_lower': 'to_lower',
+                'trim': 'trim', 'starts_with': 'starts_with', 'ends_with': 'ends_with',
+                'repeat': 'repeat', 'abs': 'ko_abs', 'min': 'ko_min', 'max': 'ko_max',
+                'pow': 'ko_pow', 'sqrt': 'ko_sqrt', 'floor': 'ko_floor', 'ceil': 'ko_ceil',
+                'mod': 'mod', 'to_string': 'to_string', 'to_int': 'to_int',
+                'to_float': 'to_float', 'type_of': 'type_of',
+                'is_int': 'is_int', 'is_float': 'is_float',
+                'is_string': 'is_string', 'is_bool': 'is_bool',
+                'input': 'input', 'random_int': 'random_int',
+            }
+
+            if isinstance(expr.func, Identifier) and expr.func.name in STDLIB:
+                func_name = STDLIB[expr.func.name]
+                args = [self.generate_expr(a) for a in expr.args]
+                return f"{func_name}({', '.join(args)})"
 
             func = self.generate_expr(expr.func)
             # Sanitize function names
