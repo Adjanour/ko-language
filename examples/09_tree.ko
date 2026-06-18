@@ -1,0 +1,21 @@
+// 09_tree.ko — Binary tree with pattern matching
+
+type Tree = Node * * * | Leaf
+
+fn insert tree val =
+  match tree
+    Leaf -> Node val Leaf Leaf
+    Node v left right ->
+      if val < v then Node v (insert left val) right
+      else if val > v then Node v left (insert right val)
+      else tree
+
+fn sum tree =
+  match tree
+    Leaf -> 0
+    Node v left right -> v + sum left + sum right
+
+fn main =
+  // Build tree by nesting inserts
+  let tree = insert (insert (insert (insert (insert Leaf 4) 2) 6) 1) 3
+  println (sum tree)

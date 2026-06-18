@@ -1,0 +1,24 @@
+// 02_numbers.ko — Number literals and arithmetic
+
+fn main =
+  // Decimal integers
+  let a = 42
+  let b = 1_000_000
+
+  // Hexadecimal
+  let red = 0xFF0000
+
+  // Floats
+  let pi = 3.14159
+
+  // Arithmetic
+  println (a + 8)
+  println (b / 1000)
+  println (100 % 7)
+
+  // Underscores for readability
+  println (1_000 + 2_000 + 3_000)
+
+  // Inspect shows type information
+  inspect red
+  inspect pi

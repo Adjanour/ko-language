@@ -1,0 +1,33 @@
+// 07_pattern_match.ko — Advanced pattern matching
+
+type Expr = Add * * | Mul * * | Lit *
+type Shape = Circle * | Rect * *
+
+fn eval e =
+  match e
+    Add a b -> eval a + eval b
+    Mul a b -> eval a * eval b
+    Lit x -> x
+
+fn area s =
+  match s
+    Circle r -> 3 * r * r
+    Rect w h -> w * h
+
+fn describe s =
+  match s
+    Circle _ -> "circle"
+    Rect _ _ -> "rectangle"
+
+fn main =
+  // Expression tree: (2 + 3) * 4
+  let expr = Mul (Add (Lit 2) (Lit 3)) (Lit 4)
+  println (eval expr)
+
+  // Shapes
+  let c = Circle 5
+  let r = Rect 3 4
+  println (area c)
+  println (area r)
+  println (describe c)
+  println (describe r)

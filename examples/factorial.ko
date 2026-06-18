@@ -1,0 +1,8 @@
+# Example 3: Factorial with recursion
+
+fn factorial n =
+  if n == 0 then 1
+  else n * factorial (n - 1)
+
+fn main =
+  print (factorial 10)

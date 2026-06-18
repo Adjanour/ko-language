@@ -1,0 +1,21 @@
+# Example 2: ADTs and pattern matching
+
+type Maybe = Just * | Nothing
+
+fn from-maybe default mx =
+  match mx
+    Just x -> x
+    Nothing -> default
+
+fn is-just mx =
+  match mx
+    Just _ -> true
+    Nothing -> false
+
+fn main =
+  let x = Just 42
+  let y = Nothing
+  print (from-maybe 0 x)
+  print (from-maybe 0 y)
+  print (is-just x)
+  print (is-just y)

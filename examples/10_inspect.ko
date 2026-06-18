@@ -1,0 +1,28 @@
+// 10_inspect.ko — The inspect built-in for debugging
+
+type Pair = Pair * *
+
+fn main =
+  // Inspect shows detailed type/value info
+  inspect 42
+  inspect 3.14
+  inspect true
+  inspect "hello"
+  inspect 'c'
+
+  // Inspect on constructors
+  let p = Pair 1 2
+  inspect p
+
+  // Compare with print (just the value)
+  println "print shows:"
+  println 42
+
+  println "inspect shows:"
+  inspect 42
+
+  // Comments work three ways:
+  # Hash comment
+  // C-style single-line comment
+  /* Multi-line
+     comment */

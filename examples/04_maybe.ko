@@ -1,0 +1,22 @@
+// 04_maybe.ko — Algebraic data types and pattern matching
+
+type Maybe = Just * | Nothing
+
+fn from-just default mx =
+  match mx
+    Just x -> x
+    Nothing -> default
+
+fn is-just mx =
+  match mx
+    Just _ -> true
+    Nothing -> false
+
+fn main =
+  let x = Just 42
+  let y = Nothing
+
+  println (from-just 0 x)
+  println (from-just 0 y)
+  println (is-just x)
+  println (is-just y)
