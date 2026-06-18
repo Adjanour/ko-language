@@ -5,28 +5,29 @@
   },
   "brackets": [
     ["(", ")"],
-    ["[", "]"],
-    ["{", "}"]
+    ["[", "]"]
   ],
   "autoClosingPairs": [
     { "open": "(", "close": ")" },
     { "open": "[", "close": "]" },
-    { "open": "{", "close": "}" },
     { "open": "\"", "close": "\"" },
     { "open": "'", "close": "'" }
   ],
   "surroundingPairs": [
     ["(", ")"],
     ["[", "]"],
-    ["{", "}"],
     ["\"", "\""],
     ["'", "'"]
   ],
   "folding": {
     "markers": {
-      "start": "^\\s*//\\s*region\\b",
-      "end": "^\\s*//\\s*endregion\\b"
+      "start": "^\\s*fn\\s+|^\\s*type\\s+|^\\s*match\\s+",
+      "end": "^\\s*(fn|type|match)\\s+|^$"
     }
+  },
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(fn|let|match|if|type)\\b.*=\\s*$",
+    "decreaseIndentPattern": "^\\s*$"
   },
   "wordPattern": "(-?\\d+\\.\\d*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\{\\}\\\\\\|\\;:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)"
 }
