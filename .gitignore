@@ -19,3 +19,4 @@ vscode-ko/ko-language-*.vsix
 tree-sitter-ko/src/
 tree-sitter-ko/node_modules/
 tree-sitter-ko/package-lock.json
+test_toplevel.ko
