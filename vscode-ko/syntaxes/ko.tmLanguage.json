@@ -1,0 +1,152 @@
+{
+  "name": "Kō",
+  "scopeName": "source.ko",
+  "fileTypes": ["ko"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#variables" },
+    { "include": "#literals" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.ko",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.line.hash.ko",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.block.ko",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.ko",
+          "match": "\\b(if|then|else|match|let|in|fn|type)\\b"
+        },
+        {
+          "name": "constant.language.ko",
+          "match": "\\b(true|false)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "entity.name.type.constructor.ko",
+          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.ko",
+          "match": "\\b[a-z][a-z0-9_-]*(?=\\s)"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.ko",
+          "match": "\\b[a-z][a-z0-9_]*\\b"
+        }
+      ]
+    },
+    "literals": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.ko",
+          "match": "\\b0[xX][0-9a-fA-F_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.ko",
+          "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.float.ko",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*\\b"
+        },
+        {
+          "name": "constant.numeric.integer.ko",
+          "match": "\\b[0-9][0-9_]*\\b"
+        },
+        {
+          "name": "string.quoted.double.ko",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.ko",
+              "match": "\\\\[ntr\\\\'\"]"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.ko",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.ko",
+              "match": "\\\\[ntr\\\\'\"]"
+            }
+          ]
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arithmetic.ko",
+          "match": "[\\+\\-\\*\\/\\%]"
+        },
+        {
+          "name": "keyword.operator.comparison.ko",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.logical.ko",
+          "match": "(&&|\\|\\||!)"
+        },
+        {
+          "name": "keyword.operator.arrow.ko",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.assignment.ko",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.wildcard.ko",
+          "match": "_"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.definition.type.ko",
+          "match": "\\|"
+        },
+        {
+          "name": "punctuation.separator.ko",
+          "match": ",|\\*"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f7a41d;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e85d04;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <!-- o circle -->
+  <circle cx="64" cy="72" r="36" fill="none" stroke="url(#grad)" stroke-width="8"/>
+  <!-- Macron for ō -->
+  <rect x="44" y="24" width="40" height="6" rx="3" fill="url(#grad)"/>
+</svg>
