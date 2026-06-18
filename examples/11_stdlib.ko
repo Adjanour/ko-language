@@ -1,37 +1,67 @@
-// stdlib_test.ko — Testing the standard library
+// stdlib_test.ko — Testing the standard library (functional I/O)
 
 fn main =
-  // String operations
+  // === String operations ===
   let s = "hello world"
-  println (len s)                    // 11
-  println (concat "hello" " world")  // hello world
-  println (char_at s 0)              // 'h'
-  println (substring s 0 5)          // hello
-  println (contains s "world")       // true
-  println (to_upper s)               // HELLO WORLD
-  println (to_lower s)               // hello world
-  println (trim "  spaces  ")        // spaces
-  println (starts_with s "hello")    // true
-  println (ends_with s "world")      // true
-  println (repeat "ha" 3)            // hahaha
+  println (len s)
+  println (concat "hello" " world")
+  println (char_at s 0)
+  println (substring s 0 5)
+  println (contains s "world")
+  println (to_upper s)
+  println (to_lower s)
+  println (trim "  spaces  ")
+  println (starts_with s "hello")
+  println (ends_with s "world")
+  println (repeat "ha" 3)
 
-  // Math operations
-  println (abs (-5))                 // 5
-  println (min 3 7)                  // 3
-  println (max 3 7)                  // 7
-  println (pow 2 10)                 // 1024
-  println (sqrt 16)                  // 4
-  println (floor 3.7)                // 3
-  println (ceil 3.2)                 // 4
-  println (mod 10 3)                 // 1
+  // === Math operations ===
+  println (abs (-5))
+  println (min 3 7)
+  println (max 3 7)
+  println (pow 2 10)
+  println (sqrt 16)
+  println (floor 3.7)
+  println (ceil 3.2)
+  println (mod 10 3)
 
-  // Type conversion
-  println (to_string 42)             // 42
-  println (to_int "123")             // 123
-  println (to_float 42)              // 42
+  // === Type conversion ===
+  println (to_string 42)
+  println (to_int "123")
+  println (to_float 42)
+  println (type_of 42)
+  println (is_int 42)
 
-  // Type checking
-  println (type_of 42)               // int
-  println (type_of "hello")          // string
-  println (is_int 42)                // true
-  println (is_string "hello")        // true
+  // === I/O (functional - returns values) ===
+  // read_line returns a string
+  // write_file returns true/false
+  // read_file returns string content
+  // run returns command output as string
+
+  println (run "echo 'hello from shell'")
+
+  // File I/O
+  write_file "test_output.txt" "hello from ko!"
+  let content = read_file "test_output.txt"
+  println content
+
+  // Command line args
+  let count = args_count
+  println count
+
+  // Environment
+  let home = get_env "HOME"
+  println home
+
+  // Time (milliseconds)
+  let t = now
+  println t
+
+  // === Pure random (functional) ===
+  // random takes seed, min, max → value
+  // seed() returns the next seed for chaining
+  let r1 = random 12345 1 100
+  println r1
+  let next = seed
+  let r2 = random next 1 100
+  println r2

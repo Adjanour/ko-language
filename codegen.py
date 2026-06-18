@@ -95,8 +95,10 @@ class CodeGen:
         # Generate C entry point if there's a main function
         if 'main' in self.defined_fns:
             self.emit_raw("")
-            self.emit("int main() {")
+            self.emit("int main(int argc, char* argv[]) {")
             self.indent += 1
+            self.emit("_argc = argc;")
+            self.emit("_argv = argv;")
             self.emit("_ko_main();")
             self.emit("return 0;")
             self.indent -= 1
@@ -448,10 +450,13 @@ Value is_float(Value v) { return make_bool(v.type == VAL_FLOAT); }
 Value is_string(Value v) { return make_bool(v.type == VAL_STRING); }
 Value is_bool(Value v) { return make_bool(v.type == VAL_BOOL); }
 
-// I/O
-Value input(Value prompt) {
-    if (prompt.type == VAL_STRING) printf("%s", prompt.as.string_val);
-    char buf[1024];
+// ===== I/O (functional style - all return values) =====
+
+// Read a line from stdin
+Value read_line(Value prompt) {
+    if (prompt.type == VAL_STRING && strlen(prompt.as.string_val) > 0)
+        printf("%s", prompt.as.string_val);
+    char buf[4096];
     if (fgets(buf, sizeof(buf), stdin)) {
         buf[strcspn(buf, "\\n")] = '\\0';
         return make_string(strdup(buf));
@@ -459,16 +464,140 @@ Value input(Value prompt) {
     return make_string("");
 }
 
-// Random
-#include <time.h>
-Value random_int(Value min_val, Value max_val) {
-    if (min_val.type == VAL_INT && max_val.type == VAL_INT) {
-        long min_v = min_val.as.int_val;
-        long max_v = max_val.as.int_val;
-        return make_int(min_v + rand() % (max_v - min_v + 1));
+// Read entire file - returns string (or empty on error)
+Value read_file(Value path) {
+    if (path.type != VAL_STRING) {
+        fprintf(stderr, "read_file: expected string path\\n");
+        exit(1);
     }
-    fprintf(stderr, "random_int: expected two ints\\n");
-    exit(1);
+    FILE* f = fopen(path.as.string_val, "r");
+    if (!f) return make_string("");
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = malloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = '\\0';
+    fclose(f);
+    return make_string(buf);
+}
+
+// Write to file - returns true on success
+Value write_file(Value path, Value content) {
+    if (path.type != VAL_STRING || content.type != VAL_STRING) {
+        fprintf(stderr, "write_file: expected two strings\\n");
+        exit(1);
+    }
+    FILE* f = fopen(path.as.string_val, "w");
+    if (!f) return make_bool(false);
+    fputs(content.as.string_val, f);
+    fclose(f);
+    return make_bool(true);
+}
+
+// Append to file - returns true on success
+Value append_file(Value path, Value content) {
+    if (path.type != VAL_STRING || content.type != VAL_STRING) {
+        fprintf(stderr, "append_file: expected two strings\\n");
+        exit(1);
+    }
+    FILE* f = fopen(path.as.string_val, "a");
+    if (!f) return make_bool(false);
+    fputs(content.as.string_val, f);
+    fclose(f);
+    return make_bool(true);
+}
+
+// Run shell command - returns output as string
+Value run_command(Value cmd) {
+    if (cmd.type != VAL_STRING) {
+        fprintf(stderr, "run_command: expected string\\n");
+        exit(1);
+    }
+    FILE* p = popen(cmd.as.string_val, "r");
+    if (!p) return make_string("");
+    char buf[4096];
+    char* result = malloc(1);
+    result[0] = '\\0';
+    while (fgets(buf, sizeof(buf), p)) {
+        result = realloc(result, strlen(result) + strlen(buf) + 1);
+        strcat(result, buf);
+    }
+    pclose(p);
+    return make_string(result);
+}
+
+// Get environment variable - returns string (empty if not found)
+Value get_env(Value name) {
+    if (name.type != VAL_STRING) {
+        fprintf(stderr, "get_env: expected string\\n");
+        exit(1);
+    }
+    char* val = getenv(name.as.string_val);
+    return make_string(val ? strdup(val) : "");
+}
+
+// Command line arguments - returns list of strings as single delimited string
+// Use args_count to get count, args_get to get specific arg
+static int _argc;
+static char** _argv;
+
+Value args_count() {
+    return make_int(_argc);
+}
+
+Value args_get(Value i) {
+    if (i.type != VAL_INT || i.as.int_val < 0 || i.as.int_val >= _argc)
+        return make_string("");
+    return make_string(_argv[i.as.int_val]);
+}
+
+// Exit with code
+Value exit_with(Value code) {
+    long c = code.type == VAL_INT ? code.as.int_val : 0;
+    exit(c);
+    return make_unit(); // unreachable
+}
+
+// ===== Random (pure - takes seed, returns value + new seed) =====
+#include <time.h>
+
+// Simple hash for seed
+long _ko_hash(long seed) {
+    seed ^= seed << 13;
+    seed ^= seed >> 7;
+    seed ^= seed << 17;
+    return seed;
+}
+
+// Random int - takes seed, min, max → returns pair (value, new_seed)
+// We'll return value and put new_seed in a global for now
+static long _ko_next_seed = 0;
+
+Value ko_random(Value seed, Value min_val, Value max_val) {
+    if (seed.type != VAL_INT || min_val.type != VAL_INT || max_val.type != VAL_INT) {
+        fprintf(stderr, "random: expected three ints\\n");
+        exit(1);
+    }
+    long s = seed.as.int_val;
+    long min_v = min_val.as.int_val;
+    long max_v = max_val.as.int_val;
+    s = _ko_hash(s);
+    long val = min_v + (s & 0x7FFFFFFF) % (max_v - min_v + 1);
+    _ko_next_seed = s;
+    return make_int(val);
+}
+
+// Get the next seed after random
+Value ko_seed() {
+    return make_int(_ko_next_seed);
+}
+
+// Time in milliseconds
+Value ko_now() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return make_int(ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
 // Forward declaration for CONSTRUCTOR_NAMES
@@ -595,6 +724,11 @@ void inspect_value(Value v) {
                 self.emit(f"inspect_value({arg_str});")
             else:
                 self.emit("inspect_value(make_unit());")
+        # I/O functions that should be statements (discard return value)
+        elif isinstance(expr, FnCall) and isinstance(expr.func, Identifier) and expr.func.name in ('write_file', 'append_file', 'exit'):
+            func_name = sanitize_name(expr.func.name)
+            args = [self.generate_expr(a) for a in expr.args]
+            self.emit(f"{func_name}({', '.join(args)});")
         else:
             self.emit(f"return {self.generate_expr(expr)};")
 
@@ -704,6 +838,10 @@ void inspect_value(Value v) {
                     for ctor_name, arity in ctors:
                         if ctor_name == expr.name and arity == 0:
                             return f"{sanitize_name(name)}()"
+            # Handle nullary stdlib functions
+            NULLARY_STDLIB = {'args_count': 'args_count', 'now': 'ko_now', 'seed': 'ko_seed'}
+            if expr.name in NULLARY_STDLIB:
+                return f"{NULLARY_STDLIB[expr.name]}()"
             return name
         if isinstance(expr, Wildcard):
             return "make_unit()"
@@ -778,7 +916,14 @@ void inspect_value(Value v) {
                 'to_float': 'to_float', 'type_of': 'type_of',
                 'is_int': 'is_int', 'is_float': 'is_float',
                 'is_string': 'is_string', 'is_bool': 'is_bool',
-                'input': 'input', 'random_int': 'random_int',
+                # I/O (functional - all return values)
+                'read_line': 'read_line', 'read_file': 'read_file',
+                'write_file': 'write_file', 'append_file': 'append_file',
+                'run': 'run_command', 'get_env': 'get_env',
+                'args_count': 'args_count', 'args_get': 'args_get',
+                'exit': 'exit_with', 'now': 'ko_now',
+                # Random (pure)
+                'random': 'ko_random', 'seed': 'ko_seed',
             }
 
             if isinstance(expr.func, Identifier) and expr.func.name in STDLIB:
