@@ -885,9 +885,9 @@ class Parser:
             args.append(self.parse_primary())
 
         # Also consume - as unary prefix on numeric arguments (e.g. add 5 -60)
+        # Only when - follows another argument (not after a primary expression result)
         while self.peek().type == TokenType.MINUS:
-            # Only treat as argument if followed by a number literal
-            if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type in (
+            if args and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type in (
                 TokenType.INT, TokenType.FLOAT):
                 args.append(self.parse_unary())
             else:

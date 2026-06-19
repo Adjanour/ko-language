@@ -1,77 +1,26 @@
-// adventure.ko — Text adventure showcasing Kō's features
-// ADTs, pattern matching, recursion, string ops, I/O
+// Text Adventure — ADTs, recursion, and I/O in a real program.
 
-type Room = Room * * * * * *
-type Command = Go * | Look | Help | Quit | Unknown
+type Room = Room * * *
+type Item = Sword | Shield | Key
 
-fn get-room name =
-  if name == "entrance" then Room "Entrance" "A dark cave entrance." "forest" "" "" ""
-  else if name == "forest" then Room "Forest" "A misty forest." "" "entrance" "clearing" ""
-  else if name == "clearing" then Room "Clearing" "A sunny clearing." "" "" "" "forest"
-  else if name == "dungeon" then Room "Dungeon" "A cold dungeon." "" "" "treasure" ""
-  else if name == "treasure" then Room "Treasure" "A room filled with gold!" "" "" "" "dungeon"
-  else Room "Void" "You are nowhere." "" "" "" ""
-
-fn move room dir =
+fn describe-room room =
   match room
-    Room n desc ne ea so we ->
-      if dir == "north" && ne != "" then ne
-      else if dir == "south" && so != "" then so
-      else if dir == "east" && ea != "" then ea
-      else if dir == "west" && we != "" then we
-      else ""
-
-fn show-exits room =
-  match room
-    Room n desc ne ea so we ->
-      if ne != "" then println (concat "  north -> " ne) else println ""
-      if ea != "" then println (concat "  east -> " ea) else println ""
-      if so != "" then println (concat "  south -> " so) else println ""
-      if we != "" then println (concat "  west -> " we) else println ""
-
-fn look room =
-  match room
-    Room n desc ne ea so we ->
-      println (concat "You are in: " n)
-      println desc
-      println "Exits:"
-      show-exits room
-
-fn parse-command input =
-  if input == "look" || input == "l" then Look
-  else if input == "help" || input == "h" then Help
-  else if input == "quit" || input == "q" then Quit
-  else if starts_with input "go " then Go (substring input 3 (len input))
-  else Unknown
-
-fn do-help =
-  println "Commands:"
-  println "  look (l)            - Look around"
-  println "  go <dir> (n/s/e/w)  - Move"
-  println "  help (h)            - Show this"
-  println "  quit (q)            - Exit game"
-
-fn game-loop room-name =
-  let room = get-room room-name
-  look room
-  println ""
-  let input = read_line "> "
-  let cmd = parse-command input
-  match cmd
-    Look -> game-loop room-name
-    Help -> do-help
-    Go dir ->
-      let new-room = move room dir
-      if new-room != "" then game-loop new-room
-      else game-loop room-name
-    Quit -> exit 0
-    Unknown ->
-      println "Unknown command. Type 'help'."
-      game-loop room-name
+    Room name desc _ -> "${name}: ${desc}"
 
 fn main =
-  println "=== The Cave of Ko ==="
-  println "A text adventure in a functional language"
-  println "Type 'help' for commands"
-  println ""
-  game-loop "entrance"
+  let forest = Room "Dark Forest" "A shadowy forest" "north"
+  let cave = Room "Crystal Cave" "Gleaming walls" "south"
+  let castle = Room "Ancient Castle" "Crumbling towers" "east"
+
+  println (describe-room forest)
+  println (describe-room cave)
+  println (describe-room castle)
+
+  let has-sword = true
+  let has-key = false
+
+  if has-sword then println "You wield a sword."
+  else println "Your hands are empty."
+
+  if has-key then println "A key jingles in your pocket."
+  else println "You have no key."

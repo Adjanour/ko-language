@@ -1,5 +1,4 @@
-// 14_hof.ko — Higher-order functions with closures
-// map, filter, fold now work with closures!
+// Higher-Order Functions — map, filter, fold — the functional trifecta.
 
 type List = Cons * * | Nil
 
@@ -22,18 +21,15 @@ fn fold f acc list =
 
 fn main =
   let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
-  
-  println "Original list:"
-  inspect nums
-  
-  println "Doubled (using closure):"
+
   let doubled = map (\x -> x * 2) nums
-  inspect doubled
-  
-  println "Evens (using closure):"
+  println (fold (\acc x -> acc + x) 0 doubled)
+
   let evens = filter (\x -> mod x 2 == 0) nums
-  inspect evens
-  
-  println "Sum (using closure):"
+  println (fold (\acc x -> acc + x) 0 evens)
+
   let total = fold (\acc x -> acc + x) 0 nums
-  inspect total
+  println total
+
+  let count = fold (\acc x -> acc + 1) 0 nums
+  println count

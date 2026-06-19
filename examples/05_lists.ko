@@ -1,4 +1,4 @@
-// 05_lists.ko — Recursive linked lists
+// Linked Lists — The universal data structure.
 
 type List = Cons * * | Nil
 

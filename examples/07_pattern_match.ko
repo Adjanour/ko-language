@@ -1,4 +1,4 @@
-// 07_pattern_match.ko — Advanced pattern matching
+// Pattern Matching — Handle every case. The compiler checks for you.
 
 type Expr = Add * * | Mul * * | Lit *
 type Shape = Circle * | Rect * *
@@ -20,11 +20,9 @@ fn describe s =
     Rect _ _ -> "rectangle"
 
 fn main =
-  // Expression tree: (2 + 3) * 4
   let expr = Mul (Add (Lit 2) (Lit 3)) (Lit 4)
   println (eval expr)
 
-  // Shapes
   let c = Circle 5
   let r = Rect 3 4
   println (area c)

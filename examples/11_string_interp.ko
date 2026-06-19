@@ -1,0 +1,14 @@
+// String Interpolation — Build strings naturally.
+
+fn main =
+  let name = "Kō"
+  let version = "0.2.0"
+
+  println "Welcome to ${name} v${version}!"
+
+  let x = 42
+  println "x = ${x}"
+
+  let a = 10
+  let b = 20
+  println "${a} + ${b} = ${a + b}"

@@ -1,16 +1,17 @@
+// Generic Types — Type parameters for reusable data structures.
+
 type Maybe a = Just a | Nothing
 
-fn is_just m =
-  match m
-    | Just _ -> true
-    | Nothing -> false
-
-fn from_int n =
-  if n > 0 then Just n else Nothing
+fn map-maybe f mx =
+  match mx
+    Just x -> Just (f x)
+    Nothing -> Nothing
 
 fn main =
   let x = Just 42
-  let y = from_int 0
-  println (is_just x)
-  println (is_just y)
-  println "Generic types work!"
+  let y = map-maybe (\x -> x * 2) x
+  inspect y
+
+  let s = Just "hello"
+  let t = map-maybe (\x -> len x) s
+  inspect t

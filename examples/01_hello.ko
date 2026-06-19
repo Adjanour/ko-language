@@ -1,4 +1,4 @@
-// 01_hello.ko — Hello World
-// The simplest Kō program
+// Hello World — The simplest Kō program.
 
-println "hello, world"
+fn main =
+  println "hello, world"

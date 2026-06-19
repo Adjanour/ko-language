@@ -1,0 +1,16 @@
+// Closures — Lambdas capture variables from surrounding scope.
+
+fn main =
+  let x = 10
+  let f = \y -> x + y
+  println (f 5)
+  println (f 100)
+
+  fn apply-twice f x = f (f x)
+  let double = \x -> x * 2
+  println (apply-twice double 3)
+
+  let a = 5
+  let b = 10
+  let sum = \x -> x + a + b
+  println (sum 1)

@@ -1,4 +1,4 @@
-// 08_operators.ko — Operator precedence and logic
+// Operators — Precedence, associativity, logic.
 
 fn main =
   // Arithmetic precedence
@@ -11,12 +11,12 @@ fn main =
   println (3 == 3)
   println (5 != 4)
 
-  // Logical operators (no NOT — use == false)
+  // Logical operators
   println (true && false)
   println (true || false)
   println (true == false)
 
-  // Mixed
+  // Conditional expression
   let x = 10
-  if x > 0 then println "positive"
-  else println "non-positive"
+  let msg = if x > 0 then "positive" else "non-positive"
+  println msg

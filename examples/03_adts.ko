@@ -1,0 +1,39 @@
+// Algebraic Data Types — Model your domain with types, not classes.
+
+type Maybe = Just * | Nothing
+type Result = Ok * | Err *
+type Shape = Circle * | Rect * *
+type Expr = Add * * | Mul * * | Lit *
+
+fn from-just default mx =
+  match mx
+    Just x -> x
+    Nothing -> default
+
+fn divide a b =
+  if b == 0 then Err "division by zero"
+  else Ok (a / b)
+
+fn area shape =
+  match shape
+    Circle r -> 3 * r * r
+    Rect w h -> w * h
+
+fn eval expr =
+  match expr
+    Add a b -> eval a + eval b
+    Mul a b -> eval a * eval b
+    Lit x -> x
+
+fn main =
+  let x = Just 42
+  println (from-just 0 x)
+  println (from-just 0 Nothing)
+
+  let c = Circle 5
+  let r = Rect 3 4
+  println (area c)
+  println (area r)
+
+  let expr = Mul (Add (Lit 2) (Lit 3)) (Lit 4)
+  println (eval expr)
