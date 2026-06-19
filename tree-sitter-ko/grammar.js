@@ -35,13 +35,47 @@ module.exports = grammar({
       repeat(field('slot', '*')),
     ),
 
+    // ===== Type Expressions =====
+    type_expression: $ => choice(
+      $.type_arrow,
+      $.type_atom,
+    ),
+
+    type_arrow: $ => prec.right(seq(
+      $.type_atom,
+      '->',
+      $.type_expression,
+    )),
+
+    type_atom: $ => choice(
+      'Int',
+      'Float',
+      'Bool',
+      'String',
+      'Char',
+      'Unit',
+      $.identifier,
+      seq('(', $.type_expression, ')'),
+    ),
+
     // ===== Function Definitions =====
-    function_definition: $ => seq(
-      'fn',
-      field('name', $.identifier),
-      repeat(field('parameter', $.identifier)),
-      '=',
-      field('body', $.expression),
+    function_definition: $ => choice(
+      // With type annotation only (no params/body)
+      seq(
+        'fn',
+        field('name', $.identifier),
+        ':',
+        field('type_annotation', $.type_expression),
+      ),
+      // With params, optional type annotation, and body
+      seq(
+        'fn',
+        field('name', $.identifier),
+        repeat(field('parameter', $.identifier)),
+        optional(seq(':', field('type_annotation', $.type_expression))),
+        '=',
+        field('body', $.expression),
+      ),
     ),
 
     let_binding: $ => seq(
@@ -76,6 +110,7 @@ module.exports = grammar({
       $.if_expression,
       $.match_expression,
       $.let_expression,
+      $.lambda,
       $.binary_expression,
       $.unary_expression,
       $.function_application,
@@ -115,13 +150,21 @@ module.exports = grammar({
       field('body', $.expression),
     ),
 
+    // ===== Lambda Expression =====
+    lambda: $ => prec.right(seq(
+      '\\',
+      repeat(field('parameter', $.identifier)),
+      '->',
+      field('body', $.expression),
+    )),
+
     binary_expression: $ => {
       const table = [
         ['||', 1],
         ['&&', 2],
         ['==', 3], ['!=', 3],
         ['<', 4], ['>', 4], ['<=', 4], ['>=', 4],
-        ['+', 5], ['-', 5],
+        ['+', 5], ['-', 5], ['++', 5],
         ['*', 6], ['/', 6], ['%', 6],
       ];
 
@@ -150,11 +193,36 @@ module.exports = grammar({
       $.true,
       $.false,
       $.wildcard,
+      $.list_literal,
       seq('(', $.expression, ')'),
+      $.ref_expression,
+      $.comptime_expression,
+    ),
+
+    // ===== Ref Cell Expressions =====
+    ref_expression: $ => prec.left(seq(
+      'ref',
+      $.expression,
+    )),
+
+    // ===== Comptime Expression =====
+    comptime_expression: $ => seq(
+      'comptime',
+      $.expression,
+    ),
+
+    // ===== List Literal =====
+    list_literal: $ => seq(
+      '[',
+      optional(seq(
+        $.expression,
+        repeat(seq(',', $.expression)),
+      )),
+      ']',
     ),
 
     // ===== Literals =====
-    integer: $ => /0[xX][0-9a-fA-F_]+|[0-9][0-9_]*/,
+    integer: $ => /0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*/,
 
     float: $ => /[0-9][0-9_]*\.[0-9][0-9_]*/,
 
@@ -163,8 +231,15 @@ module.exports = grammar({
       repeat(choice(
         /[^"\\]/,
         $.escape_sequence,
+        $.string_interpolation,
       )),
       '"',
+    ),
+
+    string_interpolation: $ => seq(
+      '${',
+      $.expression,
+      '}',
     ),
 
     char: $ => seq(

@@ -1,8 +1,8 @@
 {
   "name": "ko-language",
   "displayName": "Kō Language Support",
-  "description": "Syntax highlighting and language support for the Kō programming language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, type inference, and language support for the Kō programming language",
+  "version": "0.2.0",
   "publisher": "ko-lang",
   "engines": {
     "vscode": "^1.80.0"
@@ -10,8 +10,13 @@
   "categories": [
     "Programming Languages"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onLanguage:ko"
+  ],
   "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
     "languages": [
       {

@@ -34,11 +34,15 @@
       "patterns": [
         {
           "name": "keyword.control.ko",
-          "match": "\\b(if|then|else|match|let|in|fn|type)\\b"
+          "match": "\\b(if|then|else|match|let|in|fn|type|import|as|ref|comptime)\\b"
         },
         {
           "name": "constant.language.ko",
           "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "support.type.builtin.ko",
+          "match": "\\b(Int|Float|Bool|String|Char|Unit)\\b"
         }
       ]
     },
@@ -92,6 +96,20 @@
             {
               "name": "constant.character.escape.ko",
               "match": "\\\\[ntr\\\\'\"]"
+            },
+            {
+              "name": "variable.other.interpolation.ko",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.begin.ko" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.interpolation.end.ko" }
+              },
+              "patterns": [
+                { "include": "source.ko" }
+              ]
             }
           ]
         },
@@ -104,6 +122,14 @@
               "name": "constant.character.escape.ko",
               "match": "\\\\[ntr\\\\'\"]"
             }
+          ]
+        },
+        {
+          "name": "punctuation.definition.list.ko",
+          "begin": "\\[",
+          "end": "\\]",
+          "patterns": [
+            { "include": "source.ko" }
           ]
         }
       ]
@@ -131,8 +157,16 @@
           "match": "="
         },
         {
+          "name": "keyword.operator.lambda.ko",
+          "match": "\\\\"
+        },
+        {
           "name": "keyword.operator.wildcard.ko",
           "match": "_"
+        },
+        {
+          "name": "keyword.operator.colon.ko",
+          "match": ":"
         }
       ]
     },

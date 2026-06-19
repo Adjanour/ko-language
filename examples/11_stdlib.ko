@@ -20,7 +20,7 @@ fn main =
   println (min 3 7)
   println (max 3 7)
   println (pow 2 10)
-  println (sqrt 16)
+  println (sqrt 16.0)
   println (floor 3.7)
   println (ceil 3.2)
   println (mod 10 3)

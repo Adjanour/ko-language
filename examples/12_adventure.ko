@@ -1,0 +1,77 @@
+// adventure.ko — Text adventure showcasing Kō's features
+// ADTs, pattern matching, recursion, string ops, I/O
+
+type Room = Room * * * * * *
+type Command = Go * | Look | Help | Quit | Unknown
+
+fn get-room name =
+  if name == "entrance" then Room "Entrance" "A dark cave entrance." "forest" "" "" ""
+  else if name == "forest" then Room "Forest" "A misty forest." "" "entrance" "clearing" ""
+  else if name == "clearing" then Room "Clearing" "A sunny clearing." "" "" "" "forest"
+  else if name == "dungeon" then Room "Dungeon" "A cold dungeon." "" "" "treasure" ""
+  else if name == "treasure" then Room "Treasure" "A room filled with gold!" "" "" "" "dungeon"
+  else Room "Void" "You are nowhere." "" "" "" ""
+
+fn move room dir =
+  match room
+    Room n desc ne ea so we ->
+      if dir == "north" && ne != "" then ne
+      else if dir == "south" && so != "" then so
+      else if dir == "east" && ea != "" then ea
+      else if dir == "west" && we != "" then we
+      else ""
+
+fn show-exits room =
+  match room
+    Room n desc ne ea so we ->
+      if ne != "" then println (concat "  north -> " ne) else println ""
+      if ea != "" then println (concat "  east -> " ea) else println ""
+      if so != "" then println (concat "  south -> " so) else println ""
+      if we != "" then println (concat "  west -> " we) else println ""
+
+fn look room =
+  match room
+    Room n desc ne ea so we ->
+      println (concat "You are in: " n)
+      println desc
+      println "Exits:"
+      show-exits room
+
+fn parse-command input =
+  if input == "look" || input == "l" then Look
+  else if input == "help" || input == "h" then Help
+  else if input == "quit" || input == "q" then Quit
+  else if starts_with input "go " then Go (substring input 3 (len input))
+  else Unknown
+
+fn do-help =
+  println "Commands:"
+  println "  look (l)            - Look around"
+  println "  go <dir> (n/s/e/w)  - Move"
+  println "  help (h)            - Show this"
+  println "  quit (q)            - Exit game"
+
+fn game-loop room-name =
+  let room = get-room room-name
+  look room
+  println ""
+  let input = read_line "> "
+  let cmd = parse-command input
+  match cmd
+    Look -> game-loop room-name
+    Help -> do-help
+    Go dir ->
+      let new-room = move room dir
+      if new-room != "" then game-loop new-room
+      else game-loop room-name
+    Quit -> exit 0
+    Unknown ->
+      println "Unknown command. Type 'help'."
+      game-loop room-name
+
+fn main =
+  println "=== The Cave of Ko ==="
+  println "A text adventure in a functional language"
+  println "Type 'help' for commands"
+  println ""
+  game-loop "entrance"

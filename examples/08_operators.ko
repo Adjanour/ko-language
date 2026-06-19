@@ -11,10 +11,10 @@ fn main =
   println (3 == 3)
   println (5 != 4)
 
-  // Logical operators
+  // Logical operators (no NOT — use == false)
   println (true && false)
   println (true || false)
-  println (!true)
+  println (true == false)
 
   // Mixed
   let x = 10

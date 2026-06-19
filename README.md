@@ -12,6 +12,32 @@ Still implementing the timeless jilox language 😅 so gonna finish that and som
 
 Its codegen is in C btw. A choice i made. Also made it add tree-sitter for syntax highlighting and we wrote a vscode extension. Fun times ahead
 
+## What works
+
+- **Lexer**: hex (`0xFF`), underscores, comments, `||`, `\\`, `[` `]`, `,`, **string interpolation** (`${expr}`)
+- **Parser**: ADTs, pattern matching, functions, let bindings, if/then/else, lambdas, list literals, type annotations, **string interpolation**, **imports**, **ref cells**, **comptime**
+- **Codegen**: C99 with tagged unions, constructors, string operations, **closures** (lambda lifting), **ref cells** with reference counting
+- **Errors**: Source locations with file:line:col, caret underlines, **exhaustive pattern match checking**
+- **Modules**: `import math`, `import "path/to/file"`, `import name as Alias`
+- **Compile-time**: `comptime expr` evaluates at compile time (constant folding)
+- **Reflection**: `type_of x` returns type name as string
+- **Closures**: Lambdas capture variables from surrounding scope. `\x -> x + y` where `y` is captured
+- **Higher-order functions**: `map`, `filter`, `fold` work with closures
+- **Type annotations**: `fn add : Int -> Int -> Int` syntax (type checking is placeholder)
+- **CLI**: file compilation, `-e` inline, REPL
+- **14 examples** (01_hello through 14_hof)
+- **Standard library**: strings, math, I/O, type checking, testing
+- **VSCode extension**: syntax highlighting, completion, hover docs, document symbols
+
+## Docs
+
+- [Functional Programming Guide](docs/functional-guide.md) — closures, currying, pattern matching, etc.
+- [Quick Reference](docs/quick-reference.md) — everything in one page
+- [How Closures Work](docs/how-closures-work.md) — visual guide to closures
+- [Pattern Matching & ADTs](docs/pattern-matching-and-adts.md) — defining and using custom types
+- **Tree-sitter grammar**: for parsing and highlighting
+- **Native binary**: Nuitka-compiled standalone ELF (8MB)
+
 ## Quick start
 
 ```bash
@@ -122,11 +148,15 @@ let r2 = random next 1 100    // chain it
 - **I/O returns values** — functional style, no side effects in expressions
 - **Pure randomness** — takes seed, returns (value, new_seed)
 - **Compiles to C** — fast execution, easy to debug
+- **Closures via lambda lifting** — lambdas capture free variables from surrounding scope
+- **Multi-param lambdas are curried** — `\a b -> a + b` becomes `\a -> \b -> a + b`
+- **Type annotations** — optional, for documentation (type checking is placeholder)
 
 ## TODO
 
+- [ ] Full type inference (Hindley-Milner)
+- [ ] Generic types (List a, Maybe b)
+- [ ] Better error messages (did you mean...?)
+- [ ] Comptime functions (not just expressions)
 - [ ] Port to rust or C
-- [ ] Closures / higher order functions  
-- [ ] Type inference
-- [ ] Exhaustive pattern match checking
 - [ ] Stream/video series on the whole journey

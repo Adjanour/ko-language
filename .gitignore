@@ -21,3 +21,4 @@ tree-sitter-ko/node_modules/
 tree-sitter-ko/package-lock.json
 test_toplevel.ko
 build/
+vscode-ko/node_modules/
