@@ -1,0 +1,33 @@
+// Pipe Operator — Chain functions left-to-right with |>
+
+fn double x = x * 2
+fn add10 x = x + 10
+fn negate x = 0 - x
+
+fn sum xs =
+  match xs
+    Cons x rest -> x + sum rest
+    Nil -> 0
+
+fn main =
+  // Basic pipe: 5 |> double |> add10  =  add10(double(5))  =  20
+  let result = 5 |> double |> add10
+  println result
+
+  // Pipe with negate
+  println (5 |> double |> negate)
+
+  // Pipe into a lambda
+  println (10 |> (\x -> x * x))
+
+  // Pipe with list operations
+  let nums = 1::2::3::4::Nil
+  let total = nums |> sum
+  println total
+
+  // Compare: pipe vs nested calls
+  // These are equivalent:
+  let a = add10 (double 5)        // nested
+  let b = 5 |> double |> add10    // piped
+  println a
+  println b
