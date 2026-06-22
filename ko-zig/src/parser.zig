@@ -321,6 +321,8 @@ pub const Parser = struct {
         if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
         const name = self.slice(self.advance());
         const defs = try self.parse_block_defs();
+        // Consume the dedent that ends the module block
+        if (self.current().tag == .dedent) _ = self.advance();
         return .{ .name = name, .definitions = defs, .is_pub = false };
     }
 
@@ -333,7 +335,7 @@ pub const Parser = struct {
             try defs.append(self.allocator, try self.parse_definition_in_scope());
             self.skip_newlines();
         }
-        if (self.current().tag == .dedent) _ = self.advance();
+        // Don't consume the dedent — let the caller handle it
         return try defs.toOwnedSlice(self.allocator);
     }
 
@@ -517,6 +519,7 @@ pub const Parser = struct {
 
         while (self.current().tag != .eof) {
             if (self.current().tag == .dedent) {
+                if (!is_indented) break;
                 _ = self.advance();
                 break;
             }
@@ -789,9 +792,22 @@ pub const Parser = struct {
         var expr = try self.parse_primary();
         while (true) {
             if (self.match(.dot)) {
-                const field = self.slice(try self.expect(.identifier));
+                const tag = self.current().tag;
+                if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
+                const field = self.slice(self.advance());
                 expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } });
                 continue;
+            }
+
+            // Handle record literal after field access (e.g., Geo.Point { x = 1 })
+            if (self.current().tag == .lbrace and expr.* == .field_access) {
+                const fa = expr.field_access;
+                if (fa.object.* == .constructor) {
+                    // Geo.Point { ... } → record literal with name "Geo.Point"
+                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor, fa.field });
+                    expr = try self.parse_record_literal(combined);
+                    continue;
+                }
             }
 
             if (!is_expr_start(self.current().tag) and self.current().tag != .tilde) break;

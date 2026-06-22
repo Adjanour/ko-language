@@ -611,6 +611,21 @@ pub const Codegen = struct {
     fn codegenFieldAccess(self: *Codegen, object: *const parser.Expr, field_name: []const u8) Error!types.LLVMValueRef {
         const i64_type = core.LLVMInt64TypeInContext(self.context);
 
+        // Check for module-qualified names (e.g., Math.add)
+        if (object.* == .identifier or object.* == .constructor) {
+            const obj_name = switch (object.*) {
+                .identifier => |n| n,
+                .constructor => |n| n,
+                else => unreachable,
+            };
+            const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ obj_name, field_name });
+            if (self.named_values.get(combined)) |val| return val;
+            if (self.fn_types.get(combined)) |_| {
+                // Module function reference — return the function pointer
+                if (self.named_values.get(combined)) |fn_val| return fn_val;
+            }
+        }
+
         // Get the object value (should be a record pointer as i64)
         const obj_val = try self.codegenExpr(object);
 
@@ -1058,8 +1073,15 @@ pub const Codegen = struct {
         // Declare built-in functions first
         self.declareBuiltins();
 
-        // Register type definitions (sum types)
+        // Flatten module definitions into prefixed names
+        var all_defs: std.ArrayList(parser.Definition) = .empty;
+        defer all_defs.deinit(self.allocator);
         for (prog.definitions) |def| {
+            try self.flattenDefinition(&all_defs, def, "");
+        }
+
+        // Register type definitions (sum types and records)
+        for (all_defs.items) |def| {
             switch (def) {
                 .type_def => |t| try self.registerTypeDef(t),
                 else => {},
@@ -1067,7 +1089,7 @@ pub const Codegen = struct {
         }
 
         // First pass: declare all function signatures so they're available for forward references
-        for (prog.definitions) |def| {
+        for (all_defs.items) |def| {
             switch (def) {
                 .fn_def => |f| {
                     _ = try self.declareFn(f);
@@ -1077,13 +1099,46 @@ pub const Codegen = struct {
         }
 
         // Second pass: codegen function bodies
-        for (prog.definitions) |def| {
+        for (all_defs.items) |def| {
             switch (def) {
                 .fn_def => |f| {
                     _ = try self.codegenFn(f);
                 },
                 else => {},
             }
+        }
+    }
+
+    fn flattenDefinition(self: *Codegen, list: *std.ArrayList(parser.Definition), def: parser.Definition, prefix: []const u8) Error!void {
+        switch (def) {
+            .fn_def => |f| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, f.name })
+                else
+                    f.name;
+                var fd = f;
+                fd.name = prefixed_name;
+                try list.append(self.allocator, .{ .fn_def = fd });
+            },
+            .type_def => |t| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, t.name })
+                else
+                    t.name;
+                var td = t;
+                td.name = prefixed_name;
+                try list.append(self.allocator, .{ .type_def = td });
+            },
+            .module_def => |m| {
+                const mod_prefix = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, m.name })
+                else
+                    m.name;
+                for (m.definitions) |inner_def| {
+                    try self.flattenDefinition(list, inner_def, mod_prefix);
+                }
+            },
+            else => {},
         }
     }
 

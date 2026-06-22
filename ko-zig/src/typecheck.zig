@@ -385,6 +385,19 @@ pub const Inferer = struct {
         for (program.definitions) |def| {
             switch (def) {
                 .type_def => |t| try self.registerTypeDef(t),
+                .module_def => |m| {
+                    for (m.definitions) |inner_def| {
+                        switch (inner_def) {
+                            .type_def => |t| {
+                                const prefixed_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ m.name, t.name });
+                                var td = t;
+                                td.name = prefixed_name;
+                                try self.registerTypeDef(td);
+                            },
+                            else => {},
+                        }
+                    }
+                },
                 else => {},
             }
         }
@@ -413,30 +426,90 @@ pub const Inferer = struct {
 
         // Predeclare functions for recursion.
         for (program.definitions) |def| {
-            switch (def) {
-                .fn_def => |f| {
-                    const fn_type = try self.functionTypeFromParams(f.name, f.params.len);
-                    try self.global.set(f.name, .{ .quantified = &.{}, .body = fn_type });
-                },
-                else => {},
-            }
+            try self.predeclareDefinition(def, "");
         }
 
         // Infer top-level definitions in order.
         for (program.definitions) |def| {
-            switch (def) {
-                .fn_def => |f| try self.inferFn(f),
-                .let_binding => |l| {
-                    const t = try self.inferExpr(&self.global, l.value);
-                    if (l.type_ann) |ann| {
-                        const ann_ty = try self.typeExprToType(ann);
-                        try self.unify(t, ann_ty);
-                    }
-                    const scheme = try self.generalize(&self.global, t);
-                    try self.global.set(l.name, scheme);
-                },
-                else => {},
-            }
+            try self.inferDefinition(def, "");
+        }
+    }
+
+    fn predeclareDefinition(self: *Inferer, def: parser.Definition, prefix: []const u8) Error!void {
+        switch (def) {
+            .fn_def => |f| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, f.name })
+                else
+                    f.name;
+                const fn_type = try self.functionTypeFromParams(prefixed_name, f.params.len);
+                try self.global.set(prefixed_name, .{ .quantified = &.{}, .body = fn_type });
+            },
+            .type_def => |t| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, t.name })
+                else
+                    t.name;
+                var td = t;
+                td.name = prefixed_name;
+                try self.registerTypeDef(td);
+            },
+            .module_def => |m| {
+                const mod_prefix = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, m.name })
+                else
+                    m.name;
+                for (m.definitions) |inner_def| {
+                    try self.predeclareDefinition(inner_def, mod_prefix);
+                }
+            },
+            else => {},
+        }
+    }
+
+    fn inferDefinition(self: *Inferer, def: parser.Definition, prefix: []const u8) Error!void {
+        switch (def) {
+            .fn_def => |f| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, f.name })
+                else
+                    f.name;
+                var fd = f;
+                fd.name = prefixed_name;
+                try self.inferFn(fd);
+            },
+            .let_binding => |l| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, l.name })
+                else
+                    l.name;
+                const t = try self.inferExpr(&self.global, l.value);
+                if (l.type_ann) |ann| {
+                    const ann_ty = try self.typeExprToType(ann);
+                    try self.unify(t, ann_ty);
+                }
+                const scheme = try self.generalize(&self.global, t);
+                try self.global.set(prefixed_name, scheme);
+            },
+            .type_def => |t| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, t.name })
+                else
+                    t.name;
+                var td = t;
+                td.name = prefixed_name;
+                try self.registerTypeDef(td);
+            },
+            .module_def => |m| {
+                const mod_prefix = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, m.name })
+                else
+                    m.name;
+                for (m.definitions) |inner_def| {
+                    try self.inferDefinition(inner_def, mod_prefix);
+                }
+            },
+            else => {},
         }
     }
 
@@ -690,8 +763,14 @@ pub const Inferer = struct {
     }
 
     fn inferFieldAccess(self: *Inferer, env: *Env, object: *parser.Expr, field: []const u8) Error!*Type {
-        if (object.* == .identifier) {
-            const combined = try std.fmt.allocPrint(self.allocator, "{s}_{s}", .{ object.identifier, field });
+        if (object.* == .identifier or object.* == .constructor) {
+            // Try dot-separated module name (e.g., Math.add)
+            const obj_name = switch (object.*) {
+                .identifier => |n| n,
+                .constructor => |n| n,
+                else => unreachable,
+            };
+            const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ obj_name, field });
             if (env.getScheme(combined)) |scheme| return self.instantiate(scheme);
         }
 
