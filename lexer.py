@@ -40,6 +40,9 @@ class TokenType(Enum):
     AS = auto()
     REF = auto()
     COMPILETIME = auto()
+    PACKAGE = auto()    # package declaration
+    MODULE = auto()     # module { ... }
+    PUB = auto()        # public visibility
 
     # Operators
     PLUS = auto()       # +
@@ -60,7 +63,7 @@ class TokenType(Enum):
     ARROW = auto()      # ->
     BACKSLASH = auto()  # \ (lambda)
     DOLLAR_LBRACE = auto()  # ${ (string interpolation)
-    RBRACE = auto()     # } (interpolation closing)
+    RBRACE = auto()     # } (interpolation closing and module closing)
     COLON_EQ = auto()   # := (set ref)
     COLON_COLON = auto()  # :: (cons)
 
@@ -74,6 +77,9 @@ class TokenType(Enum):
     RBRACKET = auto()   # ]
     COMMA = auto()      # ,
     COLON = auto()      # :
+    DOT = auto()        # .
+    LBRACE = auto()     # {
+    TILDE = auto()      # ~
 
     # Special
     NEWLINE = auto()
@@ -97,6 +103,9 @@ KEYWORDS = {
     'as': TokenType.AS,
     'ref': TokenType.REF,
     'comptime': TokenType.COMPILETIME,
+    'package': TokenType.PACKAGE,
+    'module': TokenType.MODULE,
+    'pub': TokenType.PUB,
 }
 
 
@@ -153,6 +162,7 @@ class Lexer:
         self.tokens: List[Token] = []
         self.errors: List[LexerError] = []
         self.in_interpolation = False
+        self.after_dot = False
 
     def peek(self) -> str:
         return self.source[self.pos]
@@ -306,13 +316,15 @@ class Lexer:
             # Decimal (possibly float)
             while self.peek().isdigit() or self.peek() == '_':
                 self.advance()
-            if self.peek() == '.' and self.peek_next().isdigit():
+            # Only read float if NOT immediately after a DOT token
+            if self.peek() == '.' and self.peek_next().isdigit() and not self.after_dot:
                 # Float
                 self.advance()  # .
                 while self.peek().isdigit() or self.peek() == '_':
                     self.advance()
 
         ttype = TokenType.FLOAT if '.' in self.source[start:self.pos] else TokenType.INT
+        self.after_dot = False
         return Token(ttype, start, self.pos, start_line, start_col, self.source)
 
     def read_ident(self) -> Token:
@@ -458,6 +470,8 @@ class Lexer:
                 self.tokens.append(Token(TokenType.LBRACKET, start, self.pos, start_line, start_col, self.source))
             elif ch == ']':
                 self.tokens.append(Token(TokenType.RBRACKET, start, self.pos, start_line, start_col, self.source))
+            elif ch == '{':
+                self.tokens.append(Token(TokenType.LBRACE, start, self.pos, start_line, start_col, self.source))
             elif ch == '}':
                 if self.in_interpolation:
                     self.tokens.append(Token(TokenType.RBRACE, start, self.pos, start_line, start_col, self.source))
@@ -468,8 +482,15 @@ class Lexer:
                     self.tokens.append(Token(TokenType.RBRACE, start, self.pos, start_line, start_col, self.source))
             elif ch == ',':
                 self.tokens.append(Token(TokenType.COMMA, start, self.pos, start_line, start_col, self.source))
+            elif ch == '.':
+                self.tokens.append(Token(TokenType.DOT, start, self.pos, start_line, start_col, self.source))
+                # Only set after_dot if next char is a digit (float like 1.0)
+                # NOT if next char is an identifier (field access like math.sin)
+                self.after_dot = self.peek().isdigit()
             elif ch == '\\':
                 self.tokens.append(Token(TokenType.BACKSLASH, start, self.pos, start_line, start_col, self.source))
+            elif ch == '~':
+                self.tokens.append(Token(TokenType.TILDE, start, self.pos, start_line, start_col, self.source))
             else:
                 raise LexerError(f"Unexpected character: {ch}", start_line, start_col)
 

@@ -4,6 +4,8 @@
 import sys
 import os
 import subprocess
+
+VERSION = "0.2.1"
 from lexer import tokenize, LexerError
 from parser import (
     parse, ParseError, Program, FnDef, LetBinding, TypeDef, TypeConstructor,
@@ -16,12 +18,29 @@ from codegen import generate_c
 from semantic import check_exhaustiveness
 
 
+def _find_package_root(start_dir: str) -> str | None:
+    """Walk up from start_dir looking for package.ko or ko.toml to find project root."""
+    current = os.path.abspath(start_dir)
+    prev = None
+    while current != prev:
+        # Check for package marker files
+        if os.path.isfile(os.path.join(current, 'package.ko')):
+            return current
+        if os.path.isfile(os.path.join(current, 'ko.toml')):
+            return current
+        # Check for __init__.ko (we're inside a package, not at root)
+        # Keep walking up
+        prev = current
+        current = os.path.dirname(current)
+    return None
+
+
 def _resolve_import_file(path: str, current_dir: str, search_paths: list = None) -> str:
     """Resolve an import to an on-disk file path."""
     if search_paths is None:
         search_paths = []
     
-    # Try relative path first
+    # Try relative path first (string literal)
     if path.startswith('"') and path.endswith('"'):
         # Relative path
         rel_path = path[1:-1]
@@ -29,16 +48,31 @@ def _resolve_import_file(path: str, current_dir: str, search_paths: list = None)
         if os.path.exists(full_path):
             return os.path.abspath(full_path)
     else:
-        # Module name - search in search paths
-        for search_path in search_paths:
-            full_path = os.path.join(search_path, f"{path}.ko")
-            if os.path.exists(full_path):
-                return os.path.abspath(full_path)
+        # Hierarchical module name (e.g., std.collections.list)
+        # Convert dots to path separators
+        path_as_file = path.replace(".", os.sep)
         
-        # Try current directory
-        full_path = os.path.join(current_dir, f"{path}.ko")
+        # Try relative path from current directory
+        full_path = os.path.join(current_dir, f"{path_as_file}.ko")
         if os.path.exists(full_path):
             return os.path.abspath(full_path)
+        
+        # Try relative path with __init__.ko (package init)
+        full_path = os.path.join(current_dir, path_as_file, "__init__.ko")
+        if os.path.exists(full_path):
+            return os.path.abspath(full_path)
+        
+        # Try search paths
+        for search_path in search_paths:
+            # Try direct file
+            full_path = os.path.join(search_path, f"{path_as_file}.ko")
+            if os.path.exists(full_path):
+                return os.path.abspath(full_path)
+            
+            # Try package init
+            full_path = os.path.join(search_path, path_as_file, "__init__.ko")
+            if os.path.exists(full_path):
+                return os.path.abspath(full_path)
     
     raise FileNotFoundError(f"Could not find module: {path}.ko (searched: {search_paths + [current_dir]})")
 
@@ -76,11 +110,26 @@ def resolve_imports(program: Program, current_dir: str, search_paths: list = Non
             imported_dir = os.path.dirname(resolved_path)
             imported_program = resolve_imports(imported_program, imported_dir, search_paths, imp.path, visited)
             
+            # Get definitions to import
+            defs_to_import = imported_program.definitions
+            
+            # Filter for selective imports (e.g., import math.{sin, cos})
+            if imp.selective:
+                defs_to_import = [d for d in defs_to_import if _get_def_name(d) in imp.selective]
+            
+            # Filter for pub visibility (only import pub definitions)
+            defs_to_import = [d for d in defs_to_import if _is_def_pub(d)]
+            
             # Add imported definitions (with optional alias prefix)
             if imp.alias:
-                all_definitions.extend(_prefix_import_definitions(imported_program.definitions, imp.alias))
+                all_definitions.extend(_prefix_import_definitions(defs_to_import, imp.alias))
+            elif imp.selective:
+                # Selective imports: no prefix, import names as-is
+                all_definitions.extend(defs_to_import)
             else:
-                all_definitions.extend(imported_program.definitions)
+                # Use last path component as prefix (e.g., import std.math -> math_PI, math_sin)
+                prefix = imp.path.split(".")[-1]
+                all_definitions.extend(_prefix_import_definitions(defs_to_import, prefix))
             visited.remove(resolved_path)
         except FileNotFoundError as e:
             # Create a simple error with location info
@@ -91,7 +140,33 @@ def resolve_imports(program: Program, current_dir: str, search_paths: list = Non
     
     # Combine: imported definitions first, then current program's definitions
     all_definitions.extend(program.definitions)
-    return Program([], all_definitions)
+    return Program([], all_definitions, program.package)
+
+
+def _get_def_name(defn):
+    """Get the name of a definition."""
+    if isinstance(defn, FnDef):
+        return defn.name
+    elif isinstance(defn, LetBinding):
+        return defn.name
+    elif isinstance(defn, TypeDef):
+        return defn.name
+    elif isinstance(defn, ModuleDef):
+        return defn.name
+    return None
+
+
+def _is_def_pub(defn):
+    """Check if a definition is public."""
+    if isinstance(defn, FnDef):
+        return defn.pub
+    elif isinstance(defn, LetBinding):
+        return defn.pub
+    elif isinstance(defn, TypeDef):
+        return defn.pub
+    elif isinstance(defn, ModuleDef):
+        return defn.pub
+    return False
 
 
 def _prefix_import_definitions(definitions, prefix: str):
@@ -106,6 +181,8 @@ def _prefix_import_definitions(definitions, prefix: str):
             name_map[defn.name] = f"{prefix}_{defn.name}"
             for ctor in defn.constructors:
                 name_map[ctor.name] = f"{prefix}_{ctor.name}"
+        elif isinstance(defn, ModuleDef):
+            name_map[defn.name] = f"{prefix}_{defn.name}"
 
     return [_rename_definition(defn, name_map) for defn in definitions]
 
@@ -118,12 +195,14 @@ def _rename_definition(defn, name_map):
             _rename_expr(defn.body, name_map),
             _rename_type_expr(defn.type_ann, name_map) if defn.type_ann else None,
             defn.comptime,
+            defn.pub,
             defn.loc,
         )
     if isinstance(defn, LetBinding):
         return LetBinding(
             name_map.get(defn.name, defn.name),
             _rename_expr(defn.value, name_map),
+            defn.pub,
             defn.loc,
         )
     if isinstance(defn, TypeDef):
@@ -139,6 +218,14 @@ def _rename_definition(defn, name_map):
                 )
                 for ctor in defn.constructors
             ],
+            defn.pub,
+            defn.loc,
+        )
+    if isinstance(defn, ModuleDef):
+        return ModuleDef(
+            name_map.get(defn.name, defn.name),
+            [_rename_definition(d, name_map) for d in defn.definitions],
+            defn.pub,
             defn.loc,
         )
     return defn
@@ -222,6 +309,11 @@ def compile_ko(source: str, output_name: str = "output", filename: str = "<input
             os.path.join(os.path.dirname(__file__), 'lib')
         ]
         
+        # Package detection: walk up to find package root (package.ko or ko.toml)
+        pkg_root = _find_package_root(current_dir)
+        if pkg_root and pkg_root not in search_paths:
+            search_paths.insert(0, pkg_root)
+        
         # Tokenize
         tokens = tokenize(source)
 
@@ -298,7 +390,7 @@ def repl():
     """Interactive REPL for Kō"""
     import readline
 
-    print("Kō REPL (v0.2.0)")
+    print(f"Kō REPL (v{VERSION})")
     print("Type expressions, 'fn ...' for functions, ':help' for commands")
     print()
 
@@ -500,6 +592,21 @@ def repl():
 
 
 def main():
+    if len(sys.argv) >= 2 and sys.argv[1] in ('-h', '--help'):
+        print("Kō – a functional language that compiles to C")
+        print()
+        print("Usage:")
+        print("  ko                     Start interactive REPL")
+        print("  ko <file.ko>           Compile a .ko file")
+        print("  ko <file.ko> <output>  Compile with custom output name")
+        print("  ko -e <code>           Execute inline expression")
+        print("  ko -h, --help          Show this help")
+        print("  ko --version           Show version")
+        return
+    if len(sys.argv) >= 2 and sys.argv[1] == '--version':
+        print(f"Kō v{VERSION}")
+        return
+
     if len(sys.argv) < 2:
         repl()
     elif sys.argv[1] == '-e':

@@ -6,6 +6,9 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <unistd.h>
 
 // ===== Main argc/argv (needed by stdlib) =====
 static int _argc = 0;
@@ -336,6 +339,21 @@ void println_value(Value v) {
     printf("\n");
 }
 
+void print_value_to(Value v, FILE* out) {
+    switch (v.type) {
+        case VAL_INT: fprintf(out, "%ld", v.as.int_val); break;
+        case VAL_FLOAT: fprintf(out, "%g", v.as.float_val); break;
+        case VAL_BOOL: fprintf(out, "%s", v.as.bool_val ? "true" : "false"); break;
+        case VAL_STRING: fprintf(out, "%s", v.as.string->data); break;
+        case VAL_CHAR: fprintf(out, "'%c'", v.as.char_val); break;
+        case VAL_UNIT: fprintf(out, "()"); break;
+        case VAL_CONSTRUCTOR: fprintf(out, "Constructor(%d)", v.as.constructor->tag); break;
+        case VAL_CLOSURE: fprintf(out, "<function>"); break;
+        case VAL_REF: fprintf(out, "<ref>"); break;
+        default: fprintf(out, "<unknown>"); break;
+    }
+}
+
 // Forward declaration for per-file CONSTRUCTOR_NAMES
 static const char* CONSTRUCTOR_NAMES[];
 
@@ -484,6 +502,12 @@ Value repeat(Value s, Value n) {
         return make_string_owned(result);
     }
     fprintf(stderr, "repeat: expected string and int\n");
+    exit(1);
+}
+
+Value ko_not(Value v) {
+    if (v.type == VAL_BOOL) return make_bool(!v.as.bool_val);
+    fprintf(stderr, "not: expected bool\n");
     exit(1);
 }
 
@@ -975,6 +999,372 @@ Value ko_assert_eq(Value a, Value b) {
         _test_count++;
     }
     return make_unit();
+}
+
+// ===== String helpers for path_join =====
+
+char* concat_strings(const char* a, const char* b) {
+    int len = strlen(a) + strlen(b) + 1;
+    char* result = malloc(len);
+    snprintf(result, len, "%s%s", a, b);
+    return result;
+}
+
+char* concat_strings_3(const char* a, const char* b, const char* c) {
+    int len = strlen(a) + strlen(b) + strlen(c) + 1;
+    char* result = malloc(len);
+    snprintf(result, len, "%s%s%s", a, b, c);
+    return result;
+}
+
+// ===== I/O: stderr =====
+
+Value ko_eprint(Value v) {
+    print_value_to(v, stderr);
+    return make_unit();
+}
+
+Value ko_eprintln(Value v) {
+    print_value_to(v, stderr);
+    fprintf(stderr, "\n");
+    return make_unit();
+}
+
+// ===== File system operations =====
+
+Value ko_mkdir(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "mkdir: expected string\n"); exit(1); }
+    int r = mkdir(path.as.string->data, 0755);
+    return make_bool(r == 0);
+}
+
+Value ko_rm(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "rm: expected string\n"); exit(1); }
+    int r = remove(path.as.string->data);
+    return make_bool(r == 0);
+}
+
+Value ko_cp(Value src, Value dst) {
+    if (src.type != VAL_STRING || dst.type != VAL_STRING) { fprintf(stderr, "cp: expected strings\n"); exit(1); }
+    FILE* in = fopen(src.as.string->data, "rb");
+    if (!in) { fprintf(stderr, "cp: cannot open %s\n", src.as.string->data); exit(1); }
+    FILE* out = fopen(dst.as.string->data, "wb");
+    if (!out) { fclose(in); fprintf(stderr, "cp: cannot create %s\n", dst.as.string->data); exit(1); }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
+    fclose(in);
+    fclose(out);
+    return make_bool(1);
+}
+
+Value ko_mv(Value src, Value dst) {
+    if (src.type != VAL_STRING || dst.type != VAL_STRING) { fprintf(stderr, "mv: expected strings\n"); exit(1); }
+    int r = rename(src.as.string->data, dst.as.string->data);
+    if (r == 0) return make_bool(1);
+    /* Fallback: copy + remove */
+    FILE* in = fopen(src.as.string->data, "rb");
+    if (!in) { fprintf(stderr, "mv: cannot open %s\n", src.as.string->data); exit(1); }
+    FILE* out = fopen(dst.as.string->data, "wb");
+    if (!out) { fclose(in); fprintf(stderr, "mv: cannot create %s\n", dst.as.string->data); exit(1); }
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
+    fclose(in);
+    fclose(out);
+    remove(src.as.string->data);
+    return make_bool(1);
+}
+
+Value ko_readdir(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "readdir: expected string\n"); exit(1); }
+    DIR* d = opendir(path.as.string->data);
+    if (!d) { fprintf(stderr, "readdir: cannot open %s\n", path.as.string->data); exit(1); }
+    Value result = make_constructor(1, 0); /* Nil */
+    struct dirent* entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        Value name = make_string(entry->d_name);
+        Value cons = make_constructor(0, 2);
+        cons.as.constructor->args[0] = name;
+        cons.as.constructor->args[1] = result;
+        result = cons;
+    }
+    closedir(d);
+    /* Reverse */
+    Value reversed = make_constructor(1, 0);
+    while (result.as.constructor->tag == 0) {
+        Value rest = result.as.constructor->args[1];
+        Value elem = result.as.constructor->args[0];
+        Value c = make_constructor(0, 2);
+        c.as.constructor->args[0] = elem;
+        c.as.constructor->args[1] = reversed;
+        reversed = c;
+        result = rest;
+    }
+    return reversed;
+}
+
+// ===== File metadata =====
+
+Value ko_file_size(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "file_size: expected string\n"); exit(1); }
+    struct stat st;
+    if (stat(path.as.string->data, &st) != 0) return make_int(-1);
+    return make_int((long)st.st_size);
+}
+
+Value ko_file_modified(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "file_modified: expected string\n"); exit(1); }
+    struct stat st;
+    if (stat(path.as.string->data, &st) != 0) return make_int(-1);
+    return make_int((long)st.st_mtime);
+}
+
+// ===== Path functions =====
+
+Value ko_path_join(Value a, Value b) {
+    if (a.type != VAL_STRING || b.type != VAL_STRING) { fprintf(stderr, "path_join: expected strings\n"); exit(1); }
+    char* pa = a.as.string->data;
+    char* pb = b.as.string->data;
+    int last = strlen(pa) - 1;
+    if (last >= 0 && pa[last] == '/') {
+        char* r = concat_strings(pa, pb);
+        Value v = make_string(r);
+        free(r);
+        return v;
+    }
+    char* r = concat_strings_3(pa, "/", pb);
+    Value v = make_string(r);
+    free(r);
+    return v;
+}
+
+Value ko_path_dirname(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "path_dirname: expected string\n"); exit(1); }
+    char* p = path.as.string->data;
+    char* last_slash = strrchr(p, '/');
+    if (!last_slash) return make_string(".");
+    if (last_slash == p) return make_string("/");
+    int len = last_slash - p;
+    char* result = malloc(len + 1);
+    memcpy(result, p, len);
+    result[len] = '\0';
+    Value v = make_string(result);
+    free(result);
+    return v;
+}
+
+Value ko_path_basename(Value path) {
+    if (path.type != VAL_STRING) { fprintf(stderr, "path_basename: expected string\n"); exit(1); }
+    char* p = path.as.string->data;
+    char* last_slash = strrchr(p, '/');
+    if (!last_slash) return make_string(p);
+    return make_string(last_slash + 1);
+}
+
+// ===== JSON =====
+
+Value json_parse_value(const char** json);
+
+Value json_parse_string(const char** json) {
+    if (**json != '"') { fprintf(stderr, "json_parse: expected '\"'\n"); exit(1); }
+    (*json)++;
+    char buf[65536];
+    int len = 0;
+    while (**json != '"' && **json != '\0') {
+        if (**json == '\\') {
+            (*json)++;
+            switch (**json) {
+                case 'n': buf[len++] = '\n'; break;
+                case 't': buf[len++] = '\t'; break;
+                case 'r': buf[len++] = '\r'; break;
+                case '\\': buf[len++] = '\\'; break;
+                case '"': buf[len++] = '"'; break;
+                default: buf[len++] = **json; break;
+            }
+        } else {
+            buf[len++] = **json;
+        }
+        (*json)++;
+    }
+    if (**json != '"') { fprintf(stderr, "json_parse: unterminated string\n"); exit(1); }
+    (*json)++;
+    buf[len] = '\0';
+    return make_string(buf);
+}
+
+Value json_parse_number(const char** json) {
+    const char* start = *json;
+    int is_float = 0;
+    while (isdigit(**json) || **json == '.' || **json == '-' || **json == '+' || **json == 'e' || **json == 'E') {
+        if (**json == '.' || **json == 'e' || **json == 'E') is_float = 1;
+        (*json)++;
+    }
+    if (is_float) return make_float(atof(start));
+    return make_int(atol(start));
+}
+
+Value json_parse_value(const char** json) {
+    while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+    if (**json == '"') return json_parse_string(json);
+    if (**json == '{') {
+        (*json)++;
+        Value result = make_constructor(1, 0); /* Nil */
+        while (**json != '}' && **json != '\0') {
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            if (**json == '}') break;
+            Value key = json_parse_string(json);
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            if (**json == ':') (*json)++;
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            Value val = json_parse_value(json);
+            /* Pair as tag=2 constructor */
+            Value pair = make_constructor(2, 2);
+            pair.as.constructor->args[0] = key;
+            pair.as.constructor->args[1] = val;
+            Value cons = make_constructor(0, 2);
+            cons.as.constructor->args[0] = pair;
+            cons.as.constructor->args[1] = result;
+            result = cons;
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            if (**json == ',') (*json)++;
+        }
+        if (**json == '}') (*json)++;
+        /* Reverse */
+        Value reversed = make_constructor(1, 0);
+        while (result.as.constructor->tag == 0) {
+            Value rest = result.as.constructor->args[1];
+            Value elem = result.as.constructor->args[0];
+            Value c = make_constructor(0, 2);
+            c.as.constructor->args[0] = elem;
+            c.as.constructor->args[1] = reversed;
+            reversed = c;
+            result = rest;
+        }
+        return reversed;
+    }
+    if (**json == '[') {
+        (*json)++;
+        Value result = make_constructor(1, 0); /* Nil */
+        while (**json != ']' && **json != '\0') {
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            if (**json == ']') break;
+            Value elem = json_parse_value(json);
+            Value cons = make_constructor(0, 2);
+            cons.as.constructor->args[0] = elem;
+            cons.as.constructor->args[1] = result;
+            result = cons;
+            while (**json == ' ' || **json == '\t' || **json == '\n' || **json == '\r') (*json)++;
+            if (**json == ',') (*json)++;
+        }
+        if (**json == ']') (*json)++;
+        /* Reverse */
+        Value reversed = make_constructor(1, 0);
+        while (result.as.constructor->tag == 0) {
+            Value rest = result.as.constructor->args[1];
+            Value elem = result.as.constructor->args[0];
+            Value c = make_constructor(0, 2);
+            c.as.constructor->args[0] = elem;
+            c.as.constructor->args[1] = reversed;
+            reversed = c;
+            result = rest;
+        }
+        return reversed;
+    }
+    if (**json == 't') { (*json) += 4; return make_bool(1); }
+    if (**json == 'f') { (*json) += 5; return make_bool(0); }
+    if (**json == 'n') { (*json) += 4; return make_constructor(1, 0); /* null → Nil */ }
+    if (isdigit(**json) || **json == '-') return json_parse_number(json);
+    fprintf(stderr, "json_parse: unexpected character '%c'\n", **json);
+    exit(1);
+}
+
+Value ko_json_parse(Value s) {
+    if (s.type != VAL_STRING) { fprintf(stderr, "json_parse: expected string\n"); exit(1); }
+    const char* json = s.as.string->data;
+    return json_parse_value(&json);
+}
+
+void json_stringify_value(Value v, char** buf, int* len, int* cap) {
+    if (*len + 256 > *cap) { *cap = (*cap) * 2 + 256; *buf = realloc(*buf, *cap); }
+    switch (v.type) {
+        case VAL_INT:
+            *len += snprintf(*buf + *len, *cap - *len, "%ld", v.as.int_val);
+            break;
+        case VAL_FLOAT:
+            *len += snprintf(*buf + *len, *cap - *len, "%g", v.as.float_val);
+            break;
+        case VAL_BOOL:
+            *len += snprintf(*buf + *len, *cap - *len, "%s", v.as.bool_val ? "true" : "false");
+            break;
+        case VAL_STRING: {
+            int slen = strlen(v.as.string->data);
+            if (*len + slen * 6 + 3 > *cap) { *cap = *len + slen * 6 + 256; *buf = realloc(*buf, *cap); }
+            *len += snprintf(*buf + *len, *cap - *len, "\"");
+            for (char* p = v.as.string->data; *p; p++) {
+                if (*p == '"') { (*buf)[(*len)++] = '\\'; (*buf)[(*len)++] = '"'; }
+                else if (*p == '\\') { (*buf)[(*len)++] = '\\'; (*buf)[(*len)++] = '\\'; }
+                else if (*p == '\n') { (*buf)[(*len)++] = '\\'; (*buf)[(*len)++] = 'n'; }
+                else if (*p == '\t') { (*buf)[(*len)++] = '\\'; (*buf)[(*len)++] = 't'; }
+                else { (*buf)[(*len)++] = *p; }
+            }
+            *len += snprintf(*buf + *len, *cap - *len, "\"");
+            break;
+        }
+        case VAL_CHAR:
+            *len += snprintf(*buf + *len, *cap - *len, "\"%c\"", v.as.char_val);
+            break;
+        case VAL_CONSTRUCTOR:
+            if (v.as.constructor->tag == 1 && v.as.constructor->arity == 0) {
+                *len += snprintf(*buf + *len, *cap - *len, "null");
+            } else if (v.as.constructor->arity == 2 && v.as.constructor->tag == 0) {
+                /* Cons: check if list or pair */
+                Value rest = v.as.constructor->args[1];
+                if (rest.type == VAL_CONSTRUCTOR && (rest.as.constructor->tag == 1 || rest.as.constructor->tag == 0)) {
+                    *len += snprintf(*buf + *len, *cap - *len, "[");
+                    Value cur = v;
+                    int first = 1;
+                    while (cur.type == VAL_CONSTRUCTOR && cur.as.constructor->tag == 0 && cur.as.constructor->arity == 2) {
+                        if (!first) *len += snprintf(*buf + *len, *cap - *len, ",");
+                        first = 0;
+                        json_stringify_value(cur.as.constructor->args[0], buf, len, cap);
+                        cur = cur.as.constructor->args[1];
+                    }
+                    *len += snprintf(*buf + *len, *cap - *len, "]");
+                } else {
+                    *len += snprintf(*buf + *len, *cap - *len, "{\"");
+                    json_stringify_value(v.as.constructor->args[0], buf, len, cap);
+                    *len += snprintf(*buf + *len, *cap - *len, "\":");
+                    json_stringify_value(v.as.constructor->args[1], buf, len, cap);
+                    *len += snprintf(*buf + *len, *cap - *len, "}");
+                }
+            } else if (v.as.constructor->arity == 2 && v.as.constructor->tag == 2) {
+                /* JSON Pair */
+                *len += snprintf(*buf + *len, *cap - *len, "{\"");
+                json_stringify_value(v.as.constructor->args[0], buf, len, cap);
+                *len += snprintf(*buf + *len, *cap - *len, "\":");
+                json_stringify_value(v.as.constructor->args[1], buf, len, cap);
+                *len += snprintf(*buf + *len, *cap - *len, "}");
+            } else {
+                *len += snprintf(*buf + *len, *cap - *len, "null");
+            }
+            break;
+        default:
+            *len += snprintf(*buf + *len, *cap - *len, "null");
+            break;
+    }
+}
+
+Value ko_json_stringify(Value v) {
+    int cap = 256;
+    char* buf = malloc(cap);
+    int len = 0;
+    json_stringify_value(v, &buf, &len, &cap);
+    buf[len] = '\0';
+    Value result = make_string(buf);
+    free(buf);
+    return result;
 }
 
 static char _test_names[64][128];

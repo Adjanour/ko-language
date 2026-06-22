@@ -254,6 +254,8 @@ TYPE_STRING = TypeCon("String")
 TYPE_BOOL = TypeCon("Bool")
 TYPE_CHAR = TypeCon("Char")
 TYPE_UNIT = TypeCon("Unit")
+TYPE_LIST = TypeCon("List")
+TYPE_RESULT = TypeCon("Result")
 
 
 def type_arrow(from_type: Type, to_type: Type) -> TypeArrow:
@@ -320,8 +322,8 @@ class TypeInferer:
         self.env.set("starts_with", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_BOOL))))
         self.env.set("ends_with", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_BOOL))))
         self.env.set("repeat", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_INT, TYPE_STRING))))
-        self.env.set("split", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_STRING))))  # simplified; real type involves List
-        self.env.set("join", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_STRING))))  # simplified
+        self.env.set("split", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, type_list(TYPE_STRING)))))
+        self.env.set("join", TypeScheme([], type_arrow(type_list(TYPE_STRING), type_arrow(TYPE_STRING, TYPE_STRING))))
         self.env.set("replace", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_STRING)))))
         self.env.set("panic", TypeScheme([], type_arrow(TYPE_STRING, TYPE_UNIT)))
         self.env.set("ord", TypeScheme([], type_arrow(TYPE_CHAR, TYPE_INT)))
@@ -331,6 +333,32 @@ class TypeInferer:
         self.env.set("is_null", TypeScheme([a], type_arrow(a, TYPE_BOOL)))
         self.env.set("file_exists", TypeScheme([], type_arrow(TYPE_STRING, TYPE_BOOL)))
         self.env.set("sleep", TypeScheme([], type_arrow(TYPE_INT, TYPE_UNIT)))
+        
+        # New I/O: stderr
+        a_io = TypeVar("a")
+        self.env.set("eprint", TypeScheme([a_io], type_arrow(a_io, TYPE_UNIT)))
+        self.env.set("eprintln", TypeScheme([a_io], type_arrow(a_io, TYPE_UNIT)))
+        
+        # File system
+        self.env.set("mkdir", TypeScheme([], type_arrow(TYPE_STRING, TYPE_BOOL)))
+        self.env.set("rm", TypeScheme([], type_arrow(TYPE_STRING, TYPE_BOOL)))
+        self.env.set("cp", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_BOOL))))
+        self.env.set("mv", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_BOOL))))
+        self.env.set("readdir", TypeScheme([], type_arrow(TYPE_STRING, type_list(TYPE_STRING))))
+        
+        # File metadata
+        self.env.set("file_size", TypeScheme([], type_arrow(TYPE_STRING, TYPE_INT)))
+        self.env.set("file_modified", TypeScheme([], type_arrow(TYPE_STRING, TYPE_INT)))
+        
+        # Path functions
+        self.env.set("path_join", TypeScheme([], type_arrow(TYPE_STRING, type_arrow(TYPE_STRING, TYPE_STRING))))
+        self.env.set("path_dirname", TypeScheme([], type_arrow(TYPE_STRING, TYPE_STRING)))
+        self.env.set("path_basename", TypeScheme([], type_arrow(TYPE_STRING, TYPE_STRING)))
+        
+        # JSON
+        a_json = fresh_var("a")
+        self.env.set("json_parse", TypeScheme([a_json], type_arrow(TYPE_STRING, type_list(a_json))))
+        self.env.set("json_stringify", TypeScheme([a_io], type_arrow(a_io, TYPE_STRING)))
         
         # Math operations
         self.env.set("abs", TypeScheme([], type_arrow(TYPE_INT, TYPE_INT)))
@@ -393,26 +421,89 @@ class TypeInferer:
         a = fresh_var("a")
         self.env.set("set", TypeScheme([a], type_arrow(a, type_arrow(a, TYPE_UNIT))))
 
+        # List operations
+        a = fresh_var("a")
+        self.env.set("head", TypeScheme([a], type_arrow(type_list(a), a)))
+        a = fresh_var("a")
+        self.env.set("tail", TypeScheme([a], type_arrow(type_list(a), type_list(a))))
+        a = fresh_var("a")
+        self.env.set("append", TypeScheme([a], type_arrow(type_list(a), type_arrow(a, type_list(a)))))
+        a = fresh_var("a")
+        self.env.set("reverse", TypeScheme([a], type_arrow(type_list(a), type_list(a))))
+        self.env.set("sum", TypeScheme([], type_arrow(type_list(TYPE_INT), TYPE_INT)))
+        self.env.set("product", TypeScheme([], type_arrow(type_list(TYPE_INT), TYPE_INT)))
+
+        # Boolean not
+        self.env.set("not", TypeScheme([], type_arrow(TYPE_BOOL, TYPE_BOOL)))
+
         # List constructors (kept as builtins for list literal desugaring)
         a = fresh_var("a")
         self.env.set("Nil", TypeScheme([a], type_list(a)))
         a = fresh_var("a")
         self.env.set("Cons", TypeScheme([a], type_arrow(a, type_arrow(type_list(a), type_list(a)))))
+        
+        # Result constructors (built-in error handling)
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("Ok", TypeScheme([a, b], type_arrow(a, type_result(b, a))))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("Err", TypeScheme([a, b], type_arrow(b, type_result(b, a))))
+        
+        # Result helper functions
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("unwrap", TypeScheme([a, b], type_arrow(type_result(b, a), a)))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        c = fresh_var("c")
+        self.env.set("map_result", TypeScheme([a, b, c], type_arrow(type_arrow(a, c), type_arrow(type_result(b, a), type_result(b, c)))))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        c = fresh_var("c")
+        self.env.set("and_then", TypeScheme([a, b, c], type_arrow(type_arrow(a, type_result(c, b)), type_arrow(type_result(b, a), type_result(c, b)))))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("unwrap_or", TypeScheme([a, b], type_arrow(a, type_arrow(type_result(b, a), a))))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("is_ok", TypeScheme([a, b], type_arrow(type_result(b, a), TYPE_BOOL)))
+        a = fresh_var("a")
+        b = fresh_var("b")
+        self.env.set("is_err", TypeScheme([a, b], type_arrow(type_result(b, a), TYPE_BOOL)))
+        
+        # Tuple accessors - polymorphic over tuple arity
+        # tuple_0(tup) returns the first element of any tuple
+        t = fresh_var("tup")
+        r = fresh_var("ret")
+        self.env.set("tuple_0", TypeScheme([t, r], type_arrow(t, r)))
+        t = fresh_var("tup")
+        r = fresh_var("ret")
+        self.env.set("tuple_1", TypeScheme([t, r], type_arrow(t, r)))
+        t = fresh_var("tup")
+        r = fresh_var("ret")
+        self.env.set("tuple_2", TypeScheme([t, r], type_arrow(t, r)))
     
     def infer(self, program) -> Dict[str, TypeScheme]:
         """Infer types for a program, returning a mapping of names to types."""
-        from parser import Program, FnDef, LetExpr, Block, IfExpr, MatchExpr, FnCall, Identifier, IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, CharLiteral, BinaryOp, UnaryOp, Lambda, RefExpr, DerefExpr, SetExpr, TypeDef
+        from parser import Program, FnDef, LetBinding, LetExpr, Block, IfExpr, MatchExpr, FnCall, Identifier, IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, CharLiteral, BinaryOp, UnaryOp, Lambda, RefExpr, DerefExpr, SetExpr, TypeDef
         
         # First pass: register type definitions
         for defn in program.definitions:
             if isinstance(defn, TypeDef):
                 self._register_type(defn)
         
-        # Second pass: infer function types
+        # Second pass: infer function and let binding types
         for defn in program.definitions:
             if isinstance(defn, FnDef):
                 try:
                     self._infer_fn(defn)
+                except TypeError as e:
+                    self.errors.append(e)
+            elif isinstance(defn, LetBinding):
+                try:
+                    val_type = self._infer_expr(defn.value)
+                    self.env.set(defn.name, TypeScheme([], val_type))
                 except TypeError as e:
                     self.errors.append(e)
         
@@ -421,6 +512,10 @@ class TypeInferer:
     def _register_type(self, typedef: 'TypeDef'):
         """Register a type definition and its constructors."""
         from parser import TypeDef
+
+        # Skip re-registration of built-in List type (already has correct polymorphic types)
+        if typedef.name == 'List':
+            return
 
         # Create fresh type variables for type parameters
         param_vars = []
@@ -475,10 +570,17 @@ class TypeInferer:
             param_types.append(pt)
             self.env.set(p, TypeScheme([], pt))
         
+        # Create fresh type variables for named parameters
+        named_param_types = []
+        for p in (fn.named_params or []):
+            pt = fresh_var(p)
+            named_param_types.append(pt)
+            self.env.set(p, TypeScheme([], pt))
+        
         # Add function to environment with fresh type (for recursion)
         fn_ret_type = fresh_var(f"{fn.name}_ret")
         fn_type = fn_ret_type
-        for pt in reversed(param_types):
+        for pt in reversed(named_param_types + param_types):
             fn_type = type_arrow(pt, fn_type)
         self.env.set(fn.name, TypeScheme([], fn_type))
         
@@ -497,7 +599,7 @@ class TypeInferer:
     
     def _infer_expr(self, expr) -> Type:
         """Infer type for an expression."""
-        from parser import FnDef, LetExpr, Block, IfExpr, MatchExpr, FnCall, Identifier, IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, CharLiteral, BinaryOp, UnaryOp, Lambda, RefExpr, DerefExpr, SetExpr
+        from parser import FnDef, LetExpr, Block, IfExpr, MatchExpr, FnCall, FieldAccess, Identifier, IntLiteral, FloatLiteral, StringLiteral, BoolLiteral, CharLiteral, BinaryOp, UnaryOp, Lambda, RefExpr, DerefExpr, SetExpr, TupleExpr
         
         if isinstance(expr, IntLiteral):
             return TYPE_INT
@@ -519,6 +621,16 @@ class TypeInferer:
             if scheme is None:
                 raise TypeError(f"Undefined variable: {expr.name}", expr.loc)
             return instantiate(scheme)
+        
+        if isinstance(expr, FieldAccess):
+            # Module field access: math.PI -> math_PI, math.sin -> math_sin
+            if isinstance(expr.object, Identifier):
+                combined = f"{expr.object.name}_{expr.field}"
+                scheme = self.env.get(combined)
+                if scheme is None:
+                    raise TypeError(f"Undefined: {combined} (from {expr.object.name}.{expr.field})", expr.loc)
+                return instantiate(scheme)
+            raise TypeError(f"Invalid field access on non-identifier", expr.loc)
         
         if isinstance(expr, BinaryOp):
             left_type = self._infer_expr(expr.left)
@@ -580,8 +692,21 @@ class TypeInferer:
         
         if isinstance(expr, LetExpr):
             val_type = self._infer_expr(expr.value)
-            scheme = generalize(self.env, val_type)
-            self.env.set(expr.name, scheme)
+            # Handle tuple destructuring: let (x, y) = ...
+            if expr.name.startswith('(') and expr.name.endswith(')'):
+                inner = expr.name[1:-1]
+                vars = [v.strip() for v in inner.split(',')]
+                # Create a tuple type and unify with val_type
+                elem_types = [fresh_var(f"let_{v}") for v in vars]
+                tup_type = TypeCon("Tuple", elem_types)
+                unify(val_type, tup_type, self.env)
+                # Bind each variable
+                for v, et in zip(vars, elem_types):
+                    scheme = generalize(self.env, et)
+                    self.env.set(v, scheme)
+            else:
+                scheme = generalize(self.env, val_type)
+                self.env.set(expr.name, scheme)
             return self._infer_expr(expr.body)
         
         if isinstance(expr, IfExpr):
@@ -658,12 +783,16 @@ class TypeInferer:
             val_type = self._infer_expr(expr.value)
             return TYPE_UNIT
         
+        if isinstance(expr, TupleExpr):
+            elem_types = [self._infer_expr(e) for e in expr.elements]
+            return TypeCon("Tuple", elem_types)
+        
         # Default
         return TYPE_UNIT
     
     def _extract_pattern_types(self, pattern, expected_type: Type) -> List[Tuple[str, Type]]:
         """Extract type bindings from a pattern."""
-        from parser import PatWildcard, PatLiteral, PatConstructor, PatIdent
+        from parser import PatWildcard, PatLiteral, PatConstructor, PatIdent, PatTuple
         
         if isinstance(pattern, PatWildcard):
             return []
@@ -704,6 +833,17 @@ class TypeInferer:
             # Unify the remaining type (ADT type) with expected_type
             unify(current_type, expected_type, self.env)
             
+            return bindings
+        
+        if isinstance(pattern, PatTuple):
+            # Unify expected type with a tuple type
+            elem_types = [fresh_var(f"tup_{i}") for i in range(len(pattern.elements))]
+            unify(expected_type, TypeCon("Tuple", elem_types), self.env)
+            
+            # Extract bindings from each element
+            bindings = []
+            for sub_pat, elem_type in zip(pattern.elements, elem_types):
+                bindings.extend(self._extract_pattern_types(sub_pat, elem_type))
             return bindings
         
         if isinstance(pattern, PatIdent):

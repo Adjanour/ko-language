@@ -1,4 +1,7 @@
-// Hello World — The simplest Kō program.
+comptime fn factorial n =
+  if n == 0 then 1
+  else n * factorial (n - 1)
 
 fn main =
   println "hello, world"
+  println (comptime factorial 15)

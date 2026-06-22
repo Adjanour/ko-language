@@ -80,6 +80,19 @@ class UnaryOp:
 class FnCall:
     func: 'Expr'
     args: List['Expr']
+    named_args: List['NamedArg'] = None
+    loc: Optional[SourceLocation] = None
+
+@dataclass
+class NamedArg:
+    name: str
+    value: 'Expr'
+    loc: Optional[SourceLocation] = None
+
+@dataclass
+class FieldAccess:
+    object: 'Expr'
+    field: str
     loc: Optional[SourceLocation] = None
 
 @dataclass
@@ -140,6 +153,11 @@ class ComptimeExpr:
     expr: 'Expr'
     loc: Optional[SourceLocation] = None
 
+@dataclass
+class TupleExpr:
+    elements: List['Expr']
+    loc: Optional[SourceLocation] = None
+
 # Type expressions
 @dataclass
 class TypeInt:
@@ -182,7 +200,12 @@ class TypeApp:
     args: List['TypeExpr']
     loc: Optional[SourceLocation] = None
 
-TypeExpr = Union[TypeInt, TypeFloat, TypeBool, TypeString, TypeChar, TypeUnit, TypeVar, TypeArrow, TypeApp]
+@dataclass
+class TupleType:
+    elements: List['TypeExpr']
+    loc: Optional[SourceLocation] = None
+
+TypeExpr = Union[TypeInt, TypeFloat, TypeBool, TypeString, TypeChar, TypeUnit, TypeVar, TypeArrow, TypeApp, TupleType]
 
 @dataclass
 class FnDef:
@@ -191,12 +214,15 @@ class FnDef:
     body: 'Expr'
     type_ann: Optional[TypeExpr] = None
     comptime: bool = False
+    pub: bool = False
+    named_params: List[str] = None
     loc: Optional[SourceLocation] = None
 
 @dataclass
 class LetBinding:
     name: str
     value: 'Expr'
+    pub: bool = False
     loc: Optional[SourceLocation] = None
 
 @dataclass
@@ -204,6 +230,7 @@ class TypeDef:
     name: str
     type_params: List[str]
     constructors: List['TypeConstructor']
+    pub: bool = False
     loc: Optional[SourceLocation] = None
 
 @dataclass
@@ -214,9 +241,17 @@ class TypeConstructor:
     loc: Optional[SourceLocation] = None
 
 @dataclass
+class ModuleDef:
+    name: str
+    definitions: List[Union['FnDef', 'LetBinding', 'TypeDef', 'ModuleDef']]
+    pub: bool = False
+    loc: Optional[SourceLocation] = None
+
+@dataclass
 class Program:
     imports: List['Import']
-    definitions: List[Union[FnDef, LetBinding, TypeDef]]
+    definitions: List[Union[FnDef, LetBinding, TypeDef, ModuleDef]]
+    package: Optional[str] = None  # package declaration
 
 # Patterns
 
@@ -240,16 +275,22 @@ class PatConstructor:
     args: List['Pattern']
     loc: Optional[SourceLocation] = None
 
-Pattern = Union[PatLiteral, PatIdent, PatWildcard, PatConstructor]
+@dataclass
+class PatTuple:
+    elements: List['Pattern']
+    loc: Optional[SourceLocation] = None
+
+Pattern = Union[PatLiteral, PatIdent, PatWildcard, PatConstructor, PatTuple]
 Expr = Union[IntLiteral, FloatLiteral, StringLiteral, CharLiteral, BoolLiteral,
-             Identifier, Wildcard, BinaryOp, UnaryOp, FnCall, IfExpr, MatchExpr,
-             Block, LetExpr, Lambda, RefExpr, DerefExpr, SetExpr, ComptimeExpr]
+             Identifier, Wildcard, BinaryOp, UnaryOp, FnCall, FieldAccess, IfExpr, MatchExpr,
+             Block, LetExpr, Lambda, RefExpr, DerefExpr, SetExpr, ComptimeExpr, TupleExpr]
 
 
 @dataclass
 class Import:
     path: str
     alias: Optional[str] = None
+    selective: Optional[List[str]] = None  # for `import math.{sin, cos}`
     loc: Optional[SourceLocation] = None
 
 
@@ -328,11 +369,45 @@ class Parser:
         imports = []
         defs = []
         trailing_exprs = []
+        package = None
         self.skip_newlines()
+        
+        # Parse package declaration (must be first)
+        if self.check(TokenType.PACKAGE):
+            self.advance()
+            parts = [self.expect(TokenType.IDENT).value]
+            while self.check(TokenType.DOT):
+                self.advance()  # consume dot
+                parts.append(self.expect(TokenType.IDENT).value)
+            package = ".".join(parts)
+            self.skip_newlines()
+        
         while self.peek().type != TokenType.EOF:
             try:
                 if self.check(TokenType.IMPORT):
                     imports.append(self.parse_import())
+                elif self.check(TokenType.PUB):
+                    self.advance()  # consume pub
+                    if self.check(TokenType.FN):
+                        fn_def = self.parse_fn_def()
+                        fn_def.pub = True
+                        defs.append(fn_def)
+                    elif self.check(TokenType.LET):
+                        let_binding = self.parse_let_binding()
+                        let_binding.pub = True
+                        defs.append(let_binding)
+                    elif self.check(TokenType.TYPE):
+                        type_def = self.parse_type_def()
+                        type_def.pub = True
+                        defs.append(type_def)
+                    elif self.check(TokenType.IDENT):
+                        # pub NAME = expr (shorthand let binding)
+                        name = self.expect(TokenType.IDENT).value
+                        self.expect(TokenType.ASSIGN)
+                        value = self.parse_expr()
+                        defs.append(LetBinding(name, value, pub=True, loc=loc_from_token(self.peek(), self.file)))
+                    else:
+                        raise ParseError(f"Expected fn, let, type, or identifier after pub", self.peek())
                 elif self.check(TokenType.TYPE):
                     defs.append(self.parse_type_def())
                 elif self.check(TokenType.COMPILETIME):
@@ -351,6 +426,7 @@ class Parser:
                 elif self.check(TokenType.FN):
                     fn_def = self.parse_fn_def()
                     # Handle type annotation-only def followed by actual def
+                    # Handle type annotation-only def followed by actual def
                     if (fn_def.params == [] and isinstance(fn_def.body, Block)
                             and len(fn_def.body.exprs) == 0 and fn_def.type_ann is not None):
                         self.skip_newlines()
@@ -361,7 +437,10 @@ class Parser:
                                 fn_def = next_fn
                     defs.append(fn_def)
                 elif self.check(TokenType.LET):
-                    defs.append(self.parse_let_binding())
+                    let_binding = self.parse_let_binding()
+                    defs.append(let_binding)
+                elif self.check(TokenType.MODULE):
+                    defs.append(self.parse_module_def())
                 elif self.peek().type in (TokenType.PRINTLN, TokenType.INSPECT, TokenType.PANIC):
                     trailing_exprs.append(self.parse_expr())
                 else:
@@ -378,7 +457,7 @@ class Parser:
                 body = trailing_exprs[0] if len(trailing_exprs) == 1 else Block(trailing_exprs)
                 defs.append(FnDef('main', [], body))
 
-        return Program(imports, defs)
+        return Program(imports, defs, package)
 
     # --- Top-level definitions ---
 
@@ -386,19 +465,42 @@ class Parser:
         start = loc_from_token(self.peek(), self.file)
         self.expect(TokenType.IMPORT)
 
-        if self.check(TokenType.STRING):
-            path = self.advance().value
-        elif self.check(TokenType.IDENT):
+        # Parse hierarchical path (e.g., std.collections.list)
+        if self.check(TokenType.IDENT):
+            path_parts = [self.advance().value]
+            while self.check(TokenType.DOT):
+                # Check if DOT is followed by LBRACE (selective import) or AS (alias)
+                if self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type in (TokenType.LBRACE, TokenType.AS):
+                    break
+                self.advance()  # consume dot
+                path_parts.append(self.expect(TokenType.IDENT).value)
+            path = ".".join(path_parts)
+        elif self.check(TokenType.STRING):
             path = self.advance().value
         else:
-            raise ParseError("Expected string or identifier after import", self.peek())
+            raise ParseError("Expected identifier or string after import", self.peek())
 
+        # Parse selective imports: import math.{sin, cos, PI}
+        # May have a trailing DOT before the brace (e.g., math.{sin})
+        if self.check(TokenType.DOT) and self.pos + 1 < len(self.tokens) and self.tokens[self.pos + 1].type == TokenType.LBRACE:
+            self.advance()  # consume dot before {
+        selective = None
+        if self.check(TokenType.LBRACE):
+            self.advance()  # consume {
+            selective = []
+            while not self.check(TokenType.RBRACE):
+                selective.append(self.expect(TokenType.IDENT).value)
+                if not self.check(TokenType.RBRACE):
+                    self.expect(TokenType.COMMA)
+            self.expect(TokenType.RBRACE)
+
+        # Parse alias: import math as m
         alias = None
         if self.check(TokenType.AS):
             self.advance()
             alias = self.expect(TokenType.IDENT).value
 
-        return Import(path, alias, loc=start)
+        return Import(path, alias, selective, loc=start)
 
     def parse_type_def(self) -> TypeDef:
         start = loc_from_token(self.peek(), self.file)
@@ -440,6 +542,48 @@ class Parser:
                 break
         return TypeConstructor(name, len(field_types), field_types)
 
+    def parse_module_def(self) -> ModuleDef:
+        start = loc_from_token(self.peek(), self.file)
+        self.expect(TokenType.MODULE)
+        name = self.expect(TokenType.IDENT).value
+        self.expect(TokenType.LBRACE)
+        self.skip_newlines()
+        
+        definitions = []
+        while not self.check(TokenType.RBRACE):
+            if self.check(TokenType.FN):
+                pub = False
+                if self.check(TokenType.PUB):
+                    self.advance()
+                    pub = True
+                fn_def = self.parse_fn_def()
+                fn_def.pub = pub
+                definitions.append(fn_def)
+            elif self.check(TokenType.TYPE):
+                pub = False
+                if self.check(TokenType.PUB):
+                    self.advance()
+                    pub = True
+                type_def = self.parse_type_def()
+                type_def.pub = pub
+                definitions.append(type_def)
+            elif self.check(TokenType.LET):
+                pub = False
+                if self.check(TokenType.PUB):
+                    self.advance()
+                    pub = True
+                let_binding = self.parse_let_binding()
+                let_binding.pub = pub
+                definitions.append(let_binding)
+            elif self.check(TokenType.MODULE):
+                definitions.append(self.parse_module_def())
+            else:
+                raise ParseError(f"Unexpected token in module: {self.peek().type.name}", self.peek())
+            self.skip_newlines()
+        
+        self.expect(TokenType.RBRACE)
+        return ModuleDef(name, definitions, loc=start)
+
     def parse_fn_def(self) -> FnDef:
         start = loc_from_token(self.peek(), self.file)
         self.expect(TokenType.FN)
@@ -453,16 +597,21 @@ class Parser:
             type_ann = self.parse_type_expr()
             return FnDef(name, [], Block([]), type_ann, loc=start)
 
-        # Parse parameters
+        # Parse parameters (positional and named)
         params = []
-        while self.check(TokenType.IDENT):
-            params.append(self.advance().value)
+        named_params = []
+        while self.check(TokenType.IDENT) or self.check(TokenType.UNDERSCORE) or self.check(TokenType.TILDE):
+            if self.check(TokenType.TILDE):
+                self.advance()  # consume ~
+                named_params.append(self.expect(TokenType.IDENT).value)
+            else:
+                params.append(self.advance().value)
 
         self.expect(TokenType.ASSIGN)
         self.skip_newlines()
         body = self.parse_block()
 
-        return FnDef(name, params, body, type_ann, loc=start)
+        return FnDef(name, params, body, type_ann, loc=start, named_params=named_params if named_params else None)
 
     def parse_let_binding(self) -> LetBinding:
         start = loc_from_token(self.peek(), self.file)
@@ -509,9 +658,17 @@ class Parser:
         elif tok.type == TokenType.LPAREN:
             self.advance()
             self.skip_newlines()
-            t = self.parse_type_expr()
+            first = self.parse_type_expr()
+            # Check for tuple type: (Int, String)
+            if self.check(TokenType.COMMA):
+                elements = [first]
+                while self.match(TokenType.COMMA):
+                    self.skip_newlines()
+                    elements.append(self.parse_type_expr())
+                self.expect(TokenType.RPAREN)
+                return TupleType(elements)
             self.expect(TokenType.RPAREN)
-            return t
+            return first
 
         return TypeUnit()
 
@@ -521,10 +678,9 @@ class Parser:
         """Parse a sequence of expressions separated by newlines.
         Last expression is the value."""
         if stop_tokens is None:
-            stop_tokens = {TokenType.FN, TokenType.TYPE}
+            stop_tokens = {TokenType.FN, TokenType.TYPE, TokenType.PUB}
         self.skip_newlines()
         exprs = []
-        let_chain = None
 
         while self.peek().type != TokenType.EOF:
             if self.peek().type in stop_tokens:
@@ -534,18 +690,27 @@ class Parser:
                 break
             if self.check(TokenType.LET):
                 self.advance()
-                name = self.expect(TokenType.IDENT).value
+                self.skip_newlines()
+                # Check for tuple destructuring: let (x, y) = ...
+                if self.check(TokenType.LPAREN):
+                    # Save position to parse as pattern
+                    pat = self.parse_pattern()
+                    # pat should be PatTuple
+                    if hasattr(pat, 'elements'):
+                        name = "(" + ", ".join(
+                            e.name if hasattr(e, 'name') else str(e.value)
+                            for e in pat.elements
+                        ) + ")"
+                    else:
+                        name = str(pat.value) if hasattr(pat, 'value') else str(pat)
+                else:
+                    name = self.expect(TokenType.IDENT).value
                 self.expect(TokenType.ASSIGN)
                 value = self.parse_expr()
                 self.skip_newlines()
-                let_expr = LetExpr(name, value, None)
-                if let_chain is None:
-                    let_chain = let_expr
-                else:
-                    current = let_chain
-                    while current.body is not None and isinstance(current.body, LetExpr):
-                        current = current.body
-                    current.body = let_expr
+                # Parse the rest of the block as the let's body
+                body = self.parse_block(stop_tokens, if_col)
+                return LetExpr(name, value, body) if not exprs else Block(exprs + [LetExpr(name, value, body)])
             elif self.check(TokenType.NEWLINE):
                 self.advance()
                 self.skip_newlines()
@@ -553,19 +718,6 @@ class Parser:
                 expr = self.parse_expr()
                 exprs.append(expr)
                 self.skip_newlines()
-
-        # Combine let chain with remaining expressions
-        if let_chain is not None:
-            current = let_chain
-            while current.body is not None and isinstance(current.body, LetExpr):
-                current = current.body
-            if len(exprs) == 1:
-                current.body = exprs[0]
-            elif len(exprs) > 1:
-                current.body = Block(exprs)
-            else:
-                current.body = IntLiteral(0)
-            return let_chain
 
         if not exprs:
             return Block([])
@@ -602,6 +754,7 @@ class Parser:
             if_col = self.peek().col
             self.advance()
             cond = self.parse_expr()
+            self.skip_newlines()
             self.expect(TokenType.THEN)
             self.skip_newlines()
             then_branch = self.parse_block(stop_tokens={TokenType.ELSE}, if_col=if_col)
@@ -758,6 +911,8 @@ class Parser:
             return True
         if t.type == TokenType.IDENT:
             return True
+        if t.type == TokenType.LPAREN:
+            return True
         return False
 
     def _is_new_arm(self) -> bool:
@@ -778,6 +933,9 @@ class Parser:
         """Check if current position should end a match arm body."""
         t = self.peek()
         if t.type in (TokenType.RPAREN, TokenType.FN, TokenType.TYPE, TokenType.EOF):
+            return True
+        # Stop at MATCH only if not nested (at same or shallower indentation)
+        if t.type == TokenType.MATCH and match_col > 0 and t.col <= match_col:
             return True
         # Stop at else keyword at match arm indentation (belongs to enclosing if)
         if t.type == TokenType.ELSE and t.col <= match_col:
@@ -873,16 +1031,26 @@ class Parser:
             value = self.parse_expr()
             return SetExpr(expr, value, loc=start)
 
-        # Function application: func arg1 arg2 ...
+        # Function application: func arg1 arg2 ... ~name1:expr ~name2:expr
         args = []
+        named_args = []
         while self.peek().type in (TokenType.INT, TokenType.FLOAT, TokenType.STRING,
                                     TokenType.CHAR, TokenType.TRUE, TokenType.FALSE,
                                     TokenType.IDENT, TokenType.LPAREN, TokenType.UNDERSCORE,
-                                    TokenType.DOLLAR_LBRACE, TokenType.BANG, TokenType.REF):
+                                    TokenType.DOLLAR_LBRACE, TokenType.BANG, TokenType.REF,
+                                    TokenType.TILDE):
             # Stop if the current position looks like a new match arm
             if self._looks_like_pattern() and self._is_new_arm():
                 break
-            args.append(self.parse_primary())
+            # Handle named arguments: ~name:expr
+            if self.check(TokenType.TILDE):
+                self.advance()  # consume ~
+                arg_name = self.expect(TokenType.IDENT).value
+                self.expect(TokenType.COLON)
+                arg_value = self.parse_primary()
+                named_args.append(NamedArg(arg_name, arg_value, loc=loc_from_token(self.peek(), self.file)))
+            else:
+                args.append(self.parse_primary())
 
         # Also consume - as unary prefix on numeric arguments (e.g. add 5 -60)
         # Only when - follows another argument (not after a primary expression result)
@@ -893,9 +1061,10 @@ class Parser:
             else:
                 break
 
-        if args:
+        if args or named_args:
             loc = expr.loc if hasattr(expr, 'loc') and expr.loc else None
-            return FnCall(expr, args, loc=loc)
+            return FnCall(expr, args, named_args=named_args if named_args else None, loc=loc)
+
         return expr
 
     def parse_primary(self) -> Expr:
@@ -939,11 +1108,43 @@ class Parser:
 
         if token.type == TokenType.IDENT:
             self.advance()
-            return Identifier(token.value, loc=loc)
+            expr = Identifier(token.value, loc=loc)
+            # Check for field access: ident.field
+            while self.check(TokenType.DOT) and self.pos + 1 < len(self.tokens):
+                next_token = self.tokens[self.pos + 1]
+                if next_token.type == TokenType.INT:
+                    # Tuple field access: expr.0, expr.1, etc.
+                    self.advance()  # .
+                    idx_tok = self.advance()
+                    idx = int(idx_tok.value)
+                    expr = FnCall(Identifier(f'tuple_{idx}'), [expr], loc=loc)
+                elif next_token.type == TokenType.IDENT:
+                    # Module/type field access: expr.field
+                    self.advance()  # .
+                    field_name = self.advance().value
+                    expr = FieldAccess(expr, field_name, loc=loc)
+                else:
+                    break
+            return expr
 
-        if token.type in (TokenType.PRINTLN, TokenType.INSPECT):
+        if token.type in (TokenType.PRINTLN, TokenType.INSPECT, TokenType.PANIC):
             self.advance()
-            return Identifier(token.value, loc=loc)
+            expr = Identifier(token.value, loc=loc)
+            # Check for field access: println.field (unusual but possible)
+            while self.check(TokenType.DOT) and self.pos + 1 < len(self.tokens):
+                next_token = self.tokens[self.pos + 1]
+                if next_token.type == TokenType.INT:
+                    self.advance()  # .
+                    idx_tok = self.advance()
+                    idx = int(idx_tok.value)
+                    expr = FnCall(Identifier(f'tuple_{idx}'), [expr], loc=loc)
+                elif next_token.type == TokenType.IDENT:
+                    self.advance()  # .
+                    field_name = self.advance().value
+                    expr = FieldAccess(expr, field_name, loc=loc)
+                else:
+                    break
+            return expr
 
         if token.type == TokenType.UNDERSCORE:
             self.advance()
@@ -951,14 +1152,24 @@ class Parser:
 
         if token.type == TokenType.LPAREN:
             self.advance()
-            expr = self.parse_expr()
+            self.skip_newlines()
+            first = self.parse_expr()
+            # Check for tuple: (a, b, c)
+            if self.check(TokenType.COMMA):
+                elements = [first]
+                while self.match(TokenType.COMMA):
+                    self.skip_newlines()
+                    elements.append(self.parse_expr())
+                self.expect(TokenType.RPAREN)
+                return TupleExpr(elements, loc=loc)
+            # Otherwise just a parenthesized expression
             self.expect(TokenType.RPAREN)
-            return expr
+            return first
 
         if token.type == TokenType.BACKSLASH:
             self.advance()
             params = []
-            while self.check(TokenType.IDENT):
+            while self.check(TokenType.IDENT) or self.check(TokenType.UNDERSCORE):
                 params.append(self.advance().value)
             self.expect(TokenType.ARROW)
             self.skip_newlines()
@@ -1046,6 +1257,22 @@ class Parser:
             self.advance()
             return PatWildcard(loc=loc)
 
+        if token.type == TokenType.LPAREN:
+            self.advance()
+            self.skip_newlines()
+            first = self.parse_pattern()
+            # Check for tuple pattern: (x, y)
+            if self.check(TokenType.COMMA):
+                elements = [first]
+                while self.match(TokenType.COMMA):
+                    self.skip_newlines()
+                    elements.append(self.parse_pattern())
+                self.expect(TokenType.RPAREN)
+                return PatTuple(elements, loc=loc)
+            # Single pattern in parens — consume RPAREN and return the inner pattern
+            self.expect(TokenType.RPAREN)
+            return first
+
         if token.type == TokenType.INT:
             self.advance()
             return PatLiteral(int(token.value.replace('_', '')), loc=loc)
@@ -1070,8 +1297,6 @@ class Parser:
                 args = []
                 while self.peek().type in (TokenType.IDENT, TokenType.INT, TokenType.STRING,
                                             TokenType.TRUE, TokenType.FALSE, TokenType.UNDERSCORE, TokenType.LPAREN):
-                    if self.peek().type == TokenType.IDENT and self.peek().value[0:1].isupper():
-                        break
                     args.append(self.parse_pattern())
                 return PatConstructor(name, args, loc=loc)
             return PatIdent(name, loc=loc)

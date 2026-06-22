@@ -3,11 +3,11 @@
 from dataclasses import dataclass
 from typing import Dict, List, Set
 from parser import (
-    Program, FnDef, LetBinding, TypeDef, TypeConstructor,
+    Program, FnDef, LetBinding, TypeDef, TypeConstructor, ModuleDef,
     IntLiteral, FloatLiteral, StringLiteral, CharLiteral, BoolLiteral,
-    Identifier, Wildcard, BinaryOp, UnaryOp, FnCall, IfExpr, MatchExpr,
-    MatchArm, PatLiteral, PatIdent, PatWildcard, PatConstructor,
-    Block, LetExpr, Lambda, RefExpr, DerefExpr, SetExpr, ComptimeExpr
+    Identifier, Wildcard, BinaryOp, UnaryOp, FnCall, NamedArg, FieldAccess, IfExpr, MatchExpr,
+    MatchArm, PatLiteral, PatIdent, PatWildcard, PatConstructor, PatTuple,
+    Block, LetExpr, Lambda, RefExpr, DerefExpr, SetExpr, ComptimeExpr, TupleExpr
 )
 
 # C reserved keywords that need to be renamed
@@ -19,7 +19,17 @@ C_RESERVED = {'default', 'auto', 'break', 'case', 'char', 'const', 'continue',
               # C standard library functions/types that conflict
               'abs', 'div', 'exit', 'free', 'malloc', 'printf', 'scanf',
               'strlen', 'strcmp', 'strcpy', 'strcat', 'memcpy', 'memset',
-              'true', 'false', 'bool', 'NULL'}
+              'true', 'false', 'bool', 'NULL',
+              # C math functions
+              'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+              'sqrt', 'pow', 'ceil', 'floor', 'fabs', 'log', 'log10',
+              'exp', 'fmod', 'round', 'trunc', 'hypot',
+              # C stdio
+              'puts', 'fputs', 'fopen', 'fclose', 'fread', 'fwrite',
+              'fgets', 'feof', 'fflush', 'fseek', 'ftell',
+              # C stdlib
+              'atoi', 'atof', 'strtol', 'strtod', 'system', 'getenv',
+              'rand', 'srand', 'qsort', 'bsearch'}
 
 
 def sanitize_name(name: str) -> str:
@@ -56,14 +66,19 @@ class CodeGen:
         self.ctor_to_type = {}  # constructor_name -> type_name (for switch optimization)
         self.current_tag = 0
         self.defined_fns = set()
+        self.fn_params = {}  # fn_name -> [param_names]
+        self.fn_named_params = {}  # fn_name -> [named_param_names]
         self.needs_runtime = False
         self.name_map = {}  # original_name -> sanitized_name
         self.lambda_count = 0
         self.lambda_functions = []  # generated lambda functions to prepend
+        self.deferred_let_inits = []  # let inits to emit inside main()
+        self.defined_lets = set()  # let binding names (values, not functions)
         self.env_counter = 0  # for unique environment variable names
         self.local_vars = []  # track local variables for dec_ref cleanup
         self.comptime_env = {}  # name -> ComptimeFn or Python value (for compile-time evaluation)
         self.comptime_step_limit = 10000  # prevent infinite loops at compile time
+        self.tuple_arities = set()  # tuple arities encountered during codegen
 
 
 @dataclass
@@ -81,18 +96,25 @@ class ComptimeFn:
         
         # Stdlib functions are not free variables
         STDLIB_FUNCS = {'len', 'concat', 'char_at', 'substring', 'contains',
-                       'to_upper', 'to_lower', 'trim', 'starts_with', 'ends_with',
-                       'repeat', 'split', 'join', 'replace',
-                       'abs', 'min', 'max', 'pow', 'sqrt', 'floor', 'ceil',
-                       'mod', 'to_string', 'to_int', 'to_float', 'type_of',
-                       'is_int', 'is_float', 'is_string', 'is_bool', 'is_null',
-                       'ord', 'chr', 'parse_int', 'parse_float',
-                       'read_line', 'read_file', 'write_file', 'append_file',
-                       'run', 'get_env', 'args_count', 'args_get', 'exit', 'now',
-                       'random', 'seed', 'assert', 'assert_eq', 'test', 'run_tests',
-                       'print', 'println', 'inspect', 'panic',
-                       'file_exists', 'sleep',
-                       'head', 'tail', 'append', 'reverse', 'sum', 'product'}
+                        'to_upper', 'to_lower', 'trim', 'starts_with', 'ends_with',
+                        'repeat', 'split', 'join', 'replace',
+                        'abs', 'min', 'max', 'pow', 'sqrt', 'floor', 'ceil',
+                        'mod', 'to_string', 'to_int', 'to_float', 'type_of',
+                        'is_int', 'is_float', 'is_string', 'is_bool', 'is_null',
+                        'ord', 'chr', 'parse_int', 'parse_float',
+                        'read_line', 'read_file', 'write_file', 'append_file',
+                        'run', 'get_env', 'args_count', 'args_get', 'exit', 'now',
+                        'random', 'seed', 'assert', 'assert_eq', 'test', 'run_tests',
+                        'print', 'println', 'inspect', 'panic',
+                        'file_exists', 'sleep',
+                         'head', 'tail', 'append', 'reverse', 'sum', 'product',
+                         'not',
+                        'eprint', 'eprintln',
+                        'mkdir', 'rm', 'cp', 'mv', 'readdir',
+                        'file_size', 'file_modified',
+                        'path_join', 'path_dirname', 'path_basename',
+                        'json_parse', 'json_stringify',
+                        'tuple_0', 'tuple_1', 'tuple_2'}
         
         if isinstance(expr, Identifier):
             if expr.name not in bound and expr.name not in STDLIB_FUNCS:
@@ -183,6 +205,25 @@ class ComptimeFn:
             if expr.name in fv_indices and expr.name not in bound:
                 idx = fv_indices[expr.name]
                 return f"env_unpack(env, {idx})"
+            # Built-in list/result constructors use ko_ prefix only when NOT user-defined
+            user_defined_ctors = set()
+            for ctors in self.type_info.values():
+                for ctor_name, _ in ctors:
+                    user_defined_ctors.add(ctor_name)
+            if expr.name == 'Nil' and 'Nil' not in user_defined_ctors:
+                return "ko_Nil()"
+            if expr.name == 'Cons' and 'Cons' not in user_defined_ctors:
+                return "ko_Cons"  # partial application handled by FnCall
+            if expr.name == 'Ok' and 'Ok' not in user_defined_ctors:
+                return "ko_Ok"
+            if expr.name == 'Err' and 'Err' not in user_defined_ctors:
+                return "ko_Err"
+            # If it's a nullary constructor, call it as a function
+            if expr.name in self.type_tags:
+                for type_name, ctors in self.type_info.items():
+                    for ctor_name, arity in ctors:
+                        if ctor_name == expr.name and arity == 0:
+                            return f"{sanitize_name(expr.name)}()"
             return sanitize_name(expr.name)
         
         elif isinstance(expr, IntLiteral):
@@ -233,9 +274,28 @@ class ComptimeFn:
                 return f"make_bool({left}.as.bool_val || {right}.as.bool_val)"
         
         elif isinstance(expr, FnCall):
-            # For now, assume it's a simple function call
             func = self._generate_lambda_body(expr.func, fvs, fv_indices, bound)
             args = [self._generate_lambda_body(a, fvs, fv_indices, bound) for a in expr.args]
+
+            # Direct call for known raw functions (defined at top level)
+            if isinstance(expr.func, Identifier) and expr.func.name in self.defined_fns:
+                return f"{func}({', '.join(args)})"
+
+            # From closure env — must use apply_value
+            if isinstance(expr.func, Identifier) and expr.func.name in fv_indices and expr.func.name not in bound:
+                if len(args) == 1:
+                    return f"apply_value({func}, {args[0]})"
+                elif len(args) == 2:
+                    return f"apply_value_2({func}, {args[0]}, {args[1]})"
+                elif len(args) == 3:
+                    return f"apply_value_3({func}, {args[0]}, {args[1]}, {args[2]})"
+                else:
+                    result = f"apply_value({func}, {args[0]})"
+                    for arg in args[1:]:
+                        result = f"apply_value({result}, {arg})"
+                    return result
+
+            # Stdlib or global — direct call
             return f"{func}({', '.join(args)})"
         
         elif isinstance(expr, IfExpr):
@@ -289,7 +349,16 @@ class ComptimeFn:
         if not user_defined_list:
             self.type_tags["Nil"] = 1
             self.type_tags["Cons"] = 0
+            self.type_info["List"] = [("Cons", 2), ("Nil", 0)]
             self.current_tag = 2  # user types start after built-in list tags
+
+        # Register built-in Result type (Ok/Err) if not user-defined
+        user_defined_result = "Ok" in self.type_tags or "Err" in self.type_tags
+        if not user_defined_result:
+            self.type_tags["Ok"] = self.current_tag
+            self.type_tags["Err"] = self.current_tag + 1
+            self.type_info["Result"] = [("Ok", 1), ("Err", 1)]
+            self.current_tag += 2
 
         # Second pass: register comptime functions
         for defn in program.definitions:
@@ -354,18 +423,135 @@ class ComptimeFn:
             self.emit("}")
             self.emit_raw("")
 
+        # Generate built-in Result type (Ok/Err) if we registered it (not user-defined)
+        if not user_defined_result and "Ok" in self.type_tags and "Err" in self.type_tags:
+            ok_tag = self.type_tags["Ok"]
+            err_tag = self.type_tags["Err"]
+            self.emit(f"enum {{")
+            self.indent += 1
+            self.emit(f"TAG_OK = {ok_tag},")
+            self.emit(f"TAG_ERR = {err_tag},")
+            self.indent -= 1
+            self.emit(f"}};")
+            self.emit_raw("")
+
+            # Generate Ok constructor (1 arg)
+            self.emit(f"Value ko_Ok(Value arg0) {{")
+            self.indent += 1
+            self.emit(f"Value v = make_constructor(TAG_OK, 1);")
+            self.emit(f"v.as.constructor->args[0] = arg0;")
+            self.emit(f"return v;")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # Generate Err constructor (1 arg)
+            self.emit(f"Value ko_Err(Value arg0) {{")
+            self.indent += 1
+            self.emit(f"Value v = make_constructor(TAG_ERR, 1);")
+            self.emit(f"v.as.constructor->args[0] = arg0;")
+            self.emit(f"return v;")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+        # Generate Result helper functions (always, whether user-defined or built-in)
+        if "Ok" in self.type_tags and "Err" in self.type_tags:
+            # Determine correct constructor names (ko_Ok for built-in, Ok for user-defined)
+            ok_name = "ko_Ok" if not user_defined_result else "Ok"
+            err_name = "ko_Err" if not user_defined_result else "Err"
+            # Forward declarations for constructors used by helpers
+            self.emit(f"Value {ok_name}(Value);")
+            self.emit(f"Value {err_name}(Value);")
+            self.emit_raw("")
+            # unwrap: Result e a -> a (panics on Err)
+            self.emit(f"Value ko_unwrap(Value result) {{")
+            self.indent += 1
+            self.emit(f"if (result.as.constructor->tag == TAG_OK) {{")
+            self.indent += 1
+            self.emit(f"return result.as.constructor->args[0];")
+            self.indent -= 1
+            self.emit(f"}}")
+            self.emit(f'panic_value("unwrap called on Err");')
+            self.emit(f"return make_unit();")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # unwrap_or: a -> Result e a -> a
+            self.emit(f"Value ko_unwrap_or(Value default_val, Value result) {{")
+            self.indent += 1
+            self.emit(f"if (result.as.constructor->tag == TAG_OK) {{")
+            self.indent += 1
+            self.emit(f"return result.as.constructor->args[0];")
+            self.indent -= 1
+            self.emit(f"}}")
+            self.emit(f"return default_val;")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # map_result: (a -> c) -> Result e a -> Result e c
+            self.emit(f"Value ko_map_result(Value f, Value result) {{")
+            self.indent += 1
+            self.emit(f"if (result.as.constructor->tag == TAG_OK) {{")
+            self.indent += 1
+            self.emit(f"Value val = result.as.constructor->args[0];")
+            self.emit(f"return {ok_name}(apply_value(f, val));")
+            self.indent -= 1
+            self.emit(f"}}")
+            self.emit(f"return result;")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # and_then: (a -> Result e b) -> Result e a -> Result e b
+            self.emit(f"Value ko_and_then(Value f, Value result) {{")
+            self.indent += 1
+            self.emit(f"if (result.as.constructor->tag == TAG_OK) {{")
+            self.indent += 1
+            self.emit(f"Value val = result.as.constructor->args[0];")
+            self.emit(f"return apply_value(f, val);")
+            self.indent -= 1
+            self.emit(f"}}")
+            self.emit(f"return result;")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # is_ok: Result e a -> Bool
+            self.emit(f"Value ko_is_ok(Value result) {{")
+            self.indent += 1
+            self.emit(f"return make_bool(result.as.constructor->tag == TAG_OK);")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
+            # is_err: Result e a -> Bool
+            self.emit(f"Value ko_is_err(Value result) {{")
+            self.indent += 1
+            self.emit(f"return make_bool(result.as.constructor->tag == TAG_ERR);")
+            self.indent -= 1
+            self.emit("}")
+            self.emit_raw("")
+
         # Generate function forward declarations
         for defn in program.definitions:
             if isinstance(defn, FnDef):
                 name = sanitize_name(defn.name)
                 if defn.name == "main":
                     name = "_ko_main"
-                self.emit(f"Value {name}({', '.join(['Value'] * len(defn.params))});")
+                all_params = defn.params + (defn.named_params or [])
+                self.emit(f"Value {name}({', '.join(['Value'] * len(all_params))});")
                 self.defined_fns.add(defn.name)
+                # Record parameter info for named parameter support
+                self.fn_params[defn.name] = list(defn.params)
+                self.fn_named_params[defn.name] = list(defn.named_params) if defn.named_params else []
 
         self.emit_raw("")
 
         # Generate let bindings and functions
+        self.deferred_lets = []
         for defn in program.definitions:
             if isinstance(defn, LetBinding):
                 self.generate_let(defn)
@@ -443,6 +629,46 @@ class ComptimeFn:
                 self.output.extend(lambda_forward)
                 self.output.extend(lambda_lines)
 
+        # Insert tuple constructors after forward declarations, before function bodies
+        if self.tuple_arities:
+            tuple_lines = []
+            tuple_lines.append("// ===== Tuple constructors and accessors =====")
+            max_arity = max(self.tuple_arities)
+            for arity in sorted(self.tuple_arities):
+                tag_name = f"TAG_TUPLE_{arity}"
+                tuple_lines.append(f"enum {{ {tag_name} = {self.current_tag} }};")
+                self.current_tag += 1
+                
+                params = ", ".join(f"Value arg{i}" for i in range(arity))
+                tuple_lines.append(f"Value __Tuple_{arity}({params}) {{")
+                tuple_lines.append(f"  Value v = make_constructor({tag_name}, {arity});")
+                for i in range(arity):
+                    tuple_lines.append(f"  v.as.constructor->args[{i}] = arg{i};")
+                tuple_lines.append("  return v;")
+                tuple_lines.append("}")
+            
+            # Generate tuple accessors once, up to the max arity needed
+            for i in range(max_arity):
+                tuple_lines.append(f"Value tuple_{i}(Value t) {{")
+                tuple_lines.append(f"  return t.as.constructor->args[{i}];")
+                tuple_lines.append("}")
+            
+            # Find the first function forward declaration and insert after all fwd decls
+            fwd_start = None
+            fwd_end = None
+            for i, line in enumerate(self.output):
+                if line.startswith('Value ') and line.endswith(');') and '(' in line:
+                    if fwd_start is None:
+                        fwd_start = i
+                    fwd_end = i
+            
+            if fwd_end is not None:
+                # Insert after the last forward declaration
+                insert_at = fwd_end + 1
+                self.output = self.output[:insert_at] + tuple_lines + [""] + self.output[insert_at:]
+
+        # Generate C entry point if there's a main function
+
         return "\n".join(self.output)
 
     def register_type(self, typedef: TypeDef):
@@ -514,8 +740,15 @@ class ComptimeFn:
     def generate_let(self, binding: LetBinding):
         sanitized = sanitize_name(binding.name)
         self.name_map[binding.name] = sanitized
-        self.emit(f"Value {sanitized} = {self.generate_expr(binding.value)};")
-        self.defined_fns.add(binding.name)
+        init_code = self.generate_expr(binding.value)
+        if self.indent == 0:
+            # Top-level: defer to _ko_main as local variable
+            self.deferred_lets.append((sanitized, init_code))
+            self.defined_lets.add(binding.name)
+        else:
+            # Inside a function: emit inline
+            self.emit(f"Value {sanitized} = {init_code};")
+            self.defined_lets.add(binding.name)
 
     def generate_fn(self, fndef: FnDef):
         name = sanitize_name(fndef.name)
@@ -531,8 +764,18 @@ class ComptimeFn:
             sanitized = sanitize_name(p)
             self.name_map[p] = sanitized
             params.append(f"Value {sanitized}")
+        for p in (fndef.named_params or []):
+            sanitized = sanitize_name(p)
+            self.name_map[p] = sanitized
+            params.append(f"Value {sanitized}")
         self.emit(f"Value {name}({', '.join(params)}) {{")
         self.indent += 1
+
+        # Emit deferred let bindings at the start of _ko_main
+        if name == "_ko_main" and self.deferred_lets:
+            for var_name, init_code in self.deferred_lets:
+                self.emit(f"Value {var_name} = {init_code};")
+            self.emit_raw("")
 
         self.generate_statement(fndef.body)
 
@@ -556,11 +799,29 @@ class ComptimeFn:
                     # Last expression is the return value
                     self.generate_statement(e)
         elif isinstance(expr, LetExpr):
-            sanitized = sanitize_name(expr.name)
-            self.name_map[expr.name] = sanitized
-            self.local_vars.append(sanitized)
-            self.emit(f"Value {sanitized} = {self.generate_expr(expr.value)};")
-            self.generate_statement(expr.body)
+            # Handle tuple destructuring: let (x, y) = pair
+            if expr.name.startswith('(') and expr.name.endswith(')'):
+                inner = expr.name[1:-1]
+                vars = [v.strip() for v in inner.split(',')]
+                init_code = self.generate_expr(expr.value)
+                # Generate temporary variable
+                tmp = f"_tup_{self.env_counter}"
+                self.env_counter += 1
+                self.emit(f"Value {tmp} = {init_code};")
+                self.local_vars.append(tmp)
+                # Destructure
+                for i, v in enumerate(vars):
+                    sanitized = sanitize_name(v)
+                    self.name_map[v] = sanitized
+                    self.local_vars.append(sanitized)
+                    self.emit(f"Value {sanitized} = {tmp}.as.constructor->args[{i}];")
+                self.generate_statement(expr.body)
+            else:
+                sanitized = sanitize_name(expr.name)
+                self.name_map[expr.name] = sanitized
+                self.local_vars.append(sanitized)
+                self.emit(f"Value {sanitized} = {self.generate_expr(expr.value)};")
+                self.generate_statement(expr.body)
         elif isinstance(expr, IfExpr):
             cond = self.generate_condition(expr.cond)
             saved_count = len(self.local_vars)
@@ -656,6 +917,17 @@ class ComptimeFn:
                 return f"match_string({value_var}, \"{escape_c_string(pattern.value)}\")"
         if isinstance(pattern, PatIdent):
             return "true"  # Always matches
+        if isinstance(pattern, PatTuple):
+            # Tuple pattern: check tag and arity, then match each element
+            arity = len(pattern.elements)
+            self.tuple_arities.add(arity)
+            conditions = [
+                f"{value_var}.type == VAL_CONSTRUCTOR && {value_var}.as.constructor->tag == TAG_TUPLE_{arity}"
+            ]
+            for i, elem in enumerate(pattern.elements):
+                sub_var = f"{value_var}.as.constructor->args[{i}]"
+                conditions.append(self.generate_pattern_condition(elem, sub_var))
+            return " && ".join(conditions)
         if isinstance(pattern, PatConstructor):
             tag = self.type_tags.get(pattern.name, -1)
             condition = f"{value_var}.type == VAL_CONSTRUCTOR && {value_var}.as.constructor->tag == TAG_{pattern.name.upper()}"
@@ -672,6 +944,10 @@ class ComptimeFn:
         bindings = {}
         if isinstance(pattern, PatIdent):
             bindings[pattern.name] = value_var
+        elif isinstance(pattern, PatTuple):
+            for i, elem in enumerate(pattern.elements):
+                sub_var = f"{value_var}.as.constructor->args[{i}]"
+                bindings.update(self.extract_pattern_bindings(elem, sub_var))
         elif isinstance(pattern, PatConstructor):
             for i, arg in enumerate(pattern.args):
                 sub_var = f"{value_var}.as.constructor->args[{i}]"
@@ -729,6 +1005,19 @@ class ComptimeFn:
         if isinstance(expr, Identifier):
             # Use sanitized name if available
             name = self.name_map.get(expr.name, expr.name)
+            # Built-in list constructors use ko_ prefix only when NOT user-defined
+            user_defined_ctors = set()
+            for ctors in self.type_info.values():
+                for ctor_name, _ in ctors:
+                    user_defined_ctors.add(ctor_name)
+            if expr.name == 'Nil' and 'Nil' not in user_defined_ctors:
+                return "ko_Nil()"
+            if expr.name == 'Cons' and 'Cons' not in user_defined_ctors:
+                return "ko_Cons"  # partial application handled by FnCall
+            if expr.name == 'Ok' and 'Ok' not in user_defined_ctors:
+                return "ko_Ok"  # partial application handled by FnCall
+            if expr.name == 'Err' and 'Err' not in user_defined_ctors:
+                return "ko_Err"  # partial application handled by FnCall
             # If it's a nullary constructor, call it as a function
             if expr.name in self.type_tags:
                 # It's a constructor - check arity
@@ -741,12 +1030,38 @@ class ComptimeFn:
             if expr.name in NULLARY_STDLIB:
                 return f"{NULLARY_STDLIB[expr.name]}()"
             # If it's a function reference (used as argument), wrap as closure
-            if expr.name in self.defined_fns:
+            if expr.name in self.defined_fns and expr.name not in self.defined_lets:
                 # Wrap function as closure with NULL env
                 return f"make_closure(NULL, (ClosureFn){sanitize_name(name)})"
             return name
         if isinstance(expr, Wildcard):
             return "make_unit()"
+        if isinstance(expr, FieldAccess):
+            # Field access: obj.field
+            # For module imports like math.PI, math.sin -> convert to math_PI, math_sin
+            if isinstance(expr.object, Identifier):
+                combined = f"{expr.object.name}_{expr.field}"
+                if combined in self.name_map:
+                    return self.name_map[combined]
+                # Check if it's a known constructor
+                if combined in self.type_tags:
+                    for type_name, ctors in self.type_info.items():
+                        for ctor_name, arity in ctors:
+                            if ctor_name == combined and arity == 0:
+                                return f"{sanitize_name(combined)}()"
+                # Check if it's a known function
+                if combined in self.defined_fns:
+                    return f"make_closure(NULL, (ClosureFn){sanitize_name(combined)})"
+                return sanitize_name(combined)
+            # Generic field access (non-module)
+            obj_code = self.generate_expr(expr.object)
+            return f"field_access({obj_code}, \"{escape_c_string(expr.field)}\")"
+        if isinstance(expr, TupleExpr):
+            # Generate tuple: TupleN(arg0, arg1, ..., argN)
+            n = len(expr.elements)
+            self.tuple_arities.add(n)
+            args = ", ".join(self.generate_expr(e) for e in expr.elements)
+            return f"__Tuple_{n}({args})"
         if isinstance(expr, Block):
             # Block in expression context - last expr is the value
             result = "make_unit()"
@@ -886,10 +1201,26 @@ class ComptimeFn:
                 # File system
                 'file_exists': 'ko_file_exists',
                 'sleep': 'ko_sleep',
+                # New I/O
+                'eprint': 'ko_eprint', 'eprintln': 'ko_eprintln',
+                'mkdir': 'ko_mkdir', 'rm': 'ko_rm', 'cp': 'ko_cp', 'mv': 'ko_mv',
+                'readdir': 'ko_readdir',
+                'file_size': 'ko_file_size', 'file_modified': 'ko_file_modified',
+                'path_join': 'ko_path_join', 'path_dirname': 'ko_path_dirname',
+                'path_basename': 'ko_path_basename',
+                'json_parse': 'ko_json_parse', 'json_stringify': 'ko_json_stringify',
+                # Tuple accessors (generated in preamble)
+                'tuple_0': 'tuple_0', 'tuple_1': 'tuple_1', 'tuple_2': 'tuple_2',
                 # List operations
                 'head': 'ko_head', 'tail': 'ko_tail',
                 'append': 'ko_append', 'reverse': 'ko_reverse',
                 'sum': 'ko_sum', 'product': 'ko_product',
+                # Boolean
+                'not': 'ko_not',
+                # Result helpers
+                'unwrap': 'ko_unwrap', 'unwrap_or': 'ko_unwrap_or',
+                'map_result': 'ko_map_result', 'and_then': 'ko_and_then',
+                'is_ok': 'ko_is_ok', 'is_err': 'ko_is_err',
             }
 
             if isinstance(expr.func, Identifier) and expr.func.name in STDLIB:
@@ -903,15 +1234,54 @@ class ComptimeFn:
                 func = sanitize_name(expr.func.name)
             args = [self.generate_expr(a) for a in expr.args]
             
-            # Check if this is a closure (not a known named function)
+            # Handle named arguments: reorder to match function's parameter order
+            if expr.named_args and isinstance(expr.func, Identifier):
+                fn_name = expr.func.name
+                if fn_name in self.fn_params:
+                    all_params = self.fn_params[fn_name] + self.fn_named_params.get(fn_name, [])
+                    # Build a mapping from named arg name to value
+                    named_map = {na.name: self.generate_expr(na.value) for na in expr.named_args}
+                    # Fill in positional args first, then named args in function's order
+                    reordered = []
+                    pos_idx = 0
+                    for param in all_params:
+                        if param in named_map:
+                            reordered.append(named_map[param])
+                        elif pos_idx < len(args):
+                            reordered.append(args[pos_idx])
+                            pos_idx += 1
+                        else:
+                            reordered.append("make_unit()")  # default
+                    args = reordered
+            
+            # Check if this is a raw function (not a closure)
+            is_raw_fn = False
             if isinstance(expr.func, Identifier) and expr.func.name in self.defined_fns:
+                is_raw_fn = True
+            elif isinstance(expr.func, FieldAccess) and isinstance(expr.func.object, Identifier):
+                combined = f"{expr.func.object.name}_{expr.func.field}"
+                if combined in self.defined_fns:
+                    is_raw_fn = True
+            
+            if is_raw_fn:
                 # Known named function - direct call
                 return f"{func}({', '.join(args)})"
             elif isinstance(expr.func, Identifier) and expr.func.name in STDLIB:
                 # Stdlib function - direct call
                 return f"{func}({', '.join(args)})"
+            elif isinstance(expr.func, Identifier) and expr.func.name in ('Nil', 'Cons', 'Ok', 'Err'):
+                # Built-in constructors use ko_ prefix only when NOT user-defined
+                user_defined = set()
+                for ctors in self.type_info.values():
+                    for ctor_name, _ in ctors:
+                        user_defined.add(ctor_name)
+                if expr.func.name not in user_defined:
+                    return f"ko_{expr.func.name}({', '.join(args)})"
             else:
                 # Could be a closure - use apply_value with appropriate arity
+                # If it's a raw function (not already a closure), wrap it
+                if isinstance(expr.func, Identifier) and expr.func.name in self.defined_fns:
+                    func = f"make_closure(NULL, (ClosureFn){func})"
                 if len(args) == 1:
                     return f"apply_value({func}, {args[0]})"
                 elif len(args) == 2:
