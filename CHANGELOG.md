@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.2.1 — 2026-06-19
+
+### Bug Fixes
+
+- **Parser `let` interleaving** — `let` bindings now execute at their correct position, not hoisted to the top of the block
+- **User-defined `Nil`/`Cons` codegen** — constructors defined via `type` no longer conflict with built-in list constructors
+- **Deferred let init ordering** — removed broken deferred mechanism, let bindings emit inline
+
+### Standard Library
+
+- **New I/O**: `eprint`, `eprintln` (stderr output)
+- **Filesystem**: `mkdir`, `rm`, `cp`, `mv`, `readdir`
+- **File metadata**: `file_size`, `file_modified`
+- **Path operations**: `path_join`, `path_dirname`, `path_basename`
+- **JSON**: `json_parse`, `json_stringify`
+
+### Docs
+
+- SPEC.md updated with all new standard library functions
+- LSP hover docs now show parameters and usage examples for all builtins
+
 ## v0.2.0 — 2026-06-19
 
 ### Language

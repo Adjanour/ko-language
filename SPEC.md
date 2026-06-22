@@ -1,4 +1,4 @@
-# Kō Language Specification v0.2.0
+# Kō Language Specification v0.3.0
 
 > **Kō** (光) — "light" in Japanese. A minimal functional language that compiles to C.
 
@@ -96,10 +96,13 @@ Every new language carries syntax DNA from its ancestors. Fights this and you ge
 | Let-polymorphism | `fn id x = x` works for any type | Done |
 | Multi-field constructors | `type Tree = Node * * * \| Leaf` | Done |
 | Boolean operators | `&&`, `\|\|` | Done |
+| Tuple types | `(Int, String)`, `(1, "hello")` | Done |
+| Tuple destructuring | `let (x, y) = pair` | Done |
+| Tuple field access | `tup.0`, `tup.1` | Done |
+| Tuple match patterns | `match t (0, 0) -> "origin"` | Done |
 
 ### 3.3 Future
 - Generics: `type List a = Cons * * | Nil`
-- Tuple types: `(Int, String)`
 - Record types: `{ name: String, age: Int }`
 - Type classes: `class Eq a where (==) : a -> a -> Bool`
 - Effect system: `fn read_file : !IO (Result Error String)`
@@ -114,21 +117,30 @@ The grammar is **context-free** and **unambiguous**. It can be parsed with a rec
 
 ```ebnf
 (* === Top Level === *)
-program         = top_stmt* EOF
+program         = package_decl? top_stmt* EOF
+package_decl    = 'package' IDENT ('.' IDENT)*
+
 top_stmt        = fn_def
                 | type_def
                 | import_stmt
+                | let_def
+                | module_def
 
-fn_def          = 'fn' IDENT+ '=' expr
-                | 'fn' IDENT+ ':' type_expr
+fn_def          = 'pub'? 'fn' IDENT+ '=' expr
+                | 'pub'? 'fn' IDENT+ ':' type_expr
 
-type_def        = 'type' IDENT '=' variant ('|' variant)*
+type_def        = 'pub'? 'type' IDENT '=' variant ('|' variant)*
+
+let_def         = 'pub'? 'let' IDENT '=' expr
+
+module_def      = 'pub'? 'module' IDENT '{' top_stmt* '}'
 
 variant         = IDENT ('*'*)?
 
-import_stmt     = 'import' IDENT
+import_stmt     = 'import' IDENT ('.' IDENT)*
+                | 'import' IDENT ('.' IDENT)* '.' '{' IDENT (',' IDENT)* '}'
+                | 'import' IDENT ('.' IDENT)* 'as' IDENT
                 | 'import' STRING
-                | 'import' IDENT 'as' IDENT
 
 (* === Types === *)
 type_expr       = type_atom ('->' type_expr)?
@@ -146,6 +158,7 @@ expr            = let_expr
 
 let_expr        = 'let' IDENT ['=' expr] '=' expr
                 | 'let' IDENT ':' type_expr '=' expr
+                | 'let' '(' pattern (',' pattern)+ ')' '=' expr    (* tuple destructuring *)
 
 if_expr         = 'if' expr 'then' expr ('else' expr)?
 
@@ -176,22 +189,28 @@ application     = primary primary*
 primary         = INT | FLOAT | STRING | CHAR | TRUE | FALSE
                 | IDENT | CONSTRUCTOR
                 | '(' expr ')'
+                | '(' expr (',' expr)+ ')'    (* tuple literal *)
                 | lambda_expr
                 | '[' expr (',' expr)* ']'
                 | ref_expr
                 | '!' primary
                 | comptime_expr
 
+(* === Tuple field access === *)
+application     = primary ('.' INT)*            (* tuple field access: tup.0, tup.1, etc. *)
+
 (* === Patterns === *)
 pattern         = CONSTRUCTOR pattern_arg*
                 | '_'
                 | LITERAL
                 | IDENT
+                | '(' pattern (',' pattern)+ ')'    (* tuple pattern *)
 
 pattern_arg     = '_'
                 | LITERAL
                 | IDENT
                 | CONSTRUCTOR pattern_arg*
+                | '(' pattern (',' pattern)+ ')'    (* tuple pattern *)
 
 (* === Tokens === *)
 IDENT           = [a-z_][a-zA-Z0-9_-]*
@@ -256,6 +275,7 @@ type ::= Int | Float | Bool | Char | String
        | type -> type                (* function type *)
        | TypeName                    (* ADT type *)
        | TypeName type_atom*         (* parameterized ADT, future *)
+       | '(' type (',' type)+ ')'    (* tuple type *)
 ```
 
 ### 5.3 Built-in Types
@@ -267,20 +287,43 @@ type ::= Int | Float | Bool | Char | String
 | `Char` | `char` | Single character |
 | `String` | `char*` (heap) | UTF-8 string |
 | `()` | `int` (0) | Unit type (like void) |
+| `(T1, T2, ...)` | `Tuple_N` struct | Anonymous tuple (fixed-size, heterogeneous) |
+| `(T1, T2, ...)` | `Constructor` | Anonymous tuple (fixed-size, heterogeneous) |
 
 ### 5.4 ADTs and Pattern Matching
 ```ko
-type Maybe = Just * | Nothing
-type Result = Ok * | Error *
-type List = Cons * * | Nil
-type Either = Left * | Right *
+type Maybe =
+  Just *
+  | Nothing
+
+type Result =
+  Ok *
+  | Error *
+
+type List =
+  Cons * *
+  | Nil
+
+type Either =
+  Left *
+  | Right *
+
+type Binding = {
+  name : String,
+  value : Int
+}
 ```
 
-Each `*` marks a data slot. The compiler generates:
+`type Name = ...` defines a sum type.
+`type Name = { ... }` defines a record.
+
+Each `*` marks a data slot in the current sum-type notation. The compiler generates:
 - A tag enum (0, 1, 2, ...)
 - A C struct with a union of variant data
 - Constructor functions: `Maybe Just(Value v)`
 - Destructor/pattern matching via tag checks
+
+Record patterns should support `..` for intentional partial matches.
 
 ### 5.5 Type Inference (Algorithm W)
 The compiler infers types using unification:
@@ -413,23 +456,50 @@ A Kō program compiles to a single `.c` file with:
 
 ### 8.1 Import Syntax
 ```ko
-import math              (* loads lib/math.ko *)
-import config            (* loads lib/config.ko *)
-import utils as u        (* loads lib/utils.ko, aliased *)
+import std.math              (* import full module, prefixed as math *)
+import std.math.{sin, cos}   (* selective import, no prefix *)
+import std.math as m          (* alias import, prefixed as m *)
+import "lib/custom.ko"        (* string path import *)
 ```
 
-### 8.2 Module Resolution
+### 8.2 Package Declarations
+Files can declare their package name (must be first statement):
+```ko
+package std.math
+
+pub PI = 3.14159
+pub fn sin x = ...
+```
+
+### 8.3 Visibility (`pub`)
+By default, definitions are private (not importable). Use `pub` to make them visible:
+```ko
+pub fn public_fn x = x        (* importable *)
+fn private_fn x = x           (* NOT importable *)
+pub my_value = 42             (* importable let binding *)
+```
+
+### 8.4 Module Blocks
+Group related definitions in a module block:
+```ko
+module Math =
+  pub PI = 3.14159
+  pub fn sin x = x
+```
+
+### 8.5 Module Resolution
 Search order:
-1. Current directory
+1. Current directory (relative to source file)
 2. `lib/` in current directory
 3. Compiler's `lib/` directory (standard library)
+4. Package root (auto-detected by walking up to find `package.ko`)
 
-### 8.3 Module Semantics (v0.1.0)
-Modules are resolved by **textual inclusion**: imported definitions are inlined into the importing file. This is simple but has limitations:
-- Duplicate definitions if two files import the same module
-- No namespace isolation (all imported names are in scope)
-
-**Recommendation:** Only the entry point (`main.ko`) should do imports.
+### 8.6 Module Semantics
+Modules are resolved by **textual inclusion**: imported definitions are inlined into the importing file. 
+- Without selective imports: names are prefixed with the module name (`math_PI`, `math_sin`)
+- With selective imports: names are imported as-is (`PI`, `sin`)
+- With alias: names are prefixed with the alias (`m_PI`, `m_sin`)
+- Only `pub` definitions are importable
 
 ### 8.4 Future: Proper Modules (v0.2.0)
 - Each module is a separate compilation unit
@@ -447,6 +517,8 @@ All functions below are built into the compiler and runtime. No imports needed.
 |----------|------|-------------|
 | `print` | `forall a. a -> Unit` | Print value to stdout without newline |
 | `println` | `forall a. a -> Unit` | Print value to stdout with newline |
+| `eprint` | `forall a. a -> Unit` | Print value to stderr without newline |
+| `eprintln` | `forall a. a -> Unit` | Print value to stderr with newline |
 | `inspect` | `forall a. a -> Unit` | Debug print with type and value info |
 | `panic` | `String -> Unit` | Exit with error message to stderr |
 
@@ -507,7 +579,14 @@ All functions below are built into the compiler and runtime. No imports needed.
 | `run` | `String -> String` | Run shell command, return stdout |
 | `get_env` | `String -> String` | Get environment variable value |
 | `file_exists` | `String -> Bool` | Check if file exists |
+| `file_size` | `String -> Int` | Get file size in bytes |
+| `file_modified` | `String -> Int` | Get file modification time (ms since epoch) |
 | `sleep` | `Int -> Unit` | Sleep for N milliseconds |
+| `mkdir` | `String -> Bool` | Create directory (returns true on success) |
+| `rm` | `String -> Bool` | Remove file or empty directory |
+| `cp` | `String -> String -> Bool` | Copy file to destination |
+| `mv` | `String -> String -> Bool` | Move/rename file to destination |
+| `readdir` | `String -> List` | List directory contents as list of strings |
 
 ### 9.6 CLI Arguments & Time
 | Function | Type | Description |
@@ -523,7 +602,20 @@ All functions below are built into the compiler and runtime. No imports needed.
 | `random` | `Int -> Int -> Int -> Int` | Pure random (seed, min, max) |
 | `seed` | `Int` | Get next seed for chaining |
 
-### 9.8 Testing
+### 9.8 Path Operations
+| Function | Type | Description |
+|----------|------|-------------|
+| `path_join` | `String -> String -> String` | Join path segments with `/` |
+| `path_dirname` | `String -> String` | Get directory part of path |
+| `path_basename` | `String -> String` | Get filename part of path |
+
+### 9.9 JSON
+| Function | Type | Description |
+|----------|------|-------------|
+| `json_parse` | `String -> List` | Parse JSON string to Kō value |
+| `json_stringify` | `forall a. a -> String` | Convert Kō value to JSON string |
+
+### 9.10 Testing
 | Function | Type | Description |
 |----------|------|-------------|
 | `assert` | `Bool -> Unit` | Assert condition is true |
@@ -531,7 +623,7 @@ All functions below are built into the compiler and runtime. No imports needed.
 | `test` | `forall a. String -> a -> Unit` | Run a named test group |
 | `run_tests` | `Unit` | Print test summary and exit |
 
-### 9.9 List Operations
+### 9.11 List Operations
 | Function | Type | Description |
 |----------|------|-------------|
 | `head` | `forall a. List[a] -> a` | First element of list (panics on empty) |
@@ -541,14 +633,14 @@ All functions below are built into the compiler and runtime. No imports needed.
 | `sum` | `List[Int] -> Int` | Sum all integers in list |
 | `product` | `List[Int] -> Int` | Product of all integers in list |
 
-### 9.10 Reference Cells
+### 9.12 Reference Cells
 | Syntax | Type | Description |
 |--------|------|-------------|
 | `ref x` | `forall a. a -> a` | Create mutable reference |
 | `!x` | `forall a. a -> a` | Dereference a reference |
 | `x := v` | `forall a. a -> a -> Unit` | Mutate a reference |
 
-### 9.11 Higher-Order Functions (in Kō itself)
+### 9.13 Higher-Order Functions (in Kō itself)
 ```ko
 type List = Cons * * | Nil
 
@@ -636,13 +728,23 @@ vscode-ko/         VS Code extension
 - VS Code extension
 - Module imports with aliasing
 
-**Phase 4: Next**
-- Generics, tuples, records
-- Better error messages
-- Proper module system (separate compilation)
+**Phase 4: Module System v2 (done)**
+- Hierarchical imports (`import std.math`)
+- Selective imports (`import math.{sin, cos}`)
+- Alias imports (`import math as m`)
+- Package declarations (`package std.math`)
+- Visibility (`pub` keyword)
+- Module blocks (`module Name { ... }`)
+- Package detection (`package.ko`)
 
-**Phase 5: Future**
-- Rewrite compiler in Rust or Zig
+**Phase 5: Next**
+- Error handling (Result type)
+- Named parameters
+- Traits/typeclasses
+- Generics
+
+**Phase 6: Future**
+- Rewrite compiler in Zig
 - Self-hosting (Kō compiles itself)
 
 ---
