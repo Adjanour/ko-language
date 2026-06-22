@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const path = require('path');
+const fs = require('fs');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 
 let client;
@@ -8,11 +9,10 @@ function activate(context) {
     console.log('Kō language support is now active!');
 
     // ===== Start LSP Server =====
-    const serverModule = '/home/bernard/Learning/weird/lsp.py';
+    const serverModule = findLsp();
     const serverOptions = {
         command: 'python3',
         args: [serverModule],
-        options: { cwd: path.join(context.extensionPath, '..', '..') },
         transport: TransportKind.stdio,
     };
 
@@ -49,6 +49,31 @@ function activate(context) {
     });
 
     context.subscriptions.push(foldingProvider);
+}
+
+function findLsp() {
+    // 1) env var override
+    if (process.env.KO_LSP_PATH && fs.existsSync(process.env.KO_LSP_PATH)) {
+        return process.env.KO_LSP_PATH;
+    }
+    // 2) relative to extension dir (bundled VSIX: lsp.py shipped alongside)
+    let p = path.join(__dirname, 'lsp.py');
+    if (fs.existsSync(p)) return p;
+    // 3) walk up from __dirname looking for lsp.py (works for dev installs)
+    p = __dirname;
+    for (let i = 0; i < 6; i++) {
+        const candidate = path.join(p, 'lsp.py');
+        if (fs.existsSync(candidate)) return candidate;
+        const parent = path.dirname(p);
+        if (parent === p) break;
+        p = parent;
+    }
+    // 4) relative to workspace root
+    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+        p = path.join(vscode.workspace.workspaceFolders[0].uri.fsPath, 'lsp.py');
+        if (fs.existsSync(p)) return p;
+    }
+    throw new Error('Could not find lsp.py — set KO_LSP_PATH or open the ko-language workspace');
 }
 
 function deactivate() {
