@@ -1,0 +1,24 @@
+const LLVMtype = @import("types.zig");
+const Orc = @import("orc.zig");
+
+pub const LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction = ?*const fn (?*anyopaque, Orc.LLVMOrcExecutionSessionRef, [*c]const u8) callconv(.c) Orc.LLVMOrcObjectLayerRef;
+pub extern fn LLVMOrcCreateLLJITBuilder() LLVMtype.LLVMOrcLLJITBuilderRef;
+pub extern fn LLVMOrcDisposeLLJITBuilder(Builder: LLVMtype.LLVMOrcLLJITBuilderRef) void;
+pub extern fn LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(Builder: LLVMtype.LLVMOrcLLJITBuilderRef, JTMB: Orc.LLVMOrcJITTargetMachineBuilderRef) void;
+pub extern fn LLVMOrcLLJITBuilderSetObjectLinkingLayerCreator(Builder: LLVMtype.LLVMOrcLLJITBuilderRef, F: LLVMOrcLLJITBuilderObjectLinkingLayerCreatorFunction, Ctx: ?*anyopaque) void;
+pub extern fn LLVMOrcCreateLLJIT(Result: [*c]LLVMtype.LLVMOrcLLJITRef, Builder: LLVMtype.LLVMOrcLLJITBuilderRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcDisposeLLJIT(J: LLVMtype.LLVMOrcLLJITRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITGetExecutionSession(J: LLVMtype.LLVMOrcLLJITRef) Orc.LLVMOrcExecutionSessionRef;
+pub extern fn LLVMOrcLLJITGetMainJITDylib(J: LLVMtype.LLVMOrcLLJITRef) Orc.LLVMOrcJITDylibRef;
+pub extern fn LLVMOrcLLJITGetTripleString(J: LLVMtype.LLVMOrcLLJITRef) [*c]const u8;
+pub extern fn LLVMOrcLLJITGetGlobalPrefix(J: LLVMtype.LLVMOrcLLJITRef) u8;
+pub extern fn LLVMOrcLLJITMangleAndIntern(J: LLVMtype.LLVMOrcLLJITRef, UnmangledName: [*c]const u8) Orc.LLVMOrcSymbolStringPoolEntryRef;
+pub extern fn LLVMOrcLLJITAddObjectFile(J: LLVMtype.LLVMOrcLLJITRef, JD: Orc.LLVMOrcJITDylibRef, ObjBuffer: LLVMtype.LLVMMemoryBufferRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITAddObjectFileWithRT(J: LLVMtype.LLVMOrcLLJITRef, RT: Orc.LLVMOrcResourceTrackerRef, ObjBuffer: LLVMtype.LLVMMemoryBufferRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITAddLLVMIRModule(J: LLVMtype.LLVMOrcLLJITRef, JD: Orc.LLVMOrcJITDylibRef, TSM: Orc.LLVMOrcThreadSafeModuleRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITAddLLVMIRModuleWithRT(J: LLVMtype.LLVMOrcLLJITRef, JD: Orc.LLVMOrcResourceTrackerRef, TSM: Orc.LLVMOrcThreadSafeModuleRef) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITLookup(J: LLVMtype.LLVMOrcLLJITRef, Result: [*c]Orc.LLVMOrcExecutorAddress, Name: [*c]const u8) LLVMtype.LLVMErrorRef;
+pub extern fn LLVMOrcLLJITGetObjLinkingLayer(J: LLVMtype.LLVMOrcLLJITRef) Orc.LLVMOrcObjectLayerRef;
+pub extern fn LLVMOrcLLJITGetObjTransformLayer(J: LLVMtype.LLVMOrcLLJITRef) Orc.LLVMOrcObjectTransformLayerRef;
+pub extern fn LLVMOrcLLJITGetIRTransformLayer(J: LLVMtype.LLVMOrcLLJITRef) Orc.LLVMOrcIRTransformLayerRef;
+pub extern fn LLVMOrcLLJITGetDataLayoutStr(J: LLVMtype.LLVMOrcLLJITRef) [*c]const u8;

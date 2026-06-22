@@ -22,3 +22,10 @@ tree-sitter-ko/package-lock.json
 test_toplevel.ko
 build/
 vscode-ko/node_modules/
+
+# Zig build artifacts
+ko-zig/.zig-cache/
+ko-zig/zig-out/
+ko-zig/zig-pkg/
+ko-zig/test_alloc
+ko-zig/zig-cache/

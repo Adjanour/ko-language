@@ -1,0 +1,19 @@
+.{
+    .name = .ko,
+    .fingerprint = 0x1adddc5a17d1046b,
+    .version = "0.3.0",
+    .dependencies = .{
+        .llvm = .{
+            .url = "git+https://github.com/kassane/llvm-zig#f56b9f09c4a100de61eeb7afe39d633b7adb183a",
+            .hash = "llvm_zig-1.0.0-IXgkxN_5BADX7hYPlnstvgVKeqR_QhT6msse6U-p0PfJ",
+        },
+    },
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "std",
+        "tests",
+    },
+}
