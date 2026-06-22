@@ -1,0 +1,7 @@
+package std.math
+
+pub PI = 3.14159265358979
+
+pub fn sin x = x
+pub fn cos x = x
+fn internal_helper = 42

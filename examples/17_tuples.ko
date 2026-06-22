@@ -1,0 +1,45 @@
+// Example 17: Tuples
+// Tuples group multiple values into a single immutable value.
+
+fn swap tup =
+  let (a, b) = tup
+  (b, a)
+
+fn describe_point point =
+  match point
+    (0, 0) -> "origin"
+    (x, 0) -> to_string x
+    (0, y) -> to_string y
+    (x, y) -> concat (to_string x) (to_string y)
+
+fn main =
+  // Create tuples
+  let pair = (1, "hello")
+  let triple = (42, "world", true)
+  let nested = ((1, 2), (3, 4))
+
+  // Field access with .0, .1, .2
+  println (pair.0)       // 1
+  println (pair.1)       // hello
+  println (triple.0)     // 42
+  println (triple.2)     // true
+
+  // Nested field access
+  println (nested.0.0)   // 1
+  println (nested.1.1)   // 4
+
+  // Destructuring
+  let (x, y) = pair
+  println x              // 1
+  println y              // hello
+
+  // Swap function
+  let swapped = swap (10, 20)
+  println (swapped.0)    // 20
+  println (swapped.1)    // 10
+
+  // Tuple in match
+  println (describe_point (0, 0))    // origin
+  println (describe_point (5, 0))    // 5
+  println (describe_point (0, 3))    // 3
+  println (describe_point (2, 7))    // 27

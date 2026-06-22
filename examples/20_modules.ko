@@ -1,0 +1,12 @@
+# Module system v2 demo
+# Demonstrates: hierarchical imports, pub visibility, module blocks
+
+import std.math
+
+fn main =
+  # Full module import (prefixed as math_*)
+  println "Module import demo:"
+  println math.PI
+  println (math.sin 1.0)
+  println (math.cos 0.0)
+  println "Done!"

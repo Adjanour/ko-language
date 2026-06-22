@@ -1,0 +1,348 @@
+# Task Tracker CLI
+# A practical task management tool written in Ko
+#
+# Demonstrates: ADTs, pattern matching, HOFs, file I/O,
+#               string parsing, ref cells, higher-order functions
+#
+# Usage:
+#   tasktracker add <priority> <description>
+#   tasktracker list [--all]
+#   tasktracker done <id>
+#   tasktracker delete <id>
+#   tasktracker search <query>
+#   tasktracker stats
+#   tasktracker export
+
+# ===== Data Types =====
+
+type Priority = High | Medium | Low
+
+type Status = Pending | Done
+
+type Todo = Todo * * * *
+
+# List is built-in (Cons/Nil) - no redefinition needed
+
+# ===== Helper Functions =====
+
+fn not_val x = if x then false else true
+
+fn max_int a b = if a > b then a else b
+
+fn priority_to_string p =
+  match p
+    High -> "High"
+    Medium -> "Medium"
+    Low -> "Low"
+
+fn priority_from_string s =
+  match s
+    "high" -> High
+    "med" -> Medium
+    "medium" -> Medium
+    "low" -> Low
+    _ -> Medium
+
+fn priority_score p =
+  match p
+    High -> 3
+    Medium -> 2
+    Low -> 1
+
+fn status_to_string s =
+  match s
+    Pending -> "Pending"
+    Done -> "Done"
+
+fn status_from_string s =
+  match s
+    "pending" -> Pending
+    "done" -> Done
+    _ -> Pending
+
+# ===== Task Accessors =====
+
+fn task_id t =
+  match t
+    Todo id _ _ _ -> id
+
+fn task_desc t =
+  match t
+    Todo _ desc _ _ -> desc
+
+fn task_priority t =
+  match t
+    Todo _ _ p _ -> p
+
+fn task_status t =
+  match t
+    Todo _ _ _ s -> s
+
+fn is_pending t =
+  match (task_status t)
+    Pending -> true
+    Done -> false
+
+fn is_done t =
+  match (task_status t)
+    Pending -> false
+    Done -> true
+
+# ===== List Operations =====
+
+fn map_list f xs =
+  match xs
+    Cons x rest -> Cons (f x) (map_list f rest)
+    Nil -> Nil
+
+fn filter_list f xs =
+  match xs
+    Cons x rest -> if f x then Cons x (filter_list f rest) else filter_list f rest
+    Nil -> Nil
+
+fn fold_list f acc xs =
+  match xs
+    Cons x rest -> fold_list f (f acc x) rest
+    Nil -> acc
+
+fn length_list xs =
+  fold_list (\acc x -> acc + 1) 0 xs
+
+fn append_list xs x =
+  match xs
+    Cons v rest -> Cons v (append_list rest x)
+    Nil -> Cons x Nil
+
+fn reverse_list xs =
+  fold_list (\acc x -> Cons x acc) Nil xs
+
+fn find_max_id xs =
+  fold_list (\acc t -> max_int acc (task_id t)) 0 xs
+
+fn list_to_string xs =
+  match xs
+    Cons x rest ->
+      let rest_str = list_to_string rest
+      if rest_str == "" then x else concat x (concat ", " rest_str)
+    Nil -> ""
+
+
+fn task_to_line t =
+  match t
+    Todo id desc pri stat ->
+      "${to_string id}|${desc}|${priority_to_string pri}|${status_to_string stat}"
+
+fn task_from_line line =
+  let parts = split line "|"
+
+
+fn save_tasks tasks path =
+  let lines = map_list task_to_line tasks
+  let content = fold_list (\acc line -> if acc == "" then line else concat acc (concat "\n" line)) "" lines
+  write_file path content
+
+fn load_tasks path =
+  if not_val (file_exists path) then Nil
+  else
+    let content = read_file path
+    if content == "" then Nil
+    else
+      let lines = split content "\n"
+      let valid = filter_list (\s -> s != "") lines
+      map_list task_from_line valid
+
+# ===== Display =====
+
+fn task_matches_query query t =
+  contains (to_lower (task_desc t)) (to_lower query)
+
+fn print_task t =
+  let id = task_id t
+  let desc = task_desc t
+  let pri = priority_to_string (task_priority t)
+  let pri_marker =
+    match (task_priority t)
+      High -> "[!!!]"
+      Medium -> "[ !!]"
+      Low -> "[   ]"
+  let stat_marker =
+    match (task_status t)
+      Done -> "x"
+      Pending -> " "
+  println "  ${to_string id}. ${pri_marker} [${stat_marker}] ${desc} (${pri})"
+
+fn print_tasks tasks label =
+  if length_list tasks == 0 then println "  No tasks found."
+  else
+    println "${label}:"
+    fold_list (\_ t -> print_task t) () tasks
+
+fn sort_by_priority tasks =
+  match tasks
+    Nil -> Nil
+    Cons pivot rest ->
+      let rest_sorted = sort_by_priority rest
+      let higher = filter_list (\t -> priority_score (task_priority t) >= priority_score (task_priority pivot)) rest_sorted
+      let lower = filter_list (\t -> priority_score (task_priority t) < priority_score (task_priority pivot)) rest_sorted
+      append_list (append_list higher pivot) lower
+
+# ===== Commands =====
+
+fn cmd_add tasks args =
+  match args
+    Cons pri_str (Cons desc_head rest) ->
+      let pri = priority_from_string pri_str
+      let desc = fold_list (\acc s -> if acc == "" then s else concat acc (concat " " s)) "" (Cons desc_head rest)
+      let new_id = find_max_id tasks + 1
+      let new_todo = Todo new_id desc pri Pending
+      println "Added task #${to_string new_id}: ${desc}"
+      append_list tasks new_todo
+    _ ->
+      println "Usage: tasktracker add <high|med|low> <description>"
+      tasks
+
+fn cmd_list tasks args =
+  let show_all =
+    match args
+      Cons "--all" _ -> true
+      _ -> false
+  let pending = filter_list is_pending tasks
+  let done_tasks = filter_list is_done tasks
+  if show_all then
+    let sorted = sort_by_priority tasks
+    print_tasks sorted "All Tasks"
+  else
+    let sorted_pending = sort_by_priority pending
+    print_tasks sorted_pending "Pending Tasks"
+    if length_list done_tasks > 0 then
+      print_tasks done_tasks "Completed Tasks"
+    else ()
+  tasks
+
+fn cmd_done tasks args =
+  match args
+    Cons id_str Nil ->
+      let target_id = to_int id_str
+      let found = ref false
+      let result = map_list (\t ->
+        if task_id t == target_id then
+          match (task_status t)
+            Done ->
+              println "Task #${to_string target_id} is already done."
+              t
+            Pending ->
+              found := true
+              println "Task #${to_string target_id} marked as done!"
+              Todo target_id (task_desc t) (task_priority t) Done
+        else t
+      ) tasks
+      if not_val (!found) then println "Task #${to_string target_id} not found."
+      result
+    _ ->
+      println "Usage: tasktracker done <id>"
+      tasks
+
+fn cmd_delete tasks args =
+  match args
+    Cons id_str Nil ->
+      let target_id = to_int id_str
+      let found = ref false
+      let result = filter_list (\t ->
+        if task_id t == target_id then
+          found := true
+          println "Deleted task #${to_string target_id}: ${task_desc t}"
+          false
+        else true
+      ) tasks
+      if not_val (!found) then println "Task #${to_string target_id} not found."
+      result
+    _ ->
+      println "Usage: tasktracker delete <id>"
+      tasks
+
+fn cmd_search tasks args =
+  match args
+    Cons query Nil ->
+      let results = filter_list (task_matches_query query) tasks
+      if length_list results == 0 then
+        println "No tasks matching '${query}'."
+      else
+        print_tasks results "Search Results: '${query}'"
+    _ ->
+      println "Usage: tasktracker search <query>"
+  tasks
+
+fn cmd_stats tasks _ =
+  let total = length_list tasks
+  let pending = length_list (filter_list is_pending tasks)
+  let done_count = length_list (filter_list is_done tasks)
+  let high = length_list (filter_list (\t -> match (task_priority t) High -> true _ -> false) tasks)
+  let medium = length_list (filter_list (\t -> match (task_priority t) Medium -> true _ -> false) tasks)
+  let low = length_list (filter_list (\t -> match (task_priority t) Low -> true _ -> false) tasks)
+  println "=== Task Statistics ==="
+  println "  Total:    ${to_string total}"
+  println "  Pending:  ${to_string pending}"
+  println "  Done:     ${to_string done_count}"
+  println "  High:     ${to_string high}"
+  println "  Medium:   ${to_string medium}"
+  println "  Low:      ${to_string low}"
+  if total > 0 then
+    let pct = (done_count * 100) / total
+    println "  Progress: ${to_string pct}%"
+  else ()
+  tasks
+
+fn cmd_export tasks _ =
+  let lines = map_list task_to_line tasks
+  let content = fold_list (\acc line -> if acc == "" then line else concat acc (concat "\n" line)) "" lines
+  write_file "tasks_export.txt" content
+  println "Exported ${to_string (length_list tasks)} tasks to tasks_export.txt"
+  tasks
+
+fn print_help _ =
+  println "Task Tracker - A Ko-powered task manager"
+  println ""
+  println "Commands:"
+  println "  add <high|med|low> <description>  Add a new task"
+  println "  list [--all]                      List tasks (pending only, or all)"
+  println "  done <id>                         Mark a task as done"
+  println "  delete <id>                       Delete a task"
+  println "  search <query>                    Search tasks by description"
+  println "  stats                             Show task statistics"
+  println "  export                            Export tasks to file"
+  println "  help                              Show this help"
+
+# ===== Main =====
+
+fn main =
+  let tasks_path = "tasks.txt"
+  let tasks = load_tasks tasks_path
+
+  if args_count() == 1 then
+    print_help ()
+  else
+    let cmd = args_get 1
+    let cmd_args =
+      let collect_args idx acc =
+        if idx >= args_count() then acc
+        else collect_args (idx + 1) (append_list acc (args_get idx))
+      collect_args 2 Nil
+
+    let new_tasks =
+      match cmd
+        "add" -> cmd_add tasks cmd_args
+        "list" -> cmd_list tasks cmd_args
+        "done" -> cmd_done tasks cmd_args
+        "delete" -> cmd_delete tasks cmd_args
+        "search" -> cmd_search tasks cmd_args
+        "stats" -> cmd_stats tasks cmd_args
+        "export" -> cmd_export tasks cmd_args
+        "help" -> print_help ()
+        _ ->
+          println "Unknown command: ${cmd}"
+          println "Use 'help' for usage information."
+          tasks
+
+    if cmd != "stats" && cmd != "help" && cmd != "export" && cmd != "list" && cmd != "search" then
+      save_tasks new_tasks tasks_path
+    else ()

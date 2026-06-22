@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <rect width="1080" height="1080" fill="#0D0D1A"/>
+
+  <text x="540" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="100" font-weight="800" fill="#FFFFFF" letter-spacing="-3">No null.</text>
+  <text x="540" y="370" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="100" font-weight="800" fill="#FFFFFF" letter-spacing="-3">No exceptions.</text>
+  <text x="540" y="460" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#A1A1AA">Algebraic types handle everything.</text>
+
+  <text x="540" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" fill="#71717A">No runtime crashes. No null checks. No try/catch.</text>
+
+  <rect x="200" y="590" width="680" height="240" rx="12" fill="#1A1A2E"/>
+  <text x="240" y="650" font-family="ui-monospace, monospace" font-size="26" fill="#E4E4E7">
+    <tspan x="240" dy="0">type Option a =</tspan>
+    <tspan x="240" dy="42">  | </tspan>
+    <tspan fill="#F59E0B">Some</tspan>
+    <tspan> a</tspan>
+    <tspan x="240" dy="42">  | </tspan>
+    <tspan fill="#F59E0B">None</tspan>
+    <tspan x="240" dy="56" fill="#A1A1AA" font-size="18">-- No null. No segfaults. Just types.</tspan>
+  </text>
+
+  <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>
+  <text x="540" y="1024" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>
+</svg>

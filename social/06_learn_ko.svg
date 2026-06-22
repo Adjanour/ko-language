@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1350" viewBox="0 0 1080 1350">
+  <rect width="1080" height="1350" fill="#0D0D1A"/>
+
+  <text x="540" y="180" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" fill="#FFFFFF" letter-spacing="-2">Learn Kō in 60 Seconds</text>
+
+  <!-- Step 1 -->
+  <g transform="translate(120, 280)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#F59E0B"/>
+    <text x="22" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#0D0D1A">1</text>
+    <text x="70" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">Define a function</text>
+    <text x="70" y="66" font-family="ui-monospace, monospace" font-size="22" fill="#F59E0B">fn greet name = println "Hello, " ++ name</text>
+  </g>
+
+  <!-- Step 2 -->
+  <g transform="translate(120, 440)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#52525B"/>
+    <text x="22" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF">2</text>
+    <text x="70" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">Pipe data through it</text>
+    <text x="70" y="66" font-family="ui-monospace, monospace" font-size="22" fill="#E4E4E7">"World" |&gt; greet</text>
+  </g>
+
+  <!-- Step 3 -->
+  <g transform="translate(120, 600)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#52525B"/>
+    <text x="22" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF">3</text>
+    <text x="70" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">Pattern match on ADTs</text>
+    <text x="70" y="66" font-family="ui-monospace, monospace" font-size="22" fill="#E4E4E7">match x | Some v → v | None → "nope"</text>
+  </g>
+
+  <!-- Step 4 -->
+  <g transform="translate(120, 760)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#52525B"/>
+    <text x="22" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF">4</text>
+    <text x="70" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">Run at compile time</text>
+    <text x="70" y="66" font-family="ui-monospace, monospace" font-size="22" fill="#E4E4E7">comptime factorial 5</text>
+  </g>
+
+  <!-- Step 5 -->
+  <g transform="translate(120, 920)">
+    <rect x="0" y="0" width="44" height="44" rx="10" fill="#52525B"/>
+    <text x="22" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="#FFFFFF">5</text>
+    <text x="70" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#FFFFFF">Compile &amp; ship</text>
+    <text x="70" y="66" font-family="ui-monospace, monospace" font-size="22" fill="#E4E4E7">ko build → ./my_program</text>
+  </g>
+
+  <!-- Bottom CTA -->
+  <rect x="240" y="1060" width="600" height="64" rx="32" fill="#F59E0B"/>
+  <text x="540" y="1102" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="#0D0D1A">⭐ Star on GitHub →</text>
+
+  <!-- Footer -->
+  <line x1="80" y1="1220" x2="1000" y2="1220" stroke="#27272A" stroke-width="1"/>
+  <text x="540" y="1264" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>
+</svg>

@@ -29,3 +29,8 @@ ko-zig/zig-out/
 ko-zig/zig-pkg/
 ko-zig/test_alloc
 ko-zig/zig-cache/
+
+# Compiled Kō binaries
+examples/20_modules
+examples/21_result
+examples/22_named_params

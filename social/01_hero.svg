@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
+  <rect width="1080" height="1080" fill="#0D0D1A"/>
+
+  <circle cx="540" cy="540" r="480" fill="none" stroke="#F59E0B" stroke-width="0.5" opacity="0.08"/>
+  <circle cx="540" cy="540" r="380" fill="none" stroke="#F59E0B" stroke-width="0.5" opacity="0.06"/>
+  <circle cx="540" cy="540" r="280" fill="none" stroke="#F59E0B" stroke-width="0.5" opacity="0.04"/>
+
+  <rect x="880" y="48" width="160" height="44" rx="22" fill="#1A1A2E" stroke="#F59E0B" stroke-width="1.5"/>
+  <text x="960" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#F59E0B">vibecoded</text>
+
+  <text x="540" y="450" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="140" font-weight="800" fill="#FFFFFF" letter-spacing="-4">I'm Kō.</text>
+
+  <text x="540" y="560" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="400" fill="#A1A1AA" letter-spacing="2">A functional language that compiles to C</text>
+
+  <g transform="translate(540, 690)">
+    <text x="-200" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">15 keywords</text>
+    <circle cx="-90" cy="-5" r="3" fill="#52525B"/>
+    <text x="0" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">ADTs</text>
+    <circle cx="90" cy="-5" r="3" fill="#52525B"/>
+    <text x="200" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">comptime</text>
+  </g>
+
+  <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>
+  <text x="540" y="1024" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>
+
+  <circle cx="540" cy="540" r="4" fill="#F59E0B" opacity="0.3"/>
+</svg>
