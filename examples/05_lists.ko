@@ -1,34 +1,19 @@
-// Linked Lists — The universal data structure.
+# Linked Lists — The universal data structure.
 
-type List = Cons * * | Nil
+type List a = Cons a (List a) | Nil
 
 fn sum xs =
   match xs
-    Cons x rest -> x + sum rest
-    Nil -> 0
+    | Cons x rest => x + sum rest
+    | Nil => 0
 
 fn length xs =
   match xs
-    Cons _ rest -> 1 + length rest
-    Nil -> 0
-
-fn append xs ys =
-  match xs
-    Cons x rest -> Cons x (append rest ys)
-    Nil -> ys
-
-fn reverse-helper acc xs =
-  match xs
-    Cons x rest -> reverse-helper (Cons x acc) rest
-    Nil -> acc
-
-fn reverse xs = reverse-helper Nil xs
+    | Cons _ rest => 1 + length rest
+    | Nil => 0
 
 fn main =
-  let xs = Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))
-  let ys = Cons 5 (Cons 6 Nil)
-
-  println (sum xs)
-  println (length xs)
-  println (sum (append xs ys))
-  println (sum (reverse xs))
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  let s = sum xs
+  let l = length xs
+  s

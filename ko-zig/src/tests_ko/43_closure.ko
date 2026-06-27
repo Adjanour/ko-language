@@ -1,0 +1,5 @@
+# Test: lambda closures capture environment
+fn main =
+  let x = 10
+  let f = \y -> x + y
+  f 5

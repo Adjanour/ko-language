@@ -1,36 +1,30 @@
+# Python
 __pycache__/
 *.pyc
-*.c
+.pytest_cache/
+
+# Build artifacts
+build/
 *.o
 *.out
-test_toplevel
+
+# Compiled Kō binaries (Python compiler era)
 examples/*.c
-examples/01_hello
-examples/02_numbers
-examples/03_functions
-examples/04_maybe
-examples/05_lists
-examples/06_result
-examples/07_pattern_match
-examples/08_operators
-examples/09_tree
-examples/10_inspect
-vscode-ko/ko-language-*.vsix
-tree-sitter-ko/src/
-tree-sitter-ko/node_modules/
-tree-sitter-ko/package-lock.json
-test_toplevel.ko
-build/
-vscode-ko/node_modules/
 
 # Zig build artifacts
 ko-zig/.zig-cache/
 ko-zig/zig-out/
 ko-zig/zig-pkg/
-ko-zig/test_alloc
-ko-zig/zig-cache/
 
-# Compiled Kō binaries
-examples/20_modules
-examples/21_result
-examples/22_named_params
+# VS Code extension
+vscode-ko/ko-language-*.vsix
+vscode-ko/node_modules/
+
+# Tree-sitter
+tree-sitter-ko/src/
+tree-sitter-ko/node_modules/
+tree-sitter-ko/package-lock.json
+
+# Editor/OS
+.DS_Store
+*~

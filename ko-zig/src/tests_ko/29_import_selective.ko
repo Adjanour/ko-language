@@ -1,0 +1,4 @@
+# Test: selective import
+import Math.{add, double}
+
+fn main = 1

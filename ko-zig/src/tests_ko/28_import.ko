@@ -1,0 +1,4 @@
+# Test: import statement
+import Math
+
+fn main = 1

@@ -1,0 +1,6 @@
+# Test: partial application of multi-param functions
+fn add x y = x + y
+fn main =
+  let add1 = add 1
+  let add10 = add 10
+  add1 2 + add10 5

@@ -1,0 +1,6 @@
+# Test: sum type with type parameters
+type List a = Cons a (List a) | Nil
+type Maybe a = Just a | Nothing
+type Either a b = Left a | Right b
+
+fn main = 1

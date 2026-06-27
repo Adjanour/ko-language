@@ -1,31 +1,22 @@
-// Pattern Matching — Handle every case. The compiler checks for you.
+# Pattern Matching — Handle every case.
 
-type Expr = Add * * | Mul * * | Lit *
-type Shape = Circle * | Rect * *
+type Expr = Add (Expr) (Expr) | Mul (Expr) (Expr) | Lit (Int)
+type Shape = Circle (Int) | Rect (Int) (Int)
 
 fn eval e =
   match e
-    Add a b -> eval a + eval b
-    Mul a b -> eval a * eval b
-    Lit x -> x
+    | Add a b => eval a + eval b
+    | Mul a b => eval a * eval b
+    | Lit n => n
 
 fn area s =
   match s
-    Circle r -> 3 * r * r
-    Rect w h -> w * h
-
-fn describe s =
-  match s
-    Circle _ -> "circle"
-    Rect _ _ -> "rectangle"
+    | Circle r => r * r
+    | Rect w h => w * h
 
 fn main =
-  let expr = Mul (Add (Lit 2) (Lit 3)) (Lit 4)
-  println (eval expr)
-
-  let c = Circle 5
-  let r = Rect 3 4
-  println (area c)
-  println (area r)
-  println (describe c)
-  println (describe r)
+  let e = Add (Lit 1) (Mul (Lit 2) (Lit 3))
+  let s = Circle 5
+  let v = eval e
+  let a = area s
+  v

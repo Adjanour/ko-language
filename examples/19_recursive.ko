@@ -1,0 +1,14 @@
+# Recursive Types — Trees and lists.
+
+type Tree a = Node (Tree a) a (Tree a) | Leaf
+type List a = Cons a (List a) | Nil
+
+fn sum-tree tree =
+  match tree
+    | Leaf => 0
+    | Node left v right => v + sum-tree left + sum-tree right
+
+fn main =
+  let tree = Node (Node Leaf 1 Leaf) 2 (Node Leaf 3 Leaf)
+  let sum = sum-tree tree
+  sum

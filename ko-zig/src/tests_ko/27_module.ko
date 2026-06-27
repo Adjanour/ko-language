@@ -1,0 +1,8 @@
+# Test: module definition
+module Math
+  fn add x y = x + y
+  fn double x = x * 2
+
+fn main =
+  let result = Math.add 1 2
+  result

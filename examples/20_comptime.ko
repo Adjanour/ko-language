@@ -1,0 +1,6 @@
+# Comptime — Evaluate at compile time.
+
+fn main =
+  let x = comptime 2 + 3
+  let y = comptime 10 * 20
+  x + y

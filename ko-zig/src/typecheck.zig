@@ -79,6 +79,7 @@ pub const Inferer = struct {
     ctors: std.StringHashMap(CtorInfo),
     types: std.StringHashMap(TypeDefInfo),
     type_names: std.StringHashMap(usize),
+    current_module: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
         return .{
@@ -88,6 +89,7 @@ pub const Inferer = struct {
             .ctors = std.StringHashMap(CtorInfo).init(allocator),
             .types = std.StringHashMap(TypeDefInfo).init(allocator),
             .type_names = std.StringHashMap(usize).init(allocator),
+            .current_module = null,
         };
     }
 
@@ -96,6 +98,16 @@ pub const Inferer = struct {
         self.ctors.deinit();
         self.types.deinit();
         self.type_names.deinit();
+    }
+
+    /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
+    fn resolveName(self: *Inferer, env: *Env, name: []const u8) ?Scheme {
+        if (env.getScheme(name)) |scheme| return scheme;
+        if (self.current_module) |mod| {
+            const qualified = std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ mod, name }) catch return null;
+            return env.getScheme(qualified);
+        }
+        return null;
     }
 
     fn newType(self: *Inferer, ty: Type) Error!*Type {
@@ -505,6 +517,9 @@ pub const Inferer = struct {
                     try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, m.name })
                 else
                     m.name;
+                const prev_module = self.current_module;
+                self.current_module = mod_prefix;
+                defer self.current_module = prev_module;
                 for (m.definitions) |inner_def| {
                     try self.inferDefinition(inner_def, mod_prefix);
                 }
@@ -597,11 +612,11 @@ pub const Inferer = struct {
             .char_literal => try self.newType(.char),
             .bool_literal => try self.newType(.bool),
             .identifier => |name| blk: {
-                const scheme = env.getScheme(name) orelse return error.UndefinedName;
+                const scheme = self.resolveName(env, name) orelse return error.UndefinedName;
                 break :blk try self.instantiate(scheme);
             },
             .constructor => |name| blk: {
-                const scheme = env.getScheme(name) orelse return error.UndefinedName;
+                const scheme = self.resolveName(env, name) orelse return error.UndefinedName;
                 break :blk try self.instantiate(scheme);
             },
             .tuple => |items| {
@@ -802,7 +817,18 @@ pub const Inferer = struct {
         var field_types = std.ArrayList(RecordFieldType).empty;
         defer field_types.deinit(self.allocator);
 
-        if (self.types.get(name)) |info| {
+        // Try bare name first, then module-qualified
+        var resolved_name = name;
+        if (self.types.get(name) == null) {
+            if (self.current_module) |mod| {
+                const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ mod, name });
+                if (self.types.get(qualified)) |_| {
+                    resolved_name = qualified;
+                }
+            }
+        }
+
+        if (self.types.get(resolved_name)) |info| {
             for (info.field_names) |wanted| {
                 var found: ?*parser.Expr = null;
                 for (fields) |field| {
@@ -820,7 +846,7 @@ pub const Inferer = struct {
             }
         }
 
-        return try self.newType(.{ .record = .{ .name = name, .fields = try self.allocator.dupe(RecordFieldType, field_types.items) } });
+        return try self.newType(.{ .record = .{ .name = resolved_name, .fields = try self.allocator.dupe(RecordFieldType, field_types.items) } });
     }
 
     fn inferMatch(self: *Inferer, env: *Env, value: *parser.Expr, arms: []const parser.MatchArm) Error!*Type {
@@ -871,7 +897,15 @@ pub const Inferer = struct {
                 }
             },
             .constructor => |ctor| {
-                const info = self.ctors.get(ctor.name) orelse return error.UnknownConstructor;
+                // Try bare name first, then module-qualified
+                var ctor_info = self.ctors.get(ctor.name);
+                if (ctor_info == null) {
+                    if (self.current_module) |mod| {
+                        const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ mod, ctor.name });
+                        ctor_info = self.ctors.get(qualified);
+                    }
+                }
+                const info = ctor_info orelse return error.UnknownConstructor;
                 const num_type_params = self.type_names.get(info.type_name) orelse 0;
                 const type_args = try self.allocator.alloc(*Type, num_type_params);
                 for (type_args) |*slot| {
@@ -891,7 +925,18 @@ pub const Inferer = struct {
                 var field_types = std.ArrayList(RecordFieldType).empty;
                 defer field_types.deinit(self.allocator);
 
-                if (self.types.get(rec.name)) |info| {
+                // Try bare name first, then module-qualified
+                var resolved_rec_name = rec.name;
+                if (self.types.get(rec.name) == null) {
+                    if (self.current_module) |mod| {
+                        const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ mod, rec.name });
+                        if (self.types.get(qualified)) |_| {
+                            resolved_rec_name = qualified;
+                        }
+                    }
+                }
+
+                if (self.types.get(resolved_rec_name)) |info| {
                     for (info.field_names) |wanted| {
                         const field_ty = try self.newVarType(try self.freshName(wanted));
                         try field_types.append(self.allocator, .{ .name = wanted, .ty = field_ty });
@@ -903,7 +948,7 @@ pub const Inferer = struct {
                     }
                 }
 
-                try self.unify(expected, try self.newType(.{ .record = .{ .name = rec.name, .fields = try self.allocator.dupe(RecordFieldType, field_types.items) } }));
+                try self.unify(expected, try self.newType(.{ .record = .{ .name = resolved_rec_name, .fields = try self.allocator.dupe(RecordFieldType, field_types.items) } }));
 
                 for (rec.fields) |field| {
                     var matched: ?*Type = null;

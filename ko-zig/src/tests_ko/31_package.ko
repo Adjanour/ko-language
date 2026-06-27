@@ -1,0 +1,4 @@
+# Test: package declaration
+package std.math
+
+fn main = 1

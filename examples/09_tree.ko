@@ -1,20 +1,28 @@
-// Binary Search Tree — A real-world data structure with pattern matching.
+# Binary Search Tree — Data structure with pattern matching.
 
-type Tree = Node * * * | Leaf
+type Tree a = Node (Tree a) a (Tree a) | Leaf
 
 fn insert tree val =
   match tree
-    Leaf -> Node val Leaf Leaf
-    Node v left right ->
-      if val < v then Node v (insert left val) right
-      else if val > v then Node v left (insert right val)
+    | Leaf => Node Leaf val Leaf
+    | Node left v right =>
+      if val < v then Node (insert left val) v right
+      else if val > v then Node left v (insert right val)
       else tree
 
-fn sum tree =
+fn contains tree val =
   match tree
-    Leaf -> 0
-    Node v left right -> v + sum left + sum right
+    | Leaf => false
+    | Node left v right =>
+      if val == v then true
+      else if val < v then contains left val
+      else contains right val
 
 fn main =
-  let tree = insert (insert (insert (insert (insert Leaf 4) 2) 6) 1) 3
-  println (sum tree)
+  let tree = Leaf
+  let tree = insert tree 5
+  let tree = insert tree 3
+  let tree = insert tree 7
+  let has5 = contains tree 5
+  let has9 = contains tree 9
+  1

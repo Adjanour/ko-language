@@ -1,0 +1,8 @@
+# Test: logical operators (||, or, &&, and, not)
+fn main =
+  let a = true || false
+  let b = true or false
+  let c = true && false
+  let d = true and false
+  let e = not true
+  1

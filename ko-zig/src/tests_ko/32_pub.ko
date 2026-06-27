@@ -1,0 +1,6 @@
+# Test: pub visibility
+pub fn public_fn = 1
+pub type PublicType = { x: Int }
+pub let public_let = 42
+
+fn main = 1

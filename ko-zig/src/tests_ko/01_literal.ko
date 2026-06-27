@@ -1,0 +1,7 @@
+# Test: integer literals (decimal, hex, binary, octal)
+fn main =
+  let a = 42
+  let b = 0xFF
+  let c = 0b1010
+  let d = 0o77
+  a

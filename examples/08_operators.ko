@@ -1,22 +1,10 @@
-// Operators — Precedence, associativity, logic.
+# Operators — Precedence and associativity.
 
 fn main =
-  // Arithmetic precedence
-  println (2 + 3 * 4)      // 14, not 20
-  println (10 - 2 - 3)     // 5, left-associative
-  println (2 * 3 + 4 * 5)  // 26
-
-  // Comparison
-  println (1 < 2)
-  println (3 == 3)
-  println (5 != 4)
-
-  // Logical operators
-  println (true && false)
-  println (true || false)
-  println (true == false)
-
-  // Conditional expression
-  let x = 10
-  let msg = if x > 0 then "positive" else "non-positive"
-  println msg
+  let a = 2 + 3 * 4
+  let b = (2 + 3) * 4
+  let c = 10 / 2 - 3
+  let d = 2 * 3 + 4 * 5
+  let e = true || false && true
+  let f = not true
+  a

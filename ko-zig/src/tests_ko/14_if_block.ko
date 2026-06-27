@@ -1,0 +1,7 @@
+# Test: if with block body
+fn main =
+  let x = 5
+  let result = if x == 5 then
+    1
+  else 0
+  result

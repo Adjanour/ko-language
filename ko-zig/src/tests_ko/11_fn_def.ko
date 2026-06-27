@@ -1,0 +1,7 @@
+# Test: function definitions with parameters and return type annotation
+fn add x y = x + y
+fn double x : Int = x * 2
+fn main =
+  let a = add 1 2
+  let b = double 5
+  a + b

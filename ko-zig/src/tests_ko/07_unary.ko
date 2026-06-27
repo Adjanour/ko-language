@@ -1,0 +1,6 @@
+# Test: unary operators (-, !, ref)
+fn main =
+  let a = -5
+  let b = not true
+  let c = ref 10
+  1

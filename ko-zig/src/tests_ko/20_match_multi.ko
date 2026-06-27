@@ -1,0 +1,8 @@
+# Test: match with multiple patterns
+type List a = Cons a (List a) | Nil
+
+fn main =
+  let xs = Cons 1 (Cons 2 Nil)
+  match xs
+    | Cons x _ => x
+    | Nil => 0

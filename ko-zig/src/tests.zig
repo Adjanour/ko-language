@@ -1017,3 +1017,120 @@ test "integration: full program with main" {
         \\        None => 0
     );
 }
+
+test "integration: module with multiple functions using match" {
+    try typecheck.testInfer(
+        \\module Geo
+        \\  type Point = { x: Int, y: Int }
+        \\  pub fn distance p = match p
+        \\    Point { x, y } => x * x + y * y
+        \\  pub fn translate p dx dy = match p
+        \\    Point { x, y } => Point { x = x + dx, y = y + dy }
+        \\fn main =
+        \\  let p = Geo.Point { x = 3, y = 4 }
+        \\  let d = Geo.distance p
+        \\  let p2 = Geo.translate p 10 20
+        \\  let d2 = Geo.distance p2
+        \\  d + d2
+    );
+}
+
+test "integration: partial application of multi-param function" {
+    try typecheck.testInfer(
+        \\fn add x y = x + y
+        \\fn main =
+        \\  let add1 = add 1
+        \\  add1 2
+    );
+}
+
+test "integration: currying with compose" {
+    try typecheck.testInfer(
+        \\fn compose f g x = f (g x)
+        \\fn double x = x * 2
+        \\fn inc x = x + 1
+        \\fn main =
+        \\  let double_then_inc = compose inc double
+        \\  double_then_inc 5
+    );
+}
+
+test "integration: lambda closures capture environment" {
+    try typecheck.testInfer(
+        \\fn main =
+        \\  let x = 10
+        \\  let f = \y -> x + y
+        \\  f 5
+    );
+}
+
+test "integration: pipe with partial application" {
+    try typecheck.testInfer(
+        \\fn add x y = x + y
+        \\fn double x = x * 2
+        \\fn main =
+        \\  5 |> add 1 |> double
+    );
+}
+
+test "parser: all .ko test files parse successfully" {
+    const files = [_]struct { name: []const u8, source: [:0]const u8 }{
+        .{ .name = "01_literal.ko", .source = @embedFile("tests_ko/01_literal.ko") },
+        .{ .name = "02_string_char.ko", .source = @embedFile("tests_ko/02_string_char.ko") },
+        .{ .name = "03_bool.ko", .source = @embedFile("tests_ko/03_bool.ko") },
+        .{ .name = "04_arithmetic.ko", .source = @embedFile("tests_ko/04_arithmetic.ko") },
+        .{ .name = "05_comparison.ko", .source = @embedFile("tests_ko/05_comparison.ko") },
+        .{ .name = "06_logical.ko", .source = @embedFile("tests_ko/06_logical.ko") },
+        .{ .name = "07_unary.ko", .source = @embedFile("tests_ko/07_unary.ko") },
+        .{ .name = "08_application.ko", .source = @embedFile("tests_ko/08_application.ko") },
+        .{ .name = "09_named_args.ko", .source = @embedFile("tests_ko/09_named_args.ko") },
+        .{ .name = "10_let.ko", .source = @embedFile("tests_ko/10_let.ko") },
+        .{ .name = "11_fn_def.ko", .source = @embedFile("tests_ko/11_fn_def.ko") },
+        .{ .name = "12_fn_block.ko", .source = @embedFile("tests_ko/12_fn_block.ko") },
+        .{ .name = "13_if.ko", .source = @embedFile("tests_ko/13_if.ko") },
+        .{ .name = "14_if_block.ko", .source = @embedFile("tests_ko/14_if_block.ko") },
+        .{ .name = "15_sum_type.ko", .source = @embedFile("tests_ko/15_sum_type.ko") },
+        .{ .name = "16_sum_type_params.ko", .source = @embedFile("tests_ko/16_sum_type_params.ko") },
+        .{ .name = "17_record_type.ko", .source = @embedFile("tests_ko/17_record_type.ko") },
+        .{ .name = "18_record_literal.ko", .source = @embedFile("tests_ko/18_record_literal.ko") },
+        .{ .name = "19_match.ko", .source = @embedFile("tests_ko/19_match.ko") },
+        .{ .name = "20_match_multi.ko", .source = @embedFile("tests_ko/20_match_multi.ko") },
+        .{ .name = "21_match_record.ko", .source = @embedFile("tests_ko/21_match_record.ko") },
+        .{ .name = "22_lambda.ko", .source = @embedFile("tests_ko/22_lambda.ko") },
+        .{ .name = "23_lambda_wildcard.ko", .source = @embedFile("tests_ko/23_lambda_wildcard.ko") },
+        .{ .name = "24_pipe.ko", .source = @embedFile("tests_ko/24_pipe.ko") },
+        .{ .name = "25_tuple.ko", .source = @embedFile("tests_ko/25_tuple.ko") },
+        .{ .name = "26_ref.ko", .source = @embedFile("tests_ko/26_ref.ko") },
+        .{ .name = "27_module.ko", .source = @embedFile("tests_ko/27_module.ko") },
+        .{ .name = "28_import.ko", .source = @embedFile("tests_ko/28_import.ko") },
+        .{ .name = "29_import_selective.ko", .source = @embedFile("tests_ko/29_import_selective.ko") },
+        .{ .name = "30_import_constructor.ko", .source = @embedFile("tests_ko/30_import_constructor.ko") },
+        .{ .name = "31_package.ko", .source = @embedFile("tests_ko/31_package.ko") },
+        .{ .name = "32_pub.ko", .source = @embedFile("tests_ko/32_pub.ko") },
+        .{ .name = "33_comptime.ko", .source = @embedFile("tests_ko/33_comptime.ko") },
+        .{ .name = "34_nested.ko", .source = @embedFile("tests_ko/34_nested.ko") },
+        .{ .name = "35_precedence.ko", .source = @embedFile("tests_ko/35_precedence.ko") },
+        .{ .name = "36_hyphenated.ko", .source = @embedFile("tests_ko/36_hyphenated.ko") },
+        .{ .name = "37_wildcard.ko", .source = @embedFile("tests_ko/37_wildcard.ko") },
+        .{ .name = "38_comments.ko", .source = @embedFile("tests_ko/38_comments.ko") },
+        .{ .name = "39_multiline.ko", .source = @embedFile("tests_ko/39_multiline.ko") },
+        .{ .name = "40_minimal.ko", .source = @embedFile("tests_ko/40_minimal.ko") },
+        .{ .name = "41_partial.ko", .source = @embedFile("tests_ko/41_partial.ko") },
+        .{ .name = "42_curry_compose.ko", .source = @embedFile("tests_ko/42_curry_compose.ko") },
+        .{ .name = "43_closure.ko", .source = @embedFile("tests_ko/43_closure.ko") },
+    };
+
+    for (files) |f| {
+        var p = parser.Parser.init(std.testing.allocator, f.source) catch |err| {
+            std.debug.print("FAIL: {s} - parser init error: {}\n", .{ f.name, err });
+            return error.TestFailed;
+        };
+        defer p.deinit();
+
+        _ = p.parse_program() catch |err| {
+            std.debug.print("FAIL: {s} - parse error: {}\n", .{ f.name, err });
+            return error.TestFailed;
+        };
+    }
+    std.debug.print("Parsed {d} test files successfully\n", .{files.len});
+}

@@ -1,0 +1,6 @@
+# Test: comments (# to end of line)
+# This is a comment
+fn main =
+  let x = 1
+  # inline comment
+  x

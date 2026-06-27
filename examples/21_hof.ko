@@ -1,0 +1,15 @@
+# Higher-Order Functions — Functions as values.
+
+fn apply f x = f x
+fn compose f g x = f (g x)
+
+fn double x = x * 2
+fn inc x = x + 1
+fn negate x = 0 - x
+
+fn main =
+  let a = apply double 5
+  let b = apply inc 10
+  let c = compose inc double 5
+  let d = compose negate inc 5
+  a + b + c + d

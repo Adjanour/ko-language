@@ -1,0 +1,8 @@
+# Test: record literals and field access
+type Point = { x: Int, y: Int }
+
+fn main =
+  let pt = Point { x = 3, y = 4 }
+  let x_val = pt.x
+  let y_val = pt.y
+  x_val

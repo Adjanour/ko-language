@@ -49,6 +49,7 @@ pub const Parser = struct {
     source: [:0]const u8,
     tokens: []lexer.Token,
     pos: usize,
+    allow_let_in_body: bool = false,
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Error!Parser {
         var tok = lexer.Tokenizer.init(source);
@@ -274,10 +275,14 @@ pub const Parser = struct {
         if (self.current().tag == .string) {
             try parts.append(self.allocator, self.slice(self.advance()));
         } else {
-            try parts.append(self.allocator, self.slice(try self.expect(.identifier)));
+            const name_token = self.current();
+            if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
+            try parts.append(self.allocator, self.slice(self.advance()));
             while (self.match(.dot)) {
                 if (self.current().tag == .lbrace or self.current().tag == .keyword_as) break;
-                try parts.append(self.allocator, self.slice(try self.expect(.identifier)));
+                const part_token = self.current();
+                if (part_token.tag != .identifier and part_token.tag != .constructor) return error.UnexpectedToken;
+                try parts.append(self.allocator, self.slice(self.advance()));
             }
         }
 
@@ -523,11 +528,13 @@ pub const Parser = struct {
                 _ = self.advance();
                 break;
             }
-            if (is_indented and self.current().tag == .keyword_let) {
-                const le = try self.parse_let_expr_in_block(stop_tags);
-                try exprs.append(self.allocator, le);
-                self.skip_newlines();
-                continue;
+            if (self.current().tag == .keyword_let) {
+                if (is_indented or self.allow_let_in_body) {
+                    const le = try self.parse_let_expr_in_block(stop_tags);
+                    try exprs.append(self.allocator, le);
+                    self.skip_newlines();
+                    continue;
+                }
             }
             if (Parser.is_stop(self.current().tag, stop_tags) and is_indented) break;
             if (!is_indented and Parser.is_stop(self.current().tag, stop_tags)) break;
@@ -561,7 +568,10 @@ pub const Parser = struct {
         } else if (self.current().tag == .dedent or self.current().tag == .eof or Parser.is_stop(self.current().tag, stop_tags)) {
             body = try self.newExpr(.{ .block = &.{} });
         } else {
+            const prev = self.allow_let_in_body;
+            self.allow_let_in_body = true;
             body = try self.parse_block(fn_body_stops);
+            self.allow_let_in_body = prev;
         }
         return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body } });
     }
@@ -788,6 +798,34 @@ pub const Parser = struct {
         return left;
     }
 
+    /// Parse field access chains and record literals, but NOT function application.
+    /// Used for parsing function arguments so that `println pt.x` → `println(pt.x)`.
+    fn parse_postfix_no_apply(self: *Parser) Error!*Expr {
+        var expr = try self.parse_primary();
+        while (true) {
+            if (self.match(.dot)) {
+                const tag = self.current().tag;
+                if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
+                const field = self.slice(self.advance());
+                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } });
+                continue;
+            }
+
+            // Handle record literal after field access (e.g., Geo.Point { x = 1 })
+            if (self.current().tag == .lbrace and expr.* == .field_access) {
+                const fa = expr.field_access;
+                if (fa.object.* == .constructor) {
+                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor, fa.field });
+                    expr = try self.parse_record_literal(combined);
+                    continue;
+                }
+            }
+
+            break;
+        }
+        return expr;
+    }
+
     fn parse_postfix(self: *Parser) Error!*Expr {
         var expr = try self.parse_primary();
         while (true) {
@@ -827,7 +865,8 @@ pub const Parser = struct {
                     continue;
                 }
                 if (!is_expr_start(self.current().tag)) break;
-                try args.append(self.allocator, try self.parse_primary());
+                // Use parse_postfix_no_apply so field access binds tighter than application
+                try args.append(self.allocator, try self.parse_postfix_no_apply());
             }
 
             if (args.items.len == 0 and named.items.len == 0) break;
@@ -922,9 +961,10 @@ pub const Parser = struct {
     fn parse_if(self: *Parser) Error!*Expr {
         _ = try self.expect(.keyword_if);
         const cond = try self.parse_expr();
-        if (self.match(.keyword_then)) {}
         self.skip_newlines();
-        const then_branch = if (self.current().tag == .newline or self.current().tag == .indent)
+        _ = self.match(.keyword_then);
+        self.skip_newlines();
+        const then_branch = if (self.current().tag == .indent)
             try self.parse_block(&.{.keyword_else})
         else
             try self.parse_expr();
@@ -932,7 +972,7 @@ pub const Parser = struct {
         var else_branch: ?*Expr = null;
         if (self.match(.keyword_else)) {
             self.skip_newlines();
-            else_branch = if (self.current().tag == .newline or self.current().tag == .indent)
+            else_branch = if (self.current().tag == .indent)
                 try self.parse_block(&.{.dedent})
             else
                 try self.parse_expr();
@@ -944,7 +984,8 @@ pub const Parser = struct {
         _ = try self.expect(.keyword_match);
         const value = try self.parse_expr();
         self.skip_newlines();
-        if (self.match(.indent)) self.skip_newlines();
+        const has_indent = self.match(.indent);
+        if (has_indent) self.skip_newlines();
         var arms: std.ArrayList(MatchArm) = .empty;
         defer arms.deinit(self.allocator);
         while (self.current().tag != .eof and self.current().tag != .dedent) {
@@ -962,6 +1003,7 @@ pub const Parser = struct {
             try arms.append(self.allocator, .{ .pattern = pat, .body = body });
             self.skip_newlines();
         }
+        if (has_indent and self.current().tag == .dedent) _ = self.advance();
         return self.newExpr(.{ .match_expr = .{ .value = value, .arms = try self.allocSlice(MatchArm, arms.items) } });
     }
 

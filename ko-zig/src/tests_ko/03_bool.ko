@@ -1,0 +1,5 @@
+# Test: boolean literals
+fn main =
+  let t = true
+  let f = false
+  1

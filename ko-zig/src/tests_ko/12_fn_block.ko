@@ -1,0 +1,9 @@
+# Test: function body as block
+fn sum_to n =
+  let acc = 0
+  let i = 0
+  acc
+
+fn main =
+  let result = sum_to 10
+  result

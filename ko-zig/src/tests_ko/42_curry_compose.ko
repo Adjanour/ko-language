@@ -1,0 +1,8 @@
+# Test: currying with compose
+fn compose f g x = f (g x)
+fn double x = x * 2
+fn inc x = x + 1
+fn main =
+  let double_then_inc = compose inc double
+  let inc_then_double = compose double inc
+  double_then_inc 5 + inc_then_double 5

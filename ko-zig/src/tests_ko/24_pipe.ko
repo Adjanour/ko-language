@@ -1,0 +1,7 @@
+# Test: pipe operator (|>)
+fn add x y = x + y
+fn double x = x * 2
+
+fn main =
+  let result = 5 |> add 1 |> double
+  result

@@ -1,25 +1,14 @@
-// Functions — First-class functions, lambdas, recursion.
+# Functions — First-class functions, recursion.
 
 fn apply f x = f x
 fn double x = x * 2
-fn add10 x = x + 10
-fn square x = x * x
-
+fn add a b = a + b
 fn factorial n =
   if n == 0 then 1
   else n * factorial (n - 1)
 
-fn fib n =
-  if n <= 1 then n
-  else fib (n - 1) + fib (n - 2)
-
 fn main =
-  println (apply double 21)
-  println (apply add10 5)
-  println (apply square 7)
-  println (factorial 10)
-  println (fib 10)
-
-  let triple = \x -> x * 3
-  println (apply triple 5)
-  println (double (add10 5))
+  let a = double 5
+  let b = add 1 2
+  let c = factorial 5
+  a + b + c

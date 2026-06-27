@@ -74,7 +74,7 @@ type Binding = {
 Example:
 
 ```ko
-Binding { name, .. } -> ...
+Binding { name, .. } => ...
 ```
 
 ## 5. Grammar Proposal
@@ -148,24 +148,28 @@ The parser port should treat these as stable:
 
 ## 10. Near-Term Roadmap
 
-### v0.3.x
+### v0.3.x (current)
 
-- finish parser port
-- stabilize module system v2
-- keep `Result` and named parameters
-- preserve the syntax freeze
+- Parser, typechecker, and codegen complete (Zig)
+- Hindley-Milner type inference with let-polymorphism
+- LLVM IR codegen via kassane/llvm-zig bindings
+- JIT execution and AOT compilation
+- Reference counting for heap-allocated objects
+- Partial application (currying)
+- Module definitions with pub visibility
 
 ### v0.4.0
 
-- traits/typeclasses only if they stay simple
-- better generics support
-- first-class module composition only if it remains ergonomic
+- File-based imports
+- General recursion safety (stack overflow prevention)
+- Closure codegen for multi-param lambdas
+- Full decref for intermediate variables
 
 ### v0.5.0
 
-- stronger stdlib surface
-- better compiler diagnostics
-- codegen and runtime hardening
+- Standard library
+- Better compiler diagnostics
+- Codegen and runtime hardening
 
 ## 11. Decision Rule
 

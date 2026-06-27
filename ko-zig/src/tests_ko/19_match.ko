@@ -1,0 +1,8 @@
+# Test: match expressions
+type Option = Some Int | None
+
+fn main =
+  let x = Some 5
+  match x
+    | Some v => v
+    | None => 0

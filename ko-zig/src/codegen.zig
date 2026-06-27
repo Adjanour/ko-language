@@ -30,11 +30,14 @@ pub const Codegen = struct {
     named_values: std.StringHashMap(types.LLVMValueRef),
     variable_types: std.StringHashMap([]const u8), // variable name → record type name
     fn_types: std.StringHashMap(types.LLVMTypeRef),
+    fn_arity: std.StringHashMap(u32), // function name → arity (number of params)
     constructor_tags: std.StringHashMap(CtorInfo),
     record_types: std.StringHashMap(RecordInfo),
     module_owned_by_jit: bool = false,
     current_fn_name: ?[]const u8 = null,
     current_fn_val: ?types.LLVMValueRef = null,
+    current_module: ?[]const u8 = null,
+    scope_heap_values: std.ArrayList(types.LLVMValueRef) = .empty, // heap-allocated values to decref on scope exit
 
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) Codegen {
         const ctx = core.LLVMContextCreate();
@@ -49,14 +52,17 @@ pub const Codegen = struct {
             .named_values = std.StringHashMap(types.LLVMValueRef).init(allocator),
             .variable_types = std.StringHashMap([]const u8).init(allocator),
             .fn_types = std.StringHashMap(types.LLVMTypeRef).init(allocator),
+            .fn_arity = std.StringHashMap(u32).init(allocator),
             .constructor_tags = std.StringHashMap(CtorInfo).init(allocator),
             .record_types = std.StringHashMap(RecordInfo).init(allocator),
         };
     }
 
     pub fn deinit(self: *Codegen) void {
+        self.scope_heap_values.deinit(self.allocator);
         self.record_types.deinit();
         self.constructor_tags.deinit();
+        self.fn_arity.deinit();
         self.fn_types.deinit();
         self.variable_types.deinit();
         self.named_values.deinit();
@@ -154,6 +160,24 @@ pub const Codegen = struct {
         const free_type = core.LLVMFunctionType(core.LLVMVoidTypeInContext(self.context), &free_params, 1, 0);
         const free_fn = core.LLVMAddFunction(self.module, "free", free_type);
         _ = self.named_values.put("free", free_fn) catch {};
+
+        // ko_alloc(i64) -> ptr — allocate with RC header, returns pointer to user data
+        var ko_alloc_params: [1]types.LLVMTypeRef = .{i64_type};
+        const ko_alloc_type = core.LLVMFunctionType(ptr_type, &ko_alloc_params, 1, 0);
+        const ko_alloc_fn = core.LLVMAddFunction(self.module, "ko_alloc", ko_alloc_type);
+        _ = self.named_values.put("ko_alloc", ko_alloc_fn) catch {};
+
+        // ko_incref(ptr) -> ptr — increment refcount, return ptr
+        var ko_incref_params: [1]types.LLVMTypeRef = .{ptr_type};
+        const ko_incref_type = core.LLVMFunctionType(ptr_type, &ko_incref_params, 1, 0);
+        const ko_incref_fn = core.LLVMAddFunction(self.module, "ko_incref", ko_incref_type);
+        _ = self.named_values.put("ko_incref", ko_incref_fn) catch {};
+
+        // ko_decref(ptr) -> void — decrement refcount, free if 0
+        var ko_decref_params: [1]types.LLVMTypeRef = .{ptr_type};
+        const ko_decref_type = core.LLVMFunctionType(core.LLVMVoidTypeInContext(self.context), &ko_decref_params, 1, 0);
+        const ko_decref_fn = core.LLVMAddFunction(self.module, "ko_decref", ko_decref_type);
+        _ = self.named_values.put("ko_decref", ko_decref_fn) catch {};
     }
 
     pub fn mapBuiltinsToNative(self: *Codegen, jit_engine: types.LLVMExecutionEngineRef) void {
@@ -170,6 +194,17 @@ pub const Codegen = struct {
         }
         if (self.named_values.get("free")) |free_fn| {
             engine.LLVMAddGlobalMapping(jit_engine, free_fn, @constCast(@ptrCast(&free_wrapper)));
+        }
+
+        // Map RC functions to native implementations
+        if (self.named_values.get("ko_alloc")) |ko_alloc_fn| {
+            engine.LLVMAddGlobalMapping(jit_engine, ko_alloc_fn, @constCast(@ptrCast(&ko_alloc_wrapper)));
+        }
+        if (self.named_values.get("ko_incref")) |ko_incref_fn| {
+            engine.LLVMAddGlobalMapping(jit_engine, ko_incref_fn, @constCast(@ptrCast(&ko_incref_wrapper)));
+        }
+        if (self.named_values.get("ko_decref")) |ko_decref_fn| {
+            engine.LLVMAddGlobalMapping(jit_engine, ko_decref_fn, @constCast(@ptrCast(&ko_decref_wrapper)));
         }
     }
 
@@ -242,6 +277,11 @@ pub const Codegen = struct {
             .int_literal => |val| core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(@as(i64, val)), 0),
             .float_literal => |val| core.LLVMConstReal(core.LLVMDoubleTypeInContext(self.context), val),
             .bool_literal => |val| core.LLVMConstInt(core.LLVMInt1TypeInContext(self.context), @intFromBool(val), 0),
+            .char_literal => |val| blk: {
+                // Char literal is a single character, represent as i64
+                if (val.len == 0) break :blk core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
+                break :blk core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), val[0], 0);
+            },
             .string_literal => |val| blk: {
                 // Create a global string constant and return a pointer to it
                 const str_val = core.LLVMConstStringInContext(self.context, @ptrCast(val.ptr), @intCast(val.len), 0);
@@ -284,6 +324,9 @@ pub const Codegen = struct {
             .field_access => |fa| try self.codegenFieldAccess(fa.object, fa.field),
             .tuple => |elems| try self.codegenTuple(elems),
             .lambda => |lam| try self.codegenLambda(lam.params, lam.body),
+            .comptime_expr => |inner| try self.codegenExpr(inner),
+            .assign_expr => |a| try self.codegenAssign(a.target, a.value),
+            .ref_expr => |inner| try self.codegenRefExpr(inner),
             else => error.NotYetImplemented,
         };
     }
@@ -343,8 +386,32 @@ pub const Codegen = struct {
             .neg => core.LLVMBuildNeg(self.builder, val, "neg"),
             .not => core.LLVMBuildNot(self.builder, val, "not"),
             .ref => val,
-            .deref => core.LLVMBuildLoad2(self.builder, core.LLVMInt64TypeInContext(self.context), val, "deref"),
+            .deref => {
+                const ptr = core.LLVMBuildIntToPtr(self.builder, val, core.LLVMPointerTypeInContext(self.context, 0), "deref_ptr");
+                return core.LLVMBuildLoad2(self.builder, core.LLVMInt64TypeInContext(self.context), ptr, "deref");
+            },
         };
+    }
+
+    fn codegenAssign(self: *Codegen, lhs: *const parser.Expr, value: *const parser.Expr) Error!types.LLVMValueRef {
+        const ptr_val = try self.codegenExpr(lhs);
+        const val = try self.codegenExpr(value);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, ptr_val, core.LLVMPointerTypeInContext(self.context, 0), "assign_ptr");
+        _ = core.LLVMBuildStore(self.builder, val, ptr);
+        return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
+    }
+
+    fn codegenRefExpr(self: *Codegen, inner: *const parser.Expr) Error!types.LLVMValueRef {
+        const val = try self.codegenExpr(inner);
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+        const size = core.LLVMConstInt(i64_type, 8, 0);
+        var alloc_args: [1]types.LLVMValueRef = .{size};
+        const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+        const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
+        const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "ref_alloc");
+        self.scope_heap_values.append(self.allocator, raw_ptr) catch {};
+        _ = core.LLVMBuildStore(self.builder, val, raw_ptr);
+        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "ref_val");
     }
 
     /// Create a global string constant and return a pointer to it as LLVMValueRef
@@ -367,6 +434,91 @@ pub const Codegen = struct {
         );
     }
 
+    /// Create a partial application closure for a global function called with fewer args than its arity.
+    /// Generates a wrapper function and a closure struct: { fn_ptr, total_arity, applied_count, applied_args[] }
+    /// Returns the closure pointer as i64 with bit 0 set (tag for partial application).
+    fn createPartialApp(self: *Codegen, fn_name: []const u8, fn_val: types.LLVMValueRef, total_arity: u32, applied_args: []const types.LLVMValueRef) Error!types.LLVMValueRef {
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+        const applied_count: u32 = @intCast(applied_args.len);
+        const remaining_arity = total_arity - applied_count;
+
+        // Generate unique wrapper name
+        const wrapper_name = try std.fmt.allocPrint(self.allocator, "partial_{s}_{d}", .{ fn_name, applied_count });
+        defer self.allocator.free(wrapper_name);
+        const wrapper_name_z = try self.dupeZ(wrapper_name);
+
+        // Wrapper signature: (ptr %closure, i64 %remaining_arg_1, ..., i64 %remaining_arg_N) -> i64
+        var param_types: [33]types.LLVMTypeRef = undefined;
+        param_types[0] = core.LLVMPointerTypeInContext(self.context, 0); // closure pointer
+        for (0..remaining_arity) |i| {
+            param_types[i + 1] = i64_type;
+        }
+        const wrapper_type = core.LLVMFunctionType(i64_type, &param_types, @intCast(remaining_arity + 1), 0);
+        const wrapper_fn = core.LLVMAddFunction(self.module, wrapper_name_z, wrapper_type);
+
+        // Generate wrapper body
+        const saved_block = core.LLVMGetInsertBlock(self.builder);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, wrapper_fn, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        // Load applied args from closure
+        var loaded_applied: [32]types.LLVMValueRef = undefined;
+        for (0..applied_count) |i| {
+            const offset = core.LLVMConstInt(i64_type, 24 + i * 8, 0);
+            const applied_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), core.LLVMGetParam(wrapper_fn, 0), @constCast(&[_]types.LLVMValueRef{offset}), 1, "applied_ptr");
+            loaded_applied[i] = core.LLVMBuildLoad2(self.builder, i64_type, applied_ptr, "applied");
+        }
+
+        // Build call args: [applied_0, ..., applied_N, remaining_0, ..., remaining_M]
+        var call_args: [33]types.LLVMValueRef = undefined;
+        for (0..applied_count) |i| {
+            call_args[i] = loaded_applied[i];
+        }
+        for (0..remaining_arity) |i| {
+            call_args[applied_count + i] = core.LLVMGetParam(wrapper_fn, @intCast(i + 1));
+        }
+
+        // Call original function
+        const fn_type = core.LLVMGlobalGetValueType(fn_val);
+        const result = core.LLVMBuildCall2(self.builder, fn_type, fn_val, &call_args, @intCast(total_arity), "partial_result");
+        _ = core.LLVMBuildRet(self.builder, result);
+
+        // Restore builder position
+        core.LLVMPositionBuilderAtEnd(self.builder, saved_block);
+
+        // Create closure struct on heap: { fn_ptr, total_arity, applied_count, applied_args[] }
+        const struct_size: u64 = 24 + applied_count * 8;
+        const size_val = core.LLVMConstInt(i64_type, struct_size, 0);
+        var alloc_args: [1]types.LLVMValueRef = .{size_val};
+        const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+        const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
+        const closure_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "closure");
+        self.scope_heap_values.append(self.allocator, closure_ptr) catch {};
+
+        // Store fn_ptr at offset 0
+        const fn_ptr_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 0, 0)}), 1, "fn_ptr_ptr");
+        _ = core.LLVMBuildStore(self.builder, wrapper_fn, fn_ptr_ptr);
+
+        // Store total_arity at offset 8
+        const arity_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 8, 0)}), 1, "arity_ptr");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(i64_type, total_arity, 0), arity_ptr);
+
+        // Store applied_count at offset 16
+        const count_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 16, 0)}), 1, "count_ptr");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(i64_type, applied_count, 0), count_ptr);
+
+        // Store applied args at offsets 24+
+        for (applied_args, 0..) |arg, i| {
+            const offset = core.LLVMConstInt(i64_type, 24 + i * 8, 0);
+            const applied_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{offset}), 1, "applied_ptr");
+            _ = core.LLVMBuildStore(self.builder, arg, applied_ptr);
+        }
+
+        // Return closure pointer with bit 0 set (tag for partial application)
+        const closure_i64 = core.LLVMBuildPtrToInt(self.builder, closure_ptr, i64_type, "closure_as_int");
+        return core.LLVMBuildOr(self.builder, closure_i64, core.LLVMConstInt(i64_type, 1, 0), "tagged_closure");
+    }
+
     fn codegenFnCall(self: *Codegen, call: parser.FnCallExpr) Error!types.LLVMValueRef {
         // Check if this is a constructor call (e.g., Some 42)
         if (call.func.* == .constructor) {
@@ -385,12 +537,13 @@ pub const Codegen = struct {
                     const arg_type = core.LLVMTypeOf(arg_val);
                     var struct_fields: [2]types.LLVMTypeRef = .{ i64_type, arg_type };
                     const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, 2, 0);
-                    // Allocate on heap via malloc
-                    const malloc_fn = self.named_values.get("malloc") orelse return error.UndefinedVariable;
-                    const malloc_fn_type = core.LLVMGlobalGetValueType(malloc_fn);
+                    // Allocate on heap via ko_alloc
+                    const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+                    const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
                     const size_val = self.storeSize(tagged_type);
-                    var malloc_args: [1]types.LLVMValueRef = .{size_val};
-                    const raw_ptr = core.LLVMBuildCall2(self.builder, malloc_fn_type, malloc_fn, &malloc_args, 1, "malloc");
+                    var alloc_args: [1]types.LLVMValueRef = .{size_val};
+                    const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tagged_alloc");
+                    self.scope_heap_values.append(self.allocator, raw_ptr) catch {};
                     // Store tag + value
                     const tag_val = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
                     var tag_gep_indices: [2]types.LLVMValueRef = .{
@@ -418,12 +571,13 @@ pub const Codegen = struct {
                     arg_vals[i] = arg_val;
                 }
                 const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(call.args.len + 1), 0);
-                // Allocate on heap via malloc
-                const malloc_fn = self.named_values.get("malloc") orelse return error.UndefinedVariable;
-                const malloc_fn_type = core.LLVMGlobalGetValueType(malloc_fn);
+                // Allocate on heap via ko_alloc
+                const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+                const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
                 const size_val = self.storeSize(tagged_type);
-                var malloc_args: [1]types.LLVMValueRef = .{size_val};
-                const raw_ptr = core.LLVMBuildCall2(self.builder, malloc_fn_type, malloc_fn, &malloc_args, 1, "malloc");
+                var alloc_args: [1]types.LLVMValueRef = .{size_val};
+                const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tagged_alloc");
+                self.scope_heap_values.append(self.allocator, raw_ptr) catch {};
                 // Store tag at index 0
                 const tag_val = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
                 var tag_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
@@ -499,21 +653,100 @@ pub const Codegen = struct {
             argc += 1;
         }
 
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+
         // Check if fn_val is a global function or an indirect pointer
         const is_global = core.LLVMIsAFunction(fn_val) != null;
         if (is_global) {
+            // Look up the function's arity
+            var fn_name: ?[]const u8 = null;
+            // Try to find the name by checking named_values
+            var name_iter = self.named_values.iterator();
+            while (name_iter.next()) |entry| {
+                if (entry.value_ptr.* == fn_val) {
+                    fn_name = entry.key_ptr.*;
+                    break;
+                }
+            }
+
+            if (fn_name) |name| {
+                if (self.fn_arity.get(name)) |arity| {
+                    // Check if we have fewer args than the arity → partial application
+                    if (argc < arity) {
+                        return self.createPartialApp(name, fn_val, arity, args[0..argc]);
+                    }
+                    // Exact arity → direct call
+                    if (argc == arity) {
+                        const fn_type = core.LLVMGlobalGetValueType(fn_val);
+                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, argc, "call");
+                    }
+                    // More args than arity → shouldn't happen with typechecker, but handle gracefully
+                    // For now, just call with available args (may crash at runtime)
+                    const fn_type = core.LLVMGlobalGetValueType(fn_val);
+                    return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, argc, "call");
+                }
+            }
+            // Fallback: direct call
             const fn_type = core.LLVMGlobalGetValueType(fn_val);
             return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, argc, "call");
         } else {
-            // Indirect call: fn_val is a pointer (i64) to a function
-            const i64_type = core.LLVMInt64TypeInContext(self.context);
+            // Check if bit 0 is set (partial application closure)
+            // We need a runtime check: extract bit 0, branch accordingly
+            const fn_entry_bb = core.LLVMGetInsertBlock(self.builder);
+            const parent_fn = core.LLVMGetBasicBlockParent(fn_entry_bb);
+
+            const partial_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "partial_app");
+            const direct_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "direct_call");
+            const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "call_merge");
+
+            // Check bit 0
+            const bit0_val = core.LLVMBuildAnd(self.builder, fn_val, core.LLVMConstInt(i64_type, 1, 0), "bit0");
+            const is_partial_val = core.LLVMBuildICmp(self.builder, .LLVMIntNE, bit0_val, core.LLVMConstInt(i64_type, 0, 0), "is_partial");
+            _ = core.LLVMBuildCondBr(self.builder, is_partial_val, partial_bb, direct_bb);
+
+            // Partial application path
+            core.LLVMPositionBuilderAtEnd(self.builder, partial_bb);
+            // Clear bit 0 to get closure pointer
+            // Clear bit 0 to get closure pointer (AND with ~1 = 0xFFFFFFFFFFFFFFFE)
+            const mask = core.LLVMConstInt(i64_type, @bitCast(@as(i64, -2)), 0);
+            const closure_i64 = core.LLVMBuildAnd(self.builder, fn_val, mask, "closure_raw");
+            const closure_ptr = core.LLVMBuildIntToPtr(self.builder, closure_i64, core.LLVMPointerTypeInContext(self.context, 0), "closure_ptr");
+            // Load fn_ptr from closure (offset 0)
+            const fn_ptr_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 0, 0)}), 1, "fn_ptr_ptr");
+            const loaded_fn_ptr = core.LLVMBuildLoad2(self.builder, core.LLVMPointerTypeInContext(self.context, 0), fn_ptr_ptr, "loaded_fn_ptr");
+            // Build args: [closure_ptr, new_arg_0, ..., new_arg_N]
+            var partial_args: [33]types.LLVMValueRef = undefined;
+            partial_args[0] = closure_ptr;
+            for (0..argc) |i| {
+                partial_args[i + 1] = args[i];
+            }
+            var partial_param_types: [33]types.LLVMTypeRef = undefined;
+            partial_param_types[0] = core.LLVMPointerTypeInContext(self.context, 0);
+            for (0..argc) |i| {
+                partial_param_types[i + 1] = i64_type;
+            }
+            const partial_fn_type = core.LLVMFunctionType(i64_type, &partial_param_types, @intCast(argc + 1), 0);
+            const partial_result = core.LLVMBuildCall2(self.builder, partial_fn_type, loaded_fn_ptr, &partial_args, @intCast(argc + 1), "partial_call");
+            _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+            // Direct call path (lambda)
+            core.LLVMPositionBuilderAtEnd(self.builder, direct_bb);
             var param_types: [32]types.LLVMTypeRef = undefined;
             for (0..argc) |i| {
                 param_types[i] = i64_type;
             }
             const fn_type = core.LLVMFunctionType(i64_type, &param_types, argc, 0);
             const fn_ptr = core.LLVMBuildIntToPtr(self.builder, fn_val, core.LLVMPointerTypeInContext(self.context, 0), "fn_ptr");
-            return core.LLVMBuildCall2(self.builder, fn_type, fn_ptr, &args, argc, "indirect_call");
+            const direct_result = core.LLVMBuildCall2(self.builder, fn_type, fn_ptr, &args, argc, "indirect_call");
+            _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+            // Merge
+            core.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
+            const phi = core.LLVMBuildPhi(self.builder, i64_type, "call_result");
+            var incoming_vals: [2]types.LLVMValueRef = .{ partial_result, direct_result };
+            var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ partial_bb, direct_bb };
+            core.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+            return phi;
         }
     }
 
@@ -570,20 +803,29 @@ pub const Codegen = struct {
     fn codegenRecordLiteral(self: *Codegen, name: []const u8, fields: []const parser.NamedArg) Error!types.LLVMValueRef {
         const i64_type = core.LLVMInt64TypeInContext(self.context);
 
-        // Look up record type info
-        const info = self.record_types.get(name) orelse {
-            // Unknown record type — return 0 as fallback
+        // Look up record type info — try bare name, then module-qualified, then suffix match
+        var resolved_name = name;
+        const info = self.record_types.get(name) orelse blk: {
+            // Try all record types to find matching one by suffix
+            var rt_iter = self.record_types.iterator();
+            while (rt_iter.next()) |entry| {
+                if (std.mem.endsWith(u8, entry.key_ptr.*, name) or std.mem.eql(u8, entry.key_ptr.*, name)) {
+                    resolved_name = entry.key_ptr.*;
+                    break :blk entry.value_ptr.*;
+                }
+            }
             return core.LLVMConstInt(i64_type, 0, 0);
         };
 
         // Compute size of record type
         const size_val = self.storeSize(info.llvm_type);
 
-        // Allocate struct on heap via malloc
-        const malloc_fn = self.named_values.get("malloc") orelse return error.UndefinedVariable;
-        const fn_type = core.LLVMGlobalGetValueType(malloc_fn);
-        var malloc_args: [1]types.LLVMValueRef = .{size_val};
-        const raw_ptr = core.LLVMBuildCall2(self.builder, fn_type, malloc_fn, &malloc_args, 1, "malloc");
+        // Allocate struct on heap via ko_alloc
+        const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+        const fn_type = core.LLVMGlobalGetValueType(alloc_fn);
+        var alloc_args: [1]types.LLVMValueRef = .{size_val};
+        const raw_ptr = core.LLVMBuildCall2(self.builder, fn_type, alloc_fn, &alloc_args, 1, "record_alloc");
+        self.scope_heap_values.append(self.allocator, raw_ptr) catch {};
 
         // Store each field (raw_ptr is already ptr type)
         for (fields, 0..) |field, i| {
@@ -642,7 +884,7 @@ pub const Codegen = struct {
             if (self.record_types.get(rn)) |info| {
                 for (info.fields, 0..) |fi, i| {
                     if (std.mem.eql(u8, fi.name, field_name)) {
-                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, obj_val, info.llvm_type, "record_ptr");
+                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, obj_val, core.LLVMPointerTypeInContext(self.context, 0), "record_ptr");
                         var gep_indices: [2]types.LLVMValueRef = .{
                             core.LLVMConstInt(i64_type, 0, 0),
                             core.LLVMConstInt(i64_type, i, 0),
@@ -659,12 +901,17 @@ pub const Codegen = struct {
         while (iter.next()) |entry| {
             for (entry.value_ptr.fields, 0..) |fi, i| {
                 if (std.mem.eql(u8, fi.name, field_name)) {
-                    const record_ptr = core.LLVMBuildIntToPtr(self.builder, obj_val, entry.value_ptr.llvm_type, "record_ptr");
+                    const record_ptr = core.LLVMBuildIntToPtr(self.builder, obj_val, core.LLVMPointerTypeInContext(self.context, 0), "record_ptr");
+                    if (record_ptr == null) return error.UndefinedVariable;
                     var gep_indices: [2]types.LLVMValueRef = .{
                         core.LLVMConstInt(i64_type, 0, 0),
                         core.LLVMConstInt(i64_type, i, 0),
                     };
                     const field_ptr = core.LLVMBuildGEP2(self.builder, entry.value_ptr.llvm_type, record_ptr, @ptrCast(&gep_indices), 2, "field_ptr");
+                    if (field_ptr == null) return error.UndefinedVariable;
+                    if (fi.llvm_type == null) return error.UndefinedVariable;
+                    // Debug: dump the LLVM module to see IR state before crash
+                    core.LLVMPositionBuilderAtEnd(self.builder, core.LLVMGetInsertBlock(self.builder));
                     return core.LLVMBuildLoad2(self.builder, fi.llvm_type, field_ptr, "field_val");
                 }
             }
@@ -677,34 +924,29 @@ pub const Codegen = struct {
         const i64_type = core.LLVMInt64TypeInContext(self.context);
 
         if (elems.len == 0) {
-            // Unit tuple ()
             return core.LLVMConstInt(i64_type, 0, 0);
         }
 
-        // For single-element tuple, just return the element
         if (elems.len == 1) {
             return try self.codegenExpr(elems[0]);
         }
 
-        // For multi-element tuples, create a struct
-        var elem_types: [32]types.LLVMTypeRef = undefined;
-        var elem_vals: [32]types.LLVMValueRef = undefined;
+        // For multi-element tuples, allocate raw bytes and store elements at i64 offsets
+        const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
+        const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
+        const size = core.LLVMConstInt(i64_type, elems.len * 8, 0);
+        var alloc_args: [1]types.LLVMValueRef = .{size};
+        const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tuple_alloc");
+        self.scope_heap_values.append(self.allocator, raw_ptr) catch {};
+
         for (elems, 0..) |elem, i| {
             const val = try self.codegenExpr(elem);
-            elem_types[i] = core.LLVMTypeOf(val);
-            elem_vals[i] = val;
-        }
-        const tuple_type = core.LLVMStructTypeInContext(self.context, &elem_types, @intCast(elems.len), 0);
-        const alloc = core.LLVMBuildAlloca(self.builder, tuple_type, "tuple");
-        for (elem_vals, 0..) |val, i| {
-            var gep_indices: [2]types.LLVMValueRef = .{
-                core.LLVMConstInt(i64_type, 0, 0),
-                core.LLVMConstInt(i64_type, i, 0),
-            };
-            const elem_ptr = core.LLVMBuildGEP2(self.builder, tuple_type, alloc, @ptrCast(&gep_indices), 2, "elem_ptr");
+            // Use i8* GEP for byte-level offset
+            const offset = core.LLVMConstInt(i64_type, i * 8, 0);
+            const elem_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), raw_ptr, @constCast(&[_]types.LLVMValueRef{offset}), 1, "elem_off");
             _ = core.LLVMBuildStore(self.builder, val, elem_ptr);
         }
-        return core.LLVMBuildPtrToInt(self.builder, alloc, i64_type, "tuple_ptr");
+        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tuple_ptr");
     }
 
     fn codegenLambda(self: *Codegen, params: []const parser.Pattern, body: *const parser.Expr) Error!types.LLVMValueRef {
@@ -781,9 +1023,45 @@ pub const Codegen = struct {
         const fn_val = core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder));
         const i64_type = core.LLVMInt64TypeInContext(self.context);
 
+        // Sort arms: zero-arity constructors first (raw value comparison),
+        // then constructors with args (need to dereference to read tag).
+        // This prevents crashes when a raw tag value (like Nil=1) is dereferenced.
+        var sorted_indices: [32]usize = undefined;
+        for (arms, 0..) |_, i| sorted_indices[i] = i;
+        var changed = true;
+        while (changed) {
+            changed = false;
+            for (0..arms.len - 1) |i| {
+                const a = sorted_indices[i];
+                const b = sorted_indices[i + 1];
+                const a_zero = blk: {
+                    if (arms[a].pattern == .constructor) {
+                        if (self.constructor_tags.get(arms[a].pattern.constructor.name)) |info| {
+                            break :blk info.arity == 0;
+                        }
+                    }
+                    break :blk false;
+                };
+                const b_zero = blk: {
+                    if (arms[b].pattern == .constructor) {
+                        if (self.constructor_tags.get(arms[b].pattern.constructor.name)) |info| {
+                            break :blk info.arity == 0;
+                        }
+                    }
+                    break :blk false;
+                };
+                // Non-zero should come after zero
+                if (!a_zero and b_zero) {
+                    sorted_indices[i] = b;
+                    sorted_indices[i + 1] = a;
+                    changed = true;
+                }
+            }
+        }
+
         var cmp_bbs: [32]types.LLVMBasicBlockRef = undefined;
         var body_bbs: [32]types.LLVMBasicBlockRef = undefined;
-        for (arms, 0..) |_, i| {
+        for (0..arms.len) |i| {
             cmp_bbs[i] = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cmp");
             body_bbs[i] = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arm");
         }
@@ -797,11 +1075,11 @@ pub const Codegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, unreachable_bb);
         _ = core.LLVMBuildUnreachable(self.builder);
 
-        // Build tag comparisons
-        for (arms, 0..) |arm, i| {
+        // Build tag comparisons (in sorted order: zero-arg first)
+        for (sorted_indices[0..arms.len], 0..) |arm_idx, i| {
             core.LLVMPositionBuilderAtEnd(self.builder, cmp_bbs[i]);
             const fallthrough = if (i + 1 < arms.len) cmp_bbs[i + 1] else unreachable_bb;
-            switch (arm.pattern) {
+            switch (arms[arm_idx].pattern) {
                 .constructor => |ctor| {
                     if (self.constructor_tags.get(ctor.name)) |info| {
                         // For constructors with args, extract tag from the struct
@@ -813,7 +1091,7 @@ pub const Codegen = struct {
                                 struct_fields[j + 1] = i64_type;
                             }
                             const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(info.arity + 1), 0);
-                            const struct_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, tagged_type, "ctor_ptr");
+                            const struct_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
                             var tag_gep: [2]types.LLVMValueRef = .{
                                 core.LLVMConstInt(i64_type, 0, 0),
                                 core.LLVMConstInt(i64_type, 0, 0),
@@ -827,8 +1105,42 @@ pub const Codegen = struct {
                     }
                 },
                 .record => |rec| {
-                    // Record pattern — always matches (no tag comparison needed)
-                    _ = rec;
+                    // Record pattern — extract fields and bind them
+                    var resolved_name = rec.name;
+                    if (self.record_types.get(rec.name) == null) {
+                        // Try all record types to find matching one
+                        var rt_iter = self.record_types.iterator();
+                        while (rt_iter.next()) |entry| {
+                            if (std.mem.endsWith(u8, entry.key_ptr.*, rec.name) or std.mem.eql(u8, entry.key_ptr.*, rec.name)) {
+                                resolved_name = entry.key_ptr.*;
+                                break;
+                            }
+                        }
+                    }
+                    if (self.record_types.get(resolved_name)) |info| {
+                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "rec_ptr");
+                        for (rec.fields) |field| {
+                            // Find field index by name
+                            for (info.fields, 0..) |decl, di| {
+                                if (std.mem.eql(u8, decl.name, field.name)) {
+                                    var gep: [2]types.LLVMValueRef = .{
+                                        core.LLVMConstInt(i64_type, 0, 0),
+                                        core.LLVMConstInt(i64_type, di, 0),
+                                    };
+                                    const field_ptr = core.LLVMBuildGEP2(self.builder, info.llvm_type, record_ptr, @ptrCast(&gep), 2, "field_ptr");
+                                    const field_val = core.LLVMBuildLoad2(self.builder, decl.llvm_type, field_ptr, "field_val");
+                                    if (field.pattern) |sub_pat| {
+                                        if (sub_pat.* == .identifier) {
+                                            try self.named_values.put(sub_pat.identifier, field_val);
+                                        }
+                                    } else {
+                                        try self.named_values.put(field.name, field_val);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     _ = core.LLVMBuildBr(self.builder, body_bbs[i]);
                 },
                 .wildcard => _ = core.LLVMBuildBr(self.builder, body_bbs[i]),
@@ -836,13 +1148,14 @@ pub const Codegen = struct {
             }
         }
 
-        // Codegen each arm body
+        // Codegen each arm body (in sorted order)
         var phi_vals: [32]types.LLVMValueRef = undefined;
         var phi_bbs: [32]types.LLVMBasicBlockRef = undefined;
         var phi_count: usize = 0;
 
-        for (arms, 0..) |arm, i| {
+        for (sorted_indices[0..arms.len], 0..) |arm_idx, i| {
             core.LLVMPositionBuilderAtEnd(self.builder, body_bbs[i]);
+            const arm = arms[arm_idx];
 
             // Bind constructor pattern args (extract from tagged struct)
             if (arm.pattern == .constructor) {
@@ -857,7 +1170,7 @@ pub const Codegen = struct {
                         }
                         const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(info.arity + 1), 0);
                         // Bitcast match_val back to tagged struct pointer
-                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, tagged_type, "ctor_ptr");
+                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
                         // Extract each arg
                         for (ctor.args, 0..) |arg, j| {
                             if (arg == .identifier) {
@@ -874,36 +1187,7 @@ pub const Codegen = struct {
                 }
             }
 
-            // Bind record pattern fields (extract from record struct)
-            if (arm.pattern == .record) {
-                const rec = arm.pattern.record;
-                if (self.record_types.get(rec.name)) |info| {
-                    // Cast i64 back to record struct pointer
-                    const rec_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, info.llvm_type, "rec_ptr");
-                    for (rec.fields, 0..) |field, j| {
-                        // Find field index by name
-                        var field_idx: u32 = @intCast(j);
-                        for (info.fields, 0..) |fi, k| {
-                            if (std.mem.eql(u8, fi.name, field.name)) {
-                                field_idx = @intCast(k);
-                                break;
-                            }
-                        }
-                        var gep: [2]types.LLVMValueRef = .{
-                            core.LLVMConstInt(i64_type, 0, 0),
-                            core.LLVMConstInt(i64_type, field_idx, 0),
-                        };
-                        const field_ptr = core.LLVMBuildGEP2(self.builder, info.llvm_type, rec_ptr, @ptrCast(&gep), 2, "field_ptr");
-                        const field_val = core.LLVMBuildLoad2(self.builder, i64_type, field_ptr, "field_val");
-                        // Bind to pattern variable name
-                        const bind_name = if (field.pattern) |p|
-                            if (p.* == .identifier) p.identifier else field.name
-                        else
-                            field.name;
-                        try self.named_values.put(bind_name, field_val);
-                    }
-                }
-            }
+            // Record pattern fields are already bound in the cmp block phase above
 
             const arm_val = try self.codegenExpr(arm.body);
             _ = core.LLVMBuildBr(self.builder, merge_bb);
@@ -940,6 +1224,7 @@ pub const Codegen = struct {
         // Register function and its type
         try self.named_values.put(fn_def.name, func);
         try self.fn_types.put(fn_def.name, func_type);
+        try self.fn_arity.put(fn_def.name, @intCast(fn_def.params.len));
 
         return func;
     }
@@ -961,16 +1246,15 @@ pub const Codegen = struct {
             self.current_fn_name = prev_fn_name;
             self.current_fn_val = prev_fn_val;
         }
-
-        const entry = core.LLVMAppendBasicBlockInContext(self.context, func, "entry");
-        core.LLVMPositionBuilderAtEnd(self.builder, entry);
-
-        // Save and restore named_values and variable_types for function scope
         const old_values = self.named_values;
         const old_var_types = self.variable_types;
+        const old_heap_values = self.scope_heap_values;
         self.named_values = std.StringHashMap(types.LLVMValueRef).init(self.allocator);
         self.variable_types = std.StringHashMap([]const u8).init(self.allocator);
+        self.scope_heap_values = .empty;
         defer {
+            self.scope_heap_values.deinit(self.allocator);
+            self.scope_heap_values = old_heap_values;
             self.variable_types.deinit();
             self.variable_types = old_var_types;
             self.named_values.deinit();
@@ -1000,6 +1284,17 @@ pub const Codegen = struct {
                 else => "arg",
             }, param_val);
         }
+
+        // Register bare function name for recursive calls inside modules
+        // e.g., Math.fact also available as fact inside the function body
+        if (std.mem.indexOfScalar(u8, fn_def.name, '.')) |_| {
+            const bare_name = fn_def.name[std.mem.lastIndexOfScalar(u8, fn_def.name, '.').? + 1 ..];
+            try self.named_values.put(bare_name, func);
+        }
+
+        // Create entry basic block and position builder
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, func, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
 
         // Check for tail-position self-recursive call (TCO)
         {
@@ -1060,6 +1355,32 @@ pub const Codegen = struct {
         } // end tco:
 
         const body_val = try self.codegenExpr(fn_def.body);
+
+        // Decref all heap-allocated values except the return value
+        if (self.scope_heap_values.items.len > 0) {
+            const ko_decref_fn = self.named_values.get("ko_decref") orelse return error.UndefinedVariable;
+            const decref_fn_type = core.LLVMGlobalGetValueType(ko_decref_fn);
+
+            // Determine the underlying pointer of the return value (if it's a ptrtoint)
+            var return_underlying_ptr: ?types.LLVMValueRef = null;
+            if (core.LLVMIsAInstruction(body_val) != null) {
+                if (core.LLVMGetInstructionOpcode(body_val) == .LLVMPtrToInt) {
+                    return_underlying_ptr = core.LLVMGetOperand(body_val, 0);
+                }
+            }
+
+            for (self.scope_heap_values.items) |heap_val| {
+                // Skip the return value (direct match or underlying pointer of ptrtoint)
+                if (heap_val == body_val) continue;
+                if (return_underlying_ptr != null and heap_val == return_underlying_ptr.?) continue;
+                // Only decref pointer values (heap-allocated)
+                const val_type = core.LLVMTypeOf(heap_val);
+                if (core.LLVMGetTypeKind(val_type) == .LLVMPointerTypeKind) {
+                    _ = core.LLVMBuildCall2(self.builder, decref_fn_type, ko_decref_fn, @constCast(&[_]types.LLVMValueRef{heap_val}), 1, "");
+                }
+            }
+        }
+
         _ = core.LLVMBuildRet(self.builder, body_val);
 
         return func;
@@ -1107,6 +1428,8 @@ pub const Codegen = struct {
                 else => {},
             }
         }
+
+        core.LLVMDumpModule(self.module);
     }
 
     fn flattenDefinition(self: *Codegen, list: *std.ArrayList(parser.Definition), def: parser.Definition, prefix: []const u8) Error!void {
@@ -1483,4 +1806,35 @@ fn malloc_wrapper(size: i64) callconv(.c) ?[*]u8 {
 
 fn free_wrapper(ptr: ?[*]u8) callconv(.c) void {
     free(@ptrCast(ptr));
+}
+
+// ============================================================
+// Reference counting wrappers for JIT
+// ============================================================
+const RC_OFFSET = 8;
+
+fn ko_alloc_wrapper(user_size: i64) callconv(.c) ?[*]u8 {
+    const raw = malloc(@intCast(@as(u64, @intCast(user_size)) + RC_OFFSET)) orelse return null;
+    const rc_ptr: *i64 = @alignCast(@ptrCast(raw));
+    rc_ptr.* = 1;
+    const user_data: [*]u8 = @ptrFromInt(@intFromPtr(raw) + RC_OFFSET);
+    return user_data;
+}
+
+fn ko_incref_wrapper(ptr: ?[*]u8) callconv(.c) ?[*]u8 {
+    if (ptr == null) return null;
+    const p = ptr.?;
+    const rc_ptr: *i64 = @alignCast(@ptrCast(@as([*]u8, @ptrFromInt(@intFromPtr(p) - RC_OFFSET))));
+    rc_ptr.* += 1;
+    return p;
+}
+
+fn ko_decref_wrapper(ptr: ?[*]u8) callconv(.c) void {
+    if (ptr == null) return;
+    const p = ptr.?;
+    const rc_ptr: *i64 = @alignCast(@ptrCast(@as([*]u8, @ptrFromInt(@intFromPtr(p) - RC_OFFSET))));
+    rc_ptr.* -= 1;
+    if (rc_ptr.* <= 0) {
+        free(@ptrCast(rc_ptr));
+    }
 }

@@ -1,0 +1,6 @@
+# Test: sum types (ADTs)
+type Option = Some Int | None
+type Bool = True | False
+type Result = Ok Int | Error
+
+fn main = 1

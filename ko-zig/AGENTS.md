@@ -214,6 +214,68 @@ test "description" {
 - Kō uses `#` for comments (not //)
 - Comments extend to end of line
 
+## Lessons Learned (Hard-Won)
+
+### The Grammar Is the Contract
+
+The grammar (`GRAMMAR.md`) is the source of truth for parsing. The parser must implement it, not the other way around. If a test passes but violates the grammar, the test is wrong. If the grammar is wrong, fix the grammar first, then fix the parser.
+
+**Rule: Every `.ko` test program must at least parse successfully before it can be used to test typechecking or codegen.** A test that fails at the lexer/parser level is invalid — it's testing nothing useful. Before adding or modifying a test, verify:
+
+```bash
+ko tests/some_test.ko 2>&1 | head -3
+# Should show "Parsed: N definitions" (not an error)
+```
+
+**Adding a new test program:**
+1. Write the `.ko` file in `src/tests_ko/`
+2. Add a trailing newline if missing
+3. Add the `@embedFile` entry to the parser test in `tests.zig`
+4. Run `zig build test` — it must parse successfully
+
+### Grammar vs Implementation Drift
+
+If the grammar says one thing but the parser does another, fix the grammar to match the parser (unless the grammar is clearly better). The grammar is documentation, the parser is truth. But fix drift early — it compounds.
+
+Example: grammar said `match_arm = pattern "->" expr` but parser uses `=>`. Fixed grammar to `=>`.
+
+### `@embedFile` Is Already Sentinel-Terminated
+
+In Zig, `@embedFile("path")` returns `*const [N:0]u8` — already null-terminated. Do NOT append `++ "\x00"`. Doing so creates a double null that the tokenizer misreads as premature EOF, causing parse errors on valid programs.
+
+### How Parser Bugs Hid for Months
+
+The parser was built incrementally to make individual tests pass, not to faithfully implement the grammar. This caused several classes of bugs:
+
+1. **Grammar says "blocks are indentation-based everywhere"** but `parse_block` only handled `keyword_let` in indented blocks. Non-indented blocks (let bodies) crashed on `keyword_let` because it fell through to `parse_expr()` which can't parse `let`. Fixed with `allow_let_in_body` flag.
+
+2. **Grammar says field access binds tighter than application** but `parse_postfix` treated all non-dot, non-brace tokens after a primary as function arguments. `println pt.x` became `(println pt).x`. Fixed with `parse_postfix_no_apply` helper.
+
+3. **Grammar says every function needs a basic block** but `codegenFn` didn't create one for regular functions (only lambdas had it). Caused LLVM segfaults at address 0x48. Always create entry block in `codegenFn`.
+
+### The `allow_let_in_body` Pattern
+
+`parse_block` is called from two contexts with different needs:
+- **From `parse_fn_def`**: `keyword_let` should terminate the block (it's a top-level definition)
+- **From `parse_let_expr_in_block`**: `keyword_let` should be parsed as a nested let expression
+
+Solution: `Parser.allow_let_in_body` flag. Set to `true` when entering a let body, `false` otherwise. In `parse_block`, when `!is_indented and keyword_let`, check `allow_let_in_body` before deciding to handle or break.
+
+### Why `fn_body_stops` Matters
+
+`fn_body_stops` (without `keyword_let`) is correct for function bodies. Adding `keyword_let` to it would make the fn body consume subsequent top-level let bindings, breaking the program structure. The let body issue is solved separately via `allow_let_in_body`, not by changing stop tags.
+
+### Test Pyramid for Compiler Stages
+
+When testing compiler features, write tests in this order:
+1. **Lexer test**: tokenize the input, verify token sequence
+2. **Parser test**: parse the input, verify AST structure
+3. **Typechecker test**: typecheck the parsed AST, verify no errors
+4. **Codegen test**: generate LLVM IR, verify output
+5. **Integration test**: `ko --run` the program, verify output
+
+Never skip stages. A test that only does codegen without verifying parsing is fragile.
+
 ## Common Mistakes to Avoid
 
 1. **Don't use deprecated APIs**
@@ -273,9 +335,11 @@ ko-zig/
 │   ├── codegen.zig    # LLVM IR generation
 │   ├── ko_runtime.c   # C runtime for built-in functions (println, print)
 │   ├── llvm/          # kassane/llvm-zig bindings source
-│   └── tests.zig      # All tests
+│   ├── tests.zig      # All tests (71 tests)
+│   └── tests_ko/      # .ko test programs (40 files)
+│       ├── 01_literal.ko .. 40_minimal.ko
 ├── std/               # Kō stdlib (written in Kō)
-└── tests/             # Test files
+└── tests/             # (unused, test .ko files are in src/tests_ko/)
 ```
 
 ### Module Dependencies
@@ -485,6 +549,69 @@ entry → cmp[0] → (eq? → arm[0], ne? → cmp[1])
 
 #### Gotcha: Create unreachable_bb before the entry branch
 If you create unreachable after the comparison chain, the `br` to the first cmp block gets built in the wrong block.
+
+### Partial Application (Currying)
+
+Multi-param functions support partial application: `add 1` on a 2-arity `add` returns a closure.
+
+#### Representation
+- Function values are `i64`. Bit 0 is a tag:
+  - bit 0 = 0: raw function pointer (aligned, so bit is always 0)
+  - bit 0 = 1: partial application closure pointer
+- Closure struct (heap-allocated): `{ fn_ptr, total_arity, applied_count, applied_args[] }`
+  - offset 0: fn_ptr (pointer to wrapper function)
+  - offset 8: total_arity (total args needed)
+  - offset 16: applied_count (args already applied)
+  - offset 24+: applied_args (the pre-applied values)
+
+#### How it works
+1. When a global function is called with fewer args than its arity, `createPartialApp` is called
+2. A wrapper function is generated: loads applied args from closure, calls original function with all args
+3. Closure struct is allocated on heap, returned as i64 with bit 0 set
+4. When the closure is called, bit 0 is detected, closure is unpacked, wrapper is called
+
+#### Gotcha: Only global functions support partial application
+Multi-param lambdas (`\x y -> ...`) do NOT get partial application in the current implementation. Only top-level `fn` definitions do. The indirect call path doesn't check arity for lambdas.
+
+#### Gotcha: `LLVMAddIncoming` requires `LLVMBasicBlockRef` (not `LLVMIBasicBlockRef`)
+The phi node incoming blocks use `types.LLVMBasicBlockRef`.
+
+### Reference Counting (Memory Management)
+
+Kō uses reference counting for heap-allocated objects. The runtime provides `ko_alloc`, `ko_incref`, and `ko_decref` functions.
+
+#### Memory layout
+```
+[ i64 rc ][ ... user data ... ]
+^         ^
+|         pointer returned by ko_alloc (what codegen sees)
+raw malloc ptr
+```
+
+#### Runtime functions (in `ko_runtime.c`)
+- `ko_alloc(user_size)` — allocate with RC header (rc=1), return pointer to user data
+- `ko_incref(ptr)` — increment RC, return ptr
+- `ko_decref(ptr)` — decrement RC, free if rc<=0
+
+#### Codegen integration
+- All heap allocations use `ko_alloc` instead of raw `malloc`
+- `scope_heap_values` tracks all heap-allocated ptrs per function
+- Before function return, `ko_decref` is called on all tracked values except the return value
+- Return value detection: if body is `ptrtoint`, skip the underlying ptr
+
+#### Gotcha: Only function-level decref
+Currently only decref at function return is implemented. Intermediate variable reassignment, closure captures, and loop-scoped values are NOT decref'd. This means:
+- Programs that return heap-allocated values: no leak (return value is skipped)
+- Programs that allocate and discard (e.g., `let _ = (1,2,3)`): still leaks
+- Closures capturing variables: captured values are not decref'd
+
+#### Gotcha: Zig 0.17 ArrayList API
+In Zig 0.17, `std.ArrayList(T)` uses `.empty` default init and takes allocator on each call:
+```zig
+var list: std.ArrayList(T) = .empty;
+defer list.deinit(allocator);
+try list.append(allocator, item);
+```
 
 ### AOT Compilation (Object File Emission)
 

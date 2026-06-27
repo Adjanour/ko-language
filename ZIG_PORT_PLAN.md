@@ -1,6 +1,34 @@
-# Zig Port: Detailed Implementation Plan
+# Zig Port: Implementation Plan
 
-> **Strategy:** Incremental migration, LLVM 18, stdlib in Kō, dual-compiler validation
+> **Strategy:** Incremental migration, LLVM 22, stdlib in Kō, dual-compiler validation
+
+---
+
+## Status (June 2026)
+
+### Completed
+- **Phase 0**: Project setup, directory structure, build.zig
+- **Phase 1**: Lexer (~693 lines) — all token types, indentation tracking
+- **Phase 2**: Parser (~1155 lines) — full grammar implementation
+- **Phase 3**: Typechecker (~999 lines) — Hindley-Milner inference, let-polymorphism
+- **Phase 4**: Codegen (~1850 lines) — LLVM IR via kassane/llvm-zig bindings
+  - JIT execution (MCJIT) and AOT compilation (object files + linking)
+  - Sum types, records, tuples, lambdas, pattern matching
+  - Built-in functions (println, print, inspect)
+  - Reference counting for heap-allocated objects
+  - Partial application (currying)
+  - Module definitions with pub visibility
+- **Testing**: 75 tests passing, 43 .ko test programs
+
+### In Progress
+- File-based imports
+- General recursion safety
+
+### Planned
+- Closure codegen for multi-param lambdas
+- Full decref for intermediate variables
+- Standard library
+- Better compiler diagnostics
 
 ---
 

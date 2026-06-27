@@ -1,36 +1,48 @@
-# Kō Language Roadmap: From C Backend to Zig + LLVM
+# Kō Language Roadmap
 
-> **Version:** 0.3.0-draft  
-> **Date:** 2026-06-20  
-> **Status:** Planning Phase
+> **Version:** 0.3.0  
+> **Date:** 2026-06-27  
+> **Status:** In Progress
 
 ---
 
 ## Executive Summary
 
-This document outlines the transformation of Kō from a C-backend functional language to a production-ready systems language with:
-1. **Innovative module system** (content-addressed, hookable, sandboxed)
-2. **Zig compiler** (replacing Python implementation)
-3. **LLVM backend** (replacing C codegen)
-4. **Zig stdlib** (replacing C runtime.h)
+This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Timeline:** 9-12 months to production-ready v1.0.0
+**Current state:** Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, and partial application.
 
 ---
 
 ## Part 1: Language Feature Roadmap
 
-### 1.1 Current State (v0.2.1)
-- Functional core: ADTs, pattern matching, closures, tuples
-- Compiles to C (via runtime.h)
-- Basic module system (textual inclusion)
-- 234 tests passing
+### 1.1 Current State (v0.3.0)
+
+**Zig Compiler (complete):**
+
+- Lexer (~693 lines) — all token types, indentation tracking
+- Parser (~1155 lines) — full grammar implementation
+- Typechecker (~999 lines) — Hindley-Milner inference, let-polymorphism
+- Codegen (~1850 lines) — LLVM IR via kassane/llvm-zig bindings
+  - JIT execution (MCJIT) and AOT compilation
+  - Sum types, records, tuples, lambdas, pattern matching
+  - Built-in functions (println, print, inspect)
+  - Reference counting for heap-allocated objects
+  - Partial application (currying)
+  - Module definitions with pub visibility
+- 75 tests passing, 43 .ko test programs
+
+**Python Compiler (archived):**
+
+- Original prototype in `archive/python-compiler/`
+- Compiled to C99, had closures and string interpolation
 
 ### 1.2 Required Features for v0.3.0
 
 #### Must-Have (Blocks Everything)
 
 **A. Error Handling Type**
+
 ```ko
 # Result type for error handling
 type Result[T, E] = Ok(T) | Err(E)
@@ -46,6 +58,7 @@ let n = parse_int "42"?  # propagates error
 ```
 
 **B. Module System v2** (See Part 2 for full design)
+
 ```ko
 # Hierarchical imports
 import std.collections.list
@@ -64,6 +77,7 @@ module MyModule {
 ```
 
 **C. Named/Struct Parameters**
+
 ```ko
 type Point = Point(x: Int, y: Int)
 
@@ -78,6 +92,7 @@ match p
 ```
 
 **D. Trait/Typeclass System**
+
 ```ko
 # Trait definition
 trait Printable {
@@ -100,6 +115,7 @@ fn print[T: Printable] item =
 #### Should-Have (Makes Language Competitive)
 
 **E. Generics v1 (Monomorphization)**
+
 ```ko
 type List[T] = Cons(T, List[T]) | Nil
 
@@ -112,6 +128,7 @@ let doubled = map [1, 2, 3] (\x -> x * 2)
 ```
 
 **F. Compile-Time Execution**
+
 ```ko
 # comptime blocks
 comptime {
@@ -128,6 +145,7 @@ comptime {
 ```
 
 **G. Bit Sets and Distinct Types**
+
 ```ko
 # Bit sets (Odin-style)
 type Color = Red | Green | Blue
@@ -146,6 +164,7 @@ let order: OrderID = OrderID(42)
 #### Nice-to-Have (Polish)
 
 **H. Method Syntax**
+
 ```ko
 type List[T] = Cons(T, List[T]) | Nil
 
@@ -162,6 +181,7 @@ let doubled = [1, 2, 3].map (\x -> x * 2)
 ```
 
 **I. Regex/Pattern Literals**
+
 ```ko
 # Ruby-style regex
 let email_pattern = /\w+@\w+\.\w+/
@@ -172,6 +192,7 @@ let date_pattern = /\d{4}-\d{2}-\d{2}/
 ```
 
 **J. Exception Handling**
+
 ```ko
 # Exception type
 type Error = ParseError(String) | IOError(String)
@@ -210,26 +231,31 @@ try {
 From recent research and production systems:
 
 **Content-Addressed Identity (Janus)**
+
 - Module identity is BLAKE3 hash of canonical AST, not filesystem path
 - Moving a file doesn't change its identity
 - Enables reproducible builds and caching
 
 **Modules as Structs (Zig)**
+
 - `@import("file.zig")` turns entire file into a struct
 - Types double as namespaces
 - No separate "module" concept
 
 **Import Hooks (JavaScript TC39)**
+
 - Programmable import resolution
 - Can mock, deny, or transform imports
 - Enables testing and sandboxing
 
 **Modular Explicits (OCaml Research)**
+
 - Functions can take modules as arguments
 - Enables typeclasses without core language changes
 - Compatible with existing module system
 
 **Sandboxed Modules (Warble)**
+
 - Modules sandboxed by default
 - Explicit allow-list for external interactions
 - Security by default
@@ -237,6 +263,7 @@ From recent research and production systems:
 ### 2.2 Kō Module System Design
 
 #### Core Principles
+
 1. **Content-addressed identity** (like Git, not filesystem paths)
 2. **Programmable resolution** (import hooks)
 3. **Sandboxed by default** (explicit permissions)
@@ -246,6 +273,7 @@ From recent research and production systems:
 #### Syntax Design
 
 **Basic Import**
+
 ```ko
 # Simple import (module becomes namespace)
 import std.math
@@ -266,6 +294,7 @@ import std.math.{sin as trig_sin, cos as trig_cos}
 ```
 
 **Module Definition**
+
 ```ko
 # math.ko
 package std.math
@@ -278,6 +307,7 @@ fn internal_helper = ...  # private
 ```
 
 **Visibility**
+
 ```ko
 # Everything public by default in package root
 pub fn public_fn = ...
@@ -292,6 +322,7 @@ trait PrivateTrait = ...
 ```
 
 **Module Scoping**
+
 ```ko
 module MyModule {
   type Internal = ...
@@ -304,6 +335,7 @@ module MyModule {
 ```
 
 **First-Class Modules**
+
 ```ko
 # Module as argument
 trait Comparable {
@@ -328,6 +360,7 @@ let result = sort [3, 1, 2] {
 ```
 
 **Compile-Time Module Instantiation**
+
 ```ko
 # Generic module
 module Pair(T) {
@@ -347,6 +380,7 @@ let q = IntPair.make "a" "b"
 ```
 
 **Module Interfaces (Signatures)**
+
 ```ko
 # Trait as interface
 trait Iterable {
@@ -364,6 +398,7 @@ module ListIterator(T) : Iterable {
 ```
 
 **Import Hooks (Programmable Resolution)**
+
 ```ko
 # Define import hook
 fn my_import_hook request =
@@ -378,6 +413,7 @@ import std.math
 ```
 
 **Sandboxed Modules**
+
 ```ko
 # Module with explicit permissions
 module NetworkModule {
@@ -397,6 +433,7 @@ module UntrustedCode {
 ```
 
 **Content-Addressed Identity**
+
 ```ko
 # Module identity is content hash
 # Moving file doesn't change identity
@@ -431,21 +468,25 @@ import std.math  # resolved to BLAKE3 hash
 ### 2.4 Module System Implementation Phases
 
 **Phase 1: Basic Hierarchical Imports**
+
 - Dot-separated paths
 - Package detection (package.ko or ko.toml)
 - Basic visibility (pub/private)
 
 **Phase 2: First-Class Modules**
+
 - Modules as values
 - Module arguments to functions
 - Compile-time instantiation
 
 **Phase 3: Import Hooks**
+
 - Programmable resolution
 - Mock modules for testing
 - Sandboxing support
 
 **Phase 4: Content-Addressed Identity**
+
 - BLAKE3 hashing
 - Reproducible builds
 - Distributed caching
@@ -457,6 +498,7 @@ import std.math  # resolved to BLAKE3 hash
 ### 3.1 Why Zig?
 
 **Advantages over Python implementation:**
+
 - **Performance:** 100-1000x faster compilation
 - **Memory safety:** No GC, explicit allocation
 - **C interop:** Perfect for LLVM bindings
@@ -465,6 +507,7 @@ import std.math  # resolved to BLAKE3 hash
 - **Compile-time execution:** `comptime` for metaprogramming
 
 **Advantages over C implementation:**
+
 - **Error handling:** `error!T` unions
 - **No hidden allocations:** Every alloc is explicit
 - **Better ergonomics:** Defer, optional types
@@ -516,6 +559,7 @@ import std.math  # resolved to BLAKE3 hash
 ### 3.3 Component Design
 
 #### Lexer (Zig)
+
 ```zig
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -575,6 +619,7 @@ pub const Lexer = struct {
 ```
 
 #### Parser (Zig)
+
 ```zig
 pub const Parser = struct {
     lexer: *Lexer,
@@ -616,6 +661,7 @@ pub const Parser = struct {
 ```
 
 #### Type Checker (Zig)
+
 ```zig
 pub const TypeChecker = struct {
     allocator: Allocator,
@@ -650,6 +696,7 @@ pub const TypeChecker = struct {
 ```
 
 #### Module System (Zig)
+
 ```zig
 pub const ModuleSystem = struct {
     allocator: Allocator,
@@ -685,6 +732,7 @@ pub const ModuleSystem = struct {
 ```
 
 #### LLVM Codegen (Zig)
+
 ```zig
 const llvm = @cImport({
     @cInclude("llvm-c/Core.h");
@@ -728,6 +776,7 @@ pub const LLVMCodegen = struct {
 ### 3.4 LLVM Integration
 
 #### LLVM Passes
+
 ```zig
 pub fn optimize_module(module: llvm.LLVMModuleRef) void {
     const pass_manager = llvm.LLVMCreatePassManager();
@@ -746,6 +795,7 @@ pub fn optimize_module(module: llvm.LLVMModuleRef) void {
 ```
 
 #### Target Triple
+
 ```zig
 pub fn get_target_triple() []const u8 {
     // Detect current platform
@@ -772,6 +822,7 @@ pub fn get_target_triple() []const u8 {
 ### 3.5 Zig Stdlib Design
 
 #### Core Types
+
 ```zig
 // std/core/value.zig
 pub const Value = union(enum) {
@@ -803,6 +854,7 @@ pub const Tuple = struct {
 ```
 
 #### Memory Management
+
 ```zig
 // std/core/memory.zig
 const std = @import("std");
@@ -827,6 +879,7 @@ pub const Allocator = struct {
 ```
 
 #### String Operations
+
 ```zig
 // std/core/string.zig
 pub fn concat(allocator: Allocator, a: []const u8, b: []const u8) !Value {
@@ -846,6 +899,7 @@ pub fn to_string(allocator: Allocator, value: Value) ![]const u8 {
 ```
 
 #### Collections
+
 ```zig
 // std/collections/list.zig
 pub fn List(comptime T: type) type {
@@ -892,6 +946,7 @@ pub fn List(comptime T: type) type {
 ### 3.6 Build System
 
 #### build.zig
+
 ```zig
 const std = @import("std");
 
@@ -929,6 +984,7 @@ pub fn build(b: *std.Build) void {
 ### 3.7 Migration Plan
 
 #### Phase 1: Core Infrastructure (Months 1-2)
+
 1. Set up Zig project structure
 2. Implement Lexer in Zig
 3. Implement Parser in Zig
@@ -936,30 +992,35 @@ pub fn build(b: *std.Build) void {
 5. Basic error handling
 
 #### Phase 2: Type System (Months 3-4)
+
 1. Port type inference to Zig
 2. Implement unification algorithm
 3. Add trait/typeclass support
 4. Add generics support
 
 #### Phase 3: Module System (Month 5)
+
 1. Implement hierarchical imports
 2. Add visibility system
 3. Implement content-addressed identity
 4. Add import hooks
 
 #### Phase 4: LLVM Backend (Months 6-7)
+
 1. Set up LLVM bindings
 2. Implement basic codegen
 3. Add optimization passes
 4. Support cross-compilation
 
 #### Phase 5: Stdlib (Month 8)
+
 1. Implement core types
 2. Add string operations
 3. Implement collections
 4. Add I/O operations
 
 #### Phase 6: Tooling (Months 9-10)
+
 1. Package manager
 2. Build system integration
 3. LSP server
@@ -970,6 +1031,7 @@ pub fn build(b: *std.Build) void {
 ## Part 4: What to Steal from Other Languages
 
 ### 4.1 From Odin
+
 - **`#config`** for compile-time configuration
 - **`using`** for scope injection
 - **No hidden control flow**
@@ -980,6 +1042,7 @@ pub fn build(b: *std.Build) void {
 - **`#partial switch`**
 
 ### 4.2 From Ruby
+
 - **Blocks and Procs** (we have lambdas, similar)
 - **`method_missing`** (could add to traits)
 - **Enumerable module pattern**
@@ -988,6 +1051,7 @@ pub fn build(b: *std.Build) void {
 - **`require_relative`**
 
 ### 4.3 From OCaml
+
 - **Module functors** (compile-time module composition)
 - **Module signatures** (interfaces)
 - **Polymorphic variants** (open tagged unions)
@@ -997,6 +1061,7 @@ pub fn build(b: *std.Build) void {
 - **Lazy evaluation**
 
 ### 4.4 From Zig
+
 - **Modules as structs** (files are structs)
 - **`@import`** turns files into values
 - **`comptime`** for compile-time execution
@@ -1005,6 +1070,7 @@ pub fn build(b: *std.Build) void {
 - **C interop via headers**
 
 ### 4.5 From Rust
+
 - **Traits** (we're adding these)
 - **Pattern matching** (we already have)
 - **Ownership/borrowing** (future consideration)
@@ -1015,35 +1081,41 @@ pub fn build(b: *std.Build) void {
 
 ## Part 5: Timeline and Milestones
 
-### Phase 1: Language Features (Months 1-3)
-- [ ] Error handling type (Result)
-- [ ] Module system v2
-- [ ] Named parameters
-- [ ] Trait/typeclass system
-- [ ] Generics v1
+### Phase 1: Core Compiler (Completed)
 
-### Phase 2: Zig Port (Months 4-7)
-- [ ] Lexer in Zig
-- [ ] Parser in Zig
-- [ ] Type checker in Zig
-- [ ] Module system in Zig
-- [ ] LLVM codegen
-- [ ] Basic optimizations
+- [x] Lexer in Zig
+- [x] Parser in Zig
+- [x] Type checker in Zig (HM inference)
+- [x] LLVM codegen
+- [x] JIT execution
+- [x] AOT compilation
+- [x] Reference counting
+- [x] Partial application
 
-### Phase 3: Stdlib in Zig (Month 8)
+### Phase 2: Language Features (In Progress)
+
+- [ ] File-based imports
+- [ ] General recursion safety
+- [ ] Closure codegen for multi-param lambdas
+- [ ] Full decref for intermediate variables
+
+### Phase 3: Standard Library (Planned)
+
 - [ ] Core types and operations
 - [ ] String operations
 - [ ] Collections (List, Map, Set)
 - [ ] I/O operations
 - [ ] Math library
 
-### Phase 4: Tooling (Months 9-10)
+### Phase 4: Tooling (Planned)
+
 - [ ] Package manager
 - [ ] Build system
 - [ ] LSP server
 - [ ] Debugger support
 
-### Phase 5: Polish and Release (Months 11-12)
+### Phase 5: Polish and Release (Planned)
+
 - [ ] Documentation
 - [ ] Examples and tutorials
 - [ ] Performance optimization
@@ -1055,18 +1127,21 @@ pub fn build(b: *std.Build) void {
 ## Part 6: Success Metrics
 
 ### Performance Targets
+
 - **Compilation speed:** 10x faster than current Python implementation
 - **Runtime performance:** Within 10% of C for most workloads
 - **Binary size:** Smaller than C++ equivalents
 - **Memory usage:** Lower than Go/Rust equivalents
 
 ### Quality Targets
+
 - **Test coverage:** >90%
 - **Documentation:** Complete API docs
 - **Examples:** 50+ working examples
 - **Tutorials:** 10+ tutorials
 
 ### Ecosystem Targets
+
 - **Packages:** 100+ packages in first year
 - **Contributors:** 50+ contributors
 - **Adoption:** 1000+ users in first year

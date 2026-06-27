@@ -2,6 +2,8 @@
 
 Research findings for type system, comptime, reference counting, and codegen.
 
+> **Current status**: Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, and reference counting.
+
 ---
 
 ## 1. Type System (Hindley-Milner)
@@ -348,6 +350,7 @@ Based on dependencies and impact:
 ### Suggested Sprint Plan
 
 **Sprint 1: RC + Codegen Foundation**
+
 - Add refcount header to Value
 - Generate inc/dec_ref calls
 - Fix string interpolation
@@ -355,6 +358,7 @@ Based on dependencies and impact:
 - Run all tests through sanitizers
 
 **Sprint 2: Type System**
+
 - Implement union-find
 - Implement unification
 - Implement core HM inference
@@ -362,11 +366,13 @@ Based on dependencies and impact:
 - Add pattern matching inference
 
 **Sprint 3: Comptime**
+
 - Implement comptime evaluator
 - Add comptime check to type checker
 - Implement monomorphization
 
 **Sprint 4: Polish**
+
 - Better error messages
 - Borrow inference optimization
 - Reuse analysis optimization

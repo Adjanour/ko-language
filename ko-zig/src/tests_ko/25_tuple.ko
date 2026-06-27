@@ -1,0 +1,5 @@
+# Test: tuple expressions
+fn main =
+  let t = (1, 2, 3)
+  let a = (1, "hello")
+  t

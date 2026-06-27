@@ -1,0 +1,5 @@
+# Test: match with record pattern
+type Point = { x: Int, y: Int }
+type Shape = Circle Point Int | Rect Point Point
+
+fn main = 1

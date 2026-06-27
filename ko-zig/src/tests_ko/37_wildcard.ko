@@ -1,0 +1,8 @@
+# Test: wildcard pattern (_) in match arms
+type Option = Some Int | None
+
+fn main =
+  let x = Some 5
+  match x
+    | Some _ => 1
+    | None => 0

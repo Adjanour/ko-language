@@ -1,0 +1,17 @@
+# Module Definitions — Organize code into modules.
+
+module Math
+  fn add x y = x + y
+  fn double x = x * 2
+  fn square x = x * x
+
+module Geometry
+  type Point = { x: Int, y: Int }
+  fn distance p = p.x * p.x + p.y * p.y
+
+fn main =
+  let a = Math.add 1 2
+  let b = Math.square 5
+  let pt = Geometry.Point { x = 3, y = 4 }
+  let d = Geometry.distance pt
+  a + b + d

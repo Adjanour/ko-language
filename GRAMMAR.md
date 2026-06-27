@@ -80,7 +80,7 @@ field_init      = LOWER_IDENT "=" expr ;
 
 if_expr         = "if" expr "then" expr [ "else" expr ] ;
 match_expr      = "match" expr NEWLINE INDENT { match_arm NEWLINE } DEDENT ;
-match_arm       = pattern "->" expr ;
+match_arm       = pattern "=>" expr ;
 
 lambda          = "\\" { pattern } "->" expr ;
 comptime_expr   = "comptime" expr ;

@@ -1,15 +1,9 @@
-// Number Literals — Decimal, hex, floats, and underscores.
+# Number Literals — Decimal, hex, binary, octal.
 
 fn main =
-  let a = 42
-  let b = 1_000_000
-  let red = 0xFF0000
-  let pi = 3.14159
-
-  println (a + 8)
-  println (b / 1000)
-  println (100 % 7)
-  println (1_000 + 2_000 + 3_000)
-
-  inspect red
-  inspect pi
+  let decimal = 42
+  let hex = 0xFF
+  let binary = 0b1010
+  let octal = 0o77
+  let big = 1_000_000
+  decimal

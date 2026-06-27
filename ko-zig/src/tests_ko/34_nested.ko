@@ -1,0 +1,5 @@
+# Test: nested expressions
+fn main =
+  let x = (1 + 2) * 3
+  let y = if x > 5 then x else 0
+  y

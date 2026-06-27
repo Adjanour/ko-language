@@ -1,0 +1,7 @@
+# Nested Expressions — Complex expressions.
+
+fn main =
+  let x = (1 + 2) * 3
+  let y = if x > 5 then x else 0
+  let z = if y > 10 then y * 2 else y + 1
+  z

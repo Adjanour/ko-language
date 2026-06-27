@@ -1,3 +1,0 @@
-fn double x = x * 2
-
-fn main = double (double (double 1))

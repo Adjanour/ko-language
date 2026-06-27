@@ -1,0 +1,6 @@
+# Test: deref and assignment
+fn main =
+  let r = ref 5
+  r := 10
+  let val = !r
+  val

@@ -1,0 +1,9 @@
+# Test: comparison operators (==, !=, <, >, <=, >=)
+fn main =
+  let a = 1 == 1
+  let b = 1 != 2
+  let c = 1 < 2
+  let d = 2 > 1
+  let e = 1 <= 1
+  let f = 2 >= 1
+  1

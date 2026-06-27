@@ -1,0 +1,4 @@
+# Test: comptime expression
+fn main =
+  let x = comptime 1 + 2
+  x

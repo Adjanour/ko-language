@@ -1,0 +1,4 @@
+# Test: import with constructor names (uppercase module)
+import Math
+
+fn main = 1

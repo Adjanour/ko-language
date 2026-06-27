@@ -1,0 +1,6 @@
+# Test: lambda expressions
+fn main =
+  let f = \x -> x + 1
+  let g = \x y -> x + y
+  let result = f 5
+  result
