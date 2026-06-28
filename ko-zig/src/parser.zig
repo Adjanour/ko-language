@@ -50,6 +50,7 @@ pub const Parser = struct {
     tokens: []lexer.Token,
     pos: usize,
     allow_let_in_body: bool = false,
+    pending_doc_comments: std.ArrayList([]const u8) = .empty,
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Error!Parser {
         var tok = lexer.Tokenizer.init(source);
@@ -136,11 +137,20 @@ pub const Parser = struct {
     }
 
     fn skip_newlines(self: *Parser) void {
-        while (self.current().tag == .newline) _ = self.advance();
+        while (self.current().tag == .newline) {
+            _ = self.advance();
+        }
     }
 
     fn skip_layout(self: *Parser) void {
-        while (self.current().tag == .newline or self.current().tag == .indent or self.current().tag == .dedent) {
+        while (self.current().tag == .newline or self.current().tag == .indent or self.current().tag == .dedent or self.current().tag == .comment) {
+            if (self.current().tag == .comment) {
+                const loc = self.current().loc;
+                const text = std.mem.trim(u8, self.source[loc.start..loc.end], " \t");
+                if (text.len > 0) {
+                    self.pending_doc_comments.append(self.allocator, text) catch {};
+                }
+            }
             _ = self.advance();
         }
     }
@@ -177,18 +187,21 @@ pub const Parser = struct {
                 if (self.current().tag == .keyword_fn) {
                     var fn_def = try self.parse_fn_def();
                     fn_def.is_pub = true;
+                    fn_def.doc_comments = self.collectDocComments();
                     try defs.append(self.allocator, .{ .fn_def = fn_def });
                     continue;
                 }
                 if (self.current().tag == .keyword_type) {
                     var type_def = try self.parse_type_def();
                     type_def.is_pub = true;
+                    type_def.doc_comments = self.collectDocComments();
                     try defs.append(self.allocator, .{ .type_def = type_def });
                     continue;
                 }
                 if (self.current().tag == .keyword_let) {
                     var let_def = try self.parse_let_binding();
                     let_def.is_pub = true;
+                    let_def.doc_comments = self.collectDocComments();
                     try defs.append(self.allocator, .{ .let_binding = let_def });
                     continue;
                 }
@@ -202,7 +215,8 @@ pub const Parser = struct {
                     const name = self.slice(self.advance());
                     _ = try self.expect(.equal);
                     const value = try self.parse_expr();
-                    try defs.append(self.allocator, .{ .let_binding = .{ .name = name, .type_ann = null, .value = value, .is_pub = true } });
+                    const doc = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .let_binding = .{ .name = name, .type_ann = null, .value = value, .is_pub = true, .doc_comments = doc } });
                     continue;
                 }
                 return error.UnexpectedToken;
@@ -210,15 +224,32 @@ pub const Parser = struct {
 
             switch (self.current().tag) {
                 .keyword_import => try imports.append(self.allocator, try self.parse_import()),
-                .keyword_fn => try defs.append(self.allocator, .{ .fn_def = try self.parse_fn_def() }),
-                .keyword_type => try defs.append(self.allocator, .{ .type_def = try self.parse_type_def() }),
-                .keyword_let => try defs.append(self.allocator, .{ .let_binding = try self.parse_let_binding() }),
-                .keyword_module => try defs.append(self.allocator, .{ .module_def = try self.parse_module_def() }),
+                .keyword_fn => {
+                    var f = try self.parse_fn_def();
+                    f.doc_comments = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .fn_def = f });
+                },
+                .keyword_type => {
+                    var t = try self.parse_type_def();
+                    t.doc_comments = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .type_def = t });
+                },
+                .keyword_let => {
+                    var l = try self.parse_let_binding();
+                    l.doc_comments = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .let_binding = l });
+                },
+                .keyword_module => {
+                    var m = try self.parse_module_def();
+                    m.doc_comments = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .module_def = m });
+                },
                 .keyword_comptime => {
                     _ = self.advance();
                     if (self.current().tag == .keyword_fn) {
                         var fn_def = try self.parse_fn_def();
                         fn_def.is_comptime = true;
+                        fn_def.doc_comments = self.collectDocComments();
                         try defs.append(self.allocator, .{ .fn_def = fn_def });
                         continue;
                     }
@@ -344,6 +375,13 @@ pub const Parser = struct {
         return try defs.toOwnedSlice(self.allocator);
     }
 
+    fn collectDocComments(self: *Parser) ?[]const []const u8 {
+        if (self.pending_doc_comments.items.len == 0) return null;
+        const result = self.pending_doc_comments.toOwnedSlice(self.allocator) catch return null;
+        self.pending_doc_comments = .empty;
+        return result;
+    }
+
     fn parse_definition_in_scope(self: *Parser) Error!Definition {
         var is_pub = false;
         if (self.match(.keyword_pub)) is_pub = true;
@@ -351,21 +389,25 @@ pub const Parser = struct {
             .keyword_fn => blk: {
                 var f = try self.parse_fn_def();
                 f.is_pub = is_pub;
+                f.doc_comments = self.collectDocComments();
                 break :blk .{ .fn_def = f };
             },
             .keyword_type => blk: {
                 var t = try self.parse_type_def();
                 t.is_pub = is_pub;
+                t.doc_comments = self.collectDocComments();
                 break :blk .{ .type_def = t };
             },
             .keyword_let => blk: {
                 var l = try self.parse_let_binding();
                 l.is_pub = is_pub;
+                l.doc_comments = self.collectDocComments();
                 break :blk .{ .let_binding = l };
             },
             .keyword_module => blk: {
                 var m = try self.parse_module_def();
                 m.is_pub = is_pub;
+                m.doc_comments = self.collectDocComments();
                 break :blk .{ .module_def = m };
             },
             else => error.UnexpectedToken,
@@ -523,6 +565,7 @@ pub const Parser = struct {
         defer exprs.deinit(self.allocator);
 
         while (self.current().tag != .eof) {
+            if (self.current().tag == .comment and !is_indented) break;
             if (self.current().tag == .dedent) {
                 if (!is_indented) break;
                 _ = self.advance();
@@ -538,7 +581,7 @@ pub const Parser = struct {
             }
             if (Parser.is_stop(self.current().tag, stop_tags) and is_indented) break;
             if (!is_indented and Parser.is_stop(self.current().tag, stop_tags)) break;
-            if (self.current().tag == .newline) {
+            if (self.current().tag == .newline or self.current().tag == .comment) {
                 _ = self.advance();
                 continue;
             }

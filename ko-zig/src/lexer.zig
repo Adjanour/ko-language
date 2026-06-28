@@ -213,6 +213,8 @@ pub const Tokenizer = struct {
     indent_pos: usize,
     pending_newline: bool,
     pending_dedents: usize,
+    pending_comments: [4]?[]const u8,
+    pending_comment_count: u8,
 
     pub fn init(source: [:0]const u8) Tokenizer {
         return .{
@@ -223,10 +225,29 @@ pub const Tokenizer = struct {
             .indent_pos = 0,
             .pending_newline = false,
             .pending_dedents = 0,
+            .pending_comments = std.mem.zeroes([4]?[]const u8),
+            .pending_comment_count = 0,
         };
     }
 
+    fn pushComment(self: *Tokenizer, text: []const u8) void {
+        if (self.pending_comment_count < 4) {
+            self.pending_comments[self.pending_comment_count] = text;
+            self.pending_comment_count += 1;
+        }
+    }
+
     pub fn next(self: *Tokenizer) Token {
+        if (self.pending_comment_count > 0) {
+            const text = self.pending_comments[0].?;
+            var i: u8 = 0;
+            while (i + 1 < self.pending_comment_count) : (i += 1) {
+                self.pending_comments[i] = self.pending_comments[i + 1];
+            }
+            self.pending_comments[self.pending_comment_count - 1] = null;
+            self.pending_comment_count -= 1;
+            return .{ .tag = .comment, .loc = .{ .start = @intCast(@intFromPtr(text.ptr) - @intFromPtr(self.source.ptr)), .end = @intCast(@intFromPtr(text.ptr) - @intFromPtr(self.source.ptr) + text.len) } };
+        }
         if (self.pending_dedents > 0) {
             self.pending_dedents -= 1;
             return .{ .tag = .dedent, .loc = .{ .start = self.index, .end = self.index } };
@@ -472,15 +493,18 @@ pub const Tokenizer = struct {
             },
 
             .comment => {
-                self.index += 1;
-                switch (self.source[self.index]) {
-                    0, '\n' => {
-                        // Skip the remainder of the comment line and resume lexing.
-                        if (self.source[self.index] == '\n') self.index += 1;
-                        return self.scan_indent();
-                    },
-                    else => continue :state .comment,
+                const start = self.index + 1;
+                while (self.index < self.source.len) : (self.index += 1) {
+                    switch (self.source[self.index]) {
+                        0, '\n' => {
+                            self.pushComment(self.source[start..self.index]);
+                            if (self.source[self.index] == '\n') self.index += 1;
+                            return self.scan_indent();
+                        },
+                        else => {},
+                    }
                 }
+                self.pushComment(self.source[start..self.source.len]);
             },
 
             .equal => {
@@ -608,10 +632,12 @@ pub const Tokenizer = struct {
                         self.index += 1;
                     },
                     '#' => {
-                        // Comment-only line: skip to end of line and restart.
+                        // Comment-only line: store comment and skip to end of line.
+                        const cstart = self.index + 1;
                         while (self.source[self.index] != 0 and self.source[self.index] != '\n') {
                             self.index += 1;
                         }
+                        self.pushComment(self.source[cstart..self.index]);
                         if (self.source[self.index] == '\n') self.index += 1;
                         break;
                     },
@@ -679,8 +705,10 @@ test "string literal" {
 
 test "comment skipping" {
     var tok = Tokenizer.init("# this is a comment\n42");
-    const t = tok.next();
-    try std.testing.expectEqual(Token.Tag.number, t.tag);
+    const t1 = tok.next();
+    try std.testing.expectEqual(Token.Tag.comment, t1.tag);
+    const t2 = tok.next();
+    try std.testing.expectEqual(Token.Tag.number, t2.tag);
 }
 
 test "indentation" {

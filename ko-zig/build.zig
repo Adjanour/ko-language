@@ -25,6 +25,26 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(ko_exe);
 
+    // Kō LSP server (no LLVM dependency)
+    const ko_lsp = b.addExecutable(.{
+        .name = "ko-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lsp.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    b.installArtifact(ko_lsp);
+
+    const run_lsp = b.addRunArtifact(ko_lsp);
+    run_lsp.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_lsp.addArgs(args);
+    }
+    const lsp_step = b.step("lsp", "Run the Kō LSP server");
+    lsp_step.dependOn(&run_lsp.step);
+
     // Run command
     const run_cmd = b.addRunArtifact(ko_exe);
     run_cmd.step.dependOn(b.getInstallStep());

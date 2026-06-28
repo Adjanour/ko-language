@@ -90,8 +90,8 @@ test "lexer: literals" {
 
 test "lexer: comments skipped" {
     var tok = lexer.Tokenizer.init("# comment\n42");
-    const t = tok.next();
-    try std.testing.expectEqual(lexer.Token.Tag.number, t.tag);
+    try std.testing.expectEqual(lexer.Token.Tag.comment, tok.next().tag);
+    try std.testing.expectEqual(lexer.Token.Tag.number, tok.next().tag);
 }
 
 test "lexer: comment line inside indent" {
@@ -101,6 +101,7 @@ test "lexer: comment line inside indent" {
     try std.testing.expectEqual(lexer.Token.Tag.equal, tok.next().tag);
     try std.testing.expectEqual(lexer.Token.Tag.newline, tok.next().tag);
     try std.testing.expectEqual(lexer.Token.Tag.indent, tok.next().tag);
+    try std.testing.expectEqual(lexer.Token.Tag.comment, tok.next().tag);
     try std.testing.expectEqual(lexer.Token.Tag.number, tok.next().tag);
 }
 
@@ -1133,4 +1134,49 @@ test "parser: all .ko test files parse successfully" {
         };
     }
     std.debug.print("Parsed {d} test files successfully\n", .{files.len});
+}
+
+test "doc comment tokens" {
+    var tok = lexer.Tokenizer.init("# Add two integers\nfn add x y = x + y\n");
+    const t1 = tok.next();
+    try std.testing.expectEqual(lexer.Token.Tag.comment, t1.tag);
+    const raw_text = tok.source[t1.loc.start..t1.loc.end];
+    try std.testing.expectEqualStrings(" Add two integers", raw_text);
+
+    const t2 = tok.next();
+    try std.testing.expectEqual(lexer.Token.Tag.keyword_fn, t2.tag);
+}
+
+test "multi-line doc comments per function" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source = try allocator.dupeZ(u8,
+        "# First doc line\n# Second doc line\nfn add x y = x + y\n\n# Mul doc line\nfn mul x y = x * y\n");
+
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+
+    try std.testing.expectEqual(@as(usize, 2), prog.definitions.len);
+
+    const add_def = prog.definitions[0].fn_def;
+    try std.testing.expectEqualStrings("add", add_def.name);
+    if (add_def.doc_comments) |docs| {
+        try std.testing.expectEqual(@as(usize, 2), docs.len);
+        try std.testing.expectEqualStrings("First doc line", docs[0]);
+        try std.testing.expectEqualStrings("Second doc line", docs[1]);
+    } else {
+        return error.TestExpectedResult;
+    }
+
+    const mul_def = prog.definitions[1].fn_def;
+    try std.testing.expectEqualStrings("mul", mul_def.name);
+    if (mul_def.doc_comments) |docs| {
+        try std.testing.expectEqual(@as(usize, 1), docs.len);
+        try std.testing.expectEqualStrings("Mul doc line", docs[0]);
+    } else {
+        return error.TestExpectedResult;
+    }
 }

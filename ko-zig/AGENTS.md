@@ -662,3 +662,102 @@ ko --emit-exe out file.ko      # Emit object file + link to executable
 - Zig Documentation: <https://ziglang.org/documentation/>
 - Zig Standard Library: /home/bernard/.local/share/zig/lib/std/
 - Zig Source Code: /home/bernard/.local/share/zig/lib/
+
+## LSP Server (`src/lsp.zig`)
+
+### Architecture
+- Separate binary `ko-lsp` — no LLVM dependency (imports parser + typechecker only)
+- JSON-RPC over stdio (LSP standard)
+- Document store with parse/typecheck on open/change
+- Provides: hover, completion, definition, document symbols, diagnostics
+
+### Type Pretty-Printing for Hover
+- `typecheck_mod.typeToString(alloc, type)` converts `Type` to human-readable string
+- Follows `variable.instance` chain to resolve type variables to concrete types
+- Handles: `Int`, `Float`, `Bool`, `String`, `Char`, `()`, arrows, tuples, constructors, records, refs
+- Arrow types auto-parenthesize: `(Int -> Int) -> Int`
+- Polymorphic type variables show internal names (e.g., `ret8`) — improvement opportunity
+
+### I/O Pattern — Raw Linux Syscalls (NOT std.Io)
+
+**Critical: `std.Io` does NOT work with subprocess pipes.** The `Io.File.stdin().readerStreaming(io, &buffer)` approach fails because `Io.File.Reader` uses `sendFile` for streaming which returns 0 on pipes, and the `Io.Reader` interface doesn't properly delegate to the file for pipe reads.
+
+**Solution: Use raw `std.os.linux` syscalls directly.** This bypasses the entire `std.Io` layer.
+
+```zig
+const linux = std.os.linux;
+
+fn rawRead(fd: i32, buf: []u8) !usize {
+    const rc = linux.read(fd, buf.ptr, buf.len);
+    if (rc < 0) {
+        const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
+        return switch (e) {
+            .INTR => rawRead(fd, buf),  // retry on interrupt
+            else => error.ReadFailed,
+        };
+    }
+    if (rc == 0) return error.EndOfStream;
+    return @intCast(rc);
+}
+
+fn writeAll(fd: i32, data: []const u8) !void {
+    var pos: usize = 0;
+    while (pos < data.len) {
+        const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
+        if (rc < 0) {
+            const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
+            switch (e) {
+                .INTR => continue,
+                else => return error.WriteFailed,
+            }
+        }
+        pos += @intCast(rc);
+    }
+}
+```
+
+### LSP Header Parsing
+
+```zig
+fn readLine(fd: i32, line_buf: []u8) ![]const u8 {
+    var line_len: usize = 0;
+    while (line_len < line_buf.len) {
+        const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
+            if (err == error.EndOfStream) return error.ConnectionClosed;
+            return err;
+        };
+        if (n == 0) return error.ConnectionClosed;
+        if (line_buf[line_len] == '\n') break;  // DON'T increment line_len
+        line_len += n;
+    }
+    // Strip trailing \r if present
+    const end = if (line_len > 0 and line_buf[line_len - 1] == '\r') line_len - 1 else line_len;
+    return line_buf[0..end];
+}
+```
+
+**Gotcha: Don't increment `line_len` when breaking on `\n`.** The original code did `line_len += 1; break;` which included the `\n` in the returned line, causing empty lines (`\r\n`) to be returned as `"\r\n"` instead of `""`.
+
+### Main Function
+
+Use `std.process.Init.Minimal` (not `std.process.Init`) to avoid the `Io` layer:
+
+```zig
+pub fn main(_: std.process.Init.Minimal) !void {
+    var gpa: std.heap.DebugAllocator(.{}) = .{};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    // ... use raw Linux syscalls for I/O
+}
+```
+
+### Building
+```bash
+zig build          # Build all (ko + ko-lsp)
+zig build lsp      # Build + run ko-lsp (requires piped input)
+```
+
+### VS Code Integration
+- Extension in `vscode-ko/` (v0.5.0)
+- Extension provides: TextMate grammar, LSP client via `vscode-languageclient`
+- LSP server launched as `ko-lsp` subprocess

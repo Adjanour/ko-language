@@ -72,6 +72,12 @@ pub const Env = struct {
 
 pub const Error = error{ UndefinedName, TypeMismatch, OccursCheck, UnknownConstructor, UnknownType, OutOfMemory };
 
+pub const ErrorContext = struct {
+    message: ?[]const u8 = null,
+    expected: ?[]const u8 = null,
+    actual: ?[]const u8 = null,
+};
+
 pub const Inferer = struct {
     allocator: std.mem.Allocator,
     next_id: usize,
@@ -80,6 +86,8 @@ pub const Inferer = struct {
     types: std.StringHashMap(TypeDefInfo),
     type_names: std.StringHashMap(usize),
     current_module: ?[]const u8,
+    last_error: ?ErrorContext,
+    doc_comments: std.StringHashMap([]const []const u8),
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
         return .{
@@ -90,6 +98,8 @@ pub const Inferer = struct {
             .types = std.StringHashMap(TypeDefInfo).init(allocator),
             .type_names = std.StringHashMap(usize).init(allocator),
             .current_module = null,
+            .last_error = null,
+            .doc_comments = std.StringHashMap([]const []const u8).init(allocator),
         };
     }
 
@@ -98,6 +108,7 @@ pub const Inferer = struct {
         self.ctors.deinit();
         self.types.deinit();
         self.type_names.deinit();
+        self.doc_comments.deinit();
     }
 
     /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
@@ -193,47 +204,63 @@ pub const Inferer = struct {
             else => {},
         }
 
+        const mismatch = struct {
+            fn f(self_inner: *Inferer, l: *Type, r: *Type) Error!void {
+                const exp_str = typeToString(self_inner.allocator, l.*) catch null;
+                const act_str = typeToString(self_inner.allocator, r.*) catch null;
+                self_inner.last_error = .{
+                    .message = std.fmt.allocPrint(self_inner.allocator, "type mismatch: expected {s}, got {s}", .{
+                        exp_str orelse "?",
+                        act_str orelse "?",
+                    }) catch null,
+                    .expected = exp_str,
+                    .actual = act_str,
+                };
+                return error.TypeMismatch;
+            }
+        };
+
         switch (a.*) {
-            .int => if (b.* != .int) return error.TypeMismatch,
-            .float => if (b.* != .float) return error.TypeMismatch,
-            .bool => if (b.* != .bool) return error.TypeMismatch,
-            .char => if (b.* != .char) return error.TypeMismatch,
-            .string => if (b.* != .string) return error.TypeMismatch,
-            .unit => if (b.* != .unit) return error.TypeMismatch,
+            .int => if (b.* != .int) return mismatch.f(self, a, b),
+            .float => if (b.* != .float) return mismatch.f(self, a, b),
+            .bool => if (b.* != .bool) return mismatch.f(self, a, b),
+            .char => if (b.* != .char) return mismatch.f(self, a, b),
+            .string => if (b.* != .string) return mismatch.f(self, a, b),
+            .unit => if (b.* != .unit) return mismatch.f(self, a, b),
             .arrow => |aa| switch (b.*) {
                 .arrow => |bb| {
                     try self.unify(aa.from, bb.from);
                     try self.unify(aa.to, bb.to);
                 },
-                else => return error.TypeMismatch,
+                else => return mismatch.f(self, a, b),
             },
             .tuple => |items| switch (b.*) {
                 .tuple => |other| {
-                    if (items.len != other.len) return error.TypeMismatch;
+                    if (items.len != other.len) return mismatch.f(self, a, b);
                     for (items, other) |x, y| try self.unify(x, y);
                 },
-                else => return error.TypeMismatch,
+                else => return mismatch.f(self, a, b),
             },
             .con => |c| switch (b.*) {
                 .con => |d| {
-                    if (!std.mem.eql(u8, c.name, d.name) or c.args.len != d.args.len) return error.TypeMismatch;
+                    if (!std.mem.eql(u8, c.name, d.name) or c.args.len != d.args.len) return mismatch.f(self, a, b);
                     for (c.args, d.args) |x, y| try self.unify(x, y);
                 },
-                else => return error.TypeMismatch,
+                else => return mismatch.f(self, a, b),
             },
             .record => |r| switch (b.*) {
                 .record => |s| {
-                    if (!std.mem.eql(u8, r.name, s.name) or r.fields.len != s.fields.len) return error.TypeMismatch;
+                    if (!std.mem.eql(u8, r.name, s.name) or r.fields.len != s.fields.len) return mismatch.f(self, a, b);
                     for (r.fields, s.fields) |x, y| {
-                        if (!std.mem.eql(u8, x.name, y.name)) return error.TypeMismatch;
+                        if (!std.mem.eql(u8, x.name, y.name)) return mismatch.f(self, a, b);
                         try self.unify(x.ty, y.ty);
                     }
                 },
-                else => return error.TypeMismatch,
+                else => return mismatch.f(self, a, b),
             },
             .@"ref" => |inner_a| switch (b.*) {
                 .@"ref" => |inner_b| try self.unify(inner_a, inner_b),
-                else => return error.TypeMismatch,
+                else => return mismatch.f(self, a, b),
             },
             .variable => unreachable,
         }
@@ -486,6 +513,9 @@ pub const Inferer = struct {
                     try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, f.name })
                 else
                     f.name;
+                if (f.doc_comments) |docs| {
+                    self.doc_comments.put(prefixed_name, docs) catch {};
+                }
                 var fd = f;
                 fd.name = prefixed_name;
                 try self.inferFn(fd);
@@ -495,6 +525,9 @@ pub const Inferer = struct {
                     try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, l.name })
                 else
                     l.name;
+                if (l.doc_comments) |docs| {
+                    self.doc_comments.put(prefixed_name, docs) catch {};
+                }
                 const t = try self.inferExpr(&self.global, l.value);
                 if (l.type_ann) |ann| {
                     const ann_ty = try self.typeExprToType(ann);
@@ -508,6 +541,9 @@ pub const Inferer = struct {
                     try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, t.name })
                 else
                     t.name;
+                if (t.doc_comments) |docs| {
+                    self.doc_comments.put(prefixed_name, docs) catch {};
+                }
                 var td = t;
                 td.name = prefixed_name;
                 try self.registerTypeDef(td);
@@ -996,4 +1032,76 @@ pub fn deallocProg(allocator: std.mem.Allocator, prog: *parser.Program) void {
         if (imp.selective) |sel| allocator.free(sel);
         if (imp.alias) |alias| allocator.free(alias);
     }
+}
+
+pub fn typeToString(alloc: std.mem.Allocator, t: Type) ![]const u8 {
+    return switch (t) {
+        .int => try alloc.dupe(u8, "Int"),
+        .float => try alloc.dupe(u8, "Float"),
+        .bool => try alloc.dupe(u8, "Bool"),
+        .char => try alloc.dupe(u8, "Char"),
+        .string => try alloc.dupe(u8, "String"),
+        .unit => try alloc.dupe(u8, "()"),
+        .variable => |v| {
+            if (v.instance) |inst| return typeToString(alloc, inst.*);
+            if (v.name.len > 0) return try alloc.dupe(u8, v.name);
+            return try std.fmt.allocPrint(alloc, "t{d}", .{v.id});
+        },
+        .arrow => |a| {
+            const from_str = try typeToString(alloc, a.from.*);
+            defer alloc.free(from_str);
+            const to_str = try typeToString(alloc, a.to.*);
+            defer alloc.free(to_str);
+            if (a.from.* == .arrow)
+                return std.fmt.allocPrint(alloc, "({s}) -> {s}", .{ from_str, to_str });
+            return std.fmt.allocPrint(alloc, "{s} -> {s}", .{ from_str, to_str });
+        },
+        .tuple => |elems| {
+            if (elems.len == 0) return try alloc.dupe(u8, "()");
+            var parts = std.ArrayList([]const u8).empty;
+            defer {
+                for (parts.items) |p| alloc.free(p);
+                parts.deinit(alloc);
+            }
+            for (elems) |e| {
+                try parts.append(alloc, try typeToString(alloc, e.*));
+            }
+            return std.fmt.allocPrint(alloc, "({s})", .{try std.mem.join(alloc, ", ", parts.items)});
+        },
+        .con => |c| {
+            if (c.args.len == 0) return try alloc.dupe(u8, c.name);
+            var parts = std.ArrayList([]const u8).empty;
+            defer {
+                for (parts.items) |p| alloc.free(p);
+                parts.deinit(alloc);
+            }
+            for (c.args) |a| {
+                const s = try typeToString(alloc, a.*);
+                const need_parens = a.* == .arrow or a.* == .con;
+                if (need_parens) {
+                    try parts.append(alloc, try std.fmt.allocPrint(alloc, "({s})", .{s}));
+                } else {
+                    try parts.append(alloc, s);
+                }
+            }
+            return std.fmt.allocPrint(alloc, "{s} {s}", .{ c.name, try std.mem.join(alloc, " ", parts.items) });
+        },
+        .record => |r| {
+            var parts = std.ArrayList([]const u8).empty;
+            defer {
+                for (parts.items) |p| alloc.free(p);
+                parts.deinit(alloc);
+            }
+            for (r.fields) |f| {
+                const ft = try typeToString(alloc, f.ty.*);
+                try parts.append(alloc, try std.fmt.allocPrint(alloc, "{s}: {s}", .{ f.name, ft }));
+            }
+            return std.fmt.allocPrint(alloc, "{{{s}}}", .{try std.mem.join(alloc, ", ", parts.items)});
+        },
+        .@"ref" => |inner| {
+            const inner_str = try typeToString(alloc, inner.*);
+            defer alloc.free(inner_str);
+            return std.fmt.allocPrint(alloc, "ref {s}", .{inner_str});
+        },
+    };
 }

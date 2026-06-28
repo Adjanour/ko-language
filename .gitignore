@@ -28,3 +28,10 @@ tree-sitter-ko/package-lock.json
 # Editor/OS
 .DS_Store
 *~
+
+# Build artifacts
+ko-zig/liblexer.a
+ko-zig/test_kolsp_min
+tree-sitter-ko/ko.so
+tree-sitter-ko/queries/
+tree-sitter-ko/tree-sitter.json

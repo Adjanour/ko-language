@@ -125,6 +125,7 @@ pub const TypeDef = struct {
         record: []const RecordField,
     },
     is_pub: bool,
+    doc_comments: ?[]const []const u8 = null,
 };
 
 pub const FnParam = struct {
@@ -139,6 +140,7 @@ pub const FnDef = struct {
     body: *Expr,
     is_pub: bool,
     is_comptime: bool,
+    doc_comments: ?[]const []const u8 = null,
 };
 
 pub const LetBinding = struct {
@@ -146,6 +148,7 @@ pub const LetBinding = struct {
     type_ann: ?TypeExpr,
     value: *Expr,
     is_pub: bool,
+    doc_comments: ?[]const []const u8 = null,
 };
 
 pub const Import = struct {
@@ -162,6 +165,7 @@ pub const ModuleDef = struct {
     name: []const u8,
     definitions: []const Definition,
     is_pub: bool,
+    doc_comments: ?[]const []const u8 = null,
 };
 
 pub const Definition = union(enum) {
@@ -178,3 +182,5 @@ pub const Program = struct {
     definitions: []const Definition,
     package: ?[]const []const u8,
 };
+
+

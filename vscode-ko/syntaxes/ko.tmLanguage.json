@@ -34,7 +34,7 @@
       "patterns": [
         {
           "name": "keyword.control.ko",
-          "match": "\\b(if|then|else|match|let|in|fn|type|import|as|ref|comptime)\\b"
+          "match": "\\b(if|then|else|match|let|in|fn|type|import|as|ref|comptime|pub|module|package|and|or|not)\\b"
         },
         {
           "name": "constant.language.ko",
@@ -50,7 +50,7 @@
       "patterns": [
         {
           "name": "entity.name.type.constructor.ko",
-          "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+          "match": "\\b[A-Z][a-zA-Z0-9_-]*\\b"
         }
       ]
     },
@@ -79,6 +79,10 @@
         {
           "name": "constant.numeric.binary.ko",
           "match": "\\b0[bB][01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.ko",
+          "match": "\\b0[oO][0-7_]+\\b"
         },
         {
           "name": "constant.numeric.float.ko",
@@ -131,6 +135,14 @@
           "patterns": [
             { "include": "source.ko" }
           ]
+        },
+        {
+          "name": "punctuation.definition.tuple.ko",
+          "begin": "\\(",
+          "end": "\\)",
+          "patterns": [
+            { "include": "source.ko" }
+          ]
         }
       ]
     },
@@ -150,11 +162,15 @@
         },
         {
           "name": "keyword.operator.arrow.ko",
-          "match": "->"
+          "match": "(->|=>)"
         },
         {
           "name": "keyword.operator.assignment.ko",
-          "match": "="
+          "match": "(:?=)"
+        },
+        {
+          "name": "keyword.operator.pipe.ko",
+          "match": "\\|>"
         },
         {
           "name": "keyword.operator.lambda.ko",
@@ -179,6 +195,10 @@
         {
           "name": "punctuation.separator.ko",
           "match": ",|\\*"
+        },
+        {
+          "name": "punctuation.accessor.ko",
+          "match": "\\."
         }
       ]
     }

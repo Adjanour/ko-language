@@ -1,8 +1,8 @@
 {
   "name": "ko-language",
   "displayName": "Kō Language Support",
-  "description": "Syntax highlighting, type inference, and language support for the Kō programming language",
-  "version": "0.3.0",
+  "description": "Syntax highlighting, symbol navigation, and language support for the Kō programming language",
+  "version": "0.5.0",
   "publisher": "ko-lang",
   "engines": {
     "vscode": "^1.80.0"
