@@ -1,0 +1,12 @@
+# Float.ko — Float operations for Kō
+# Builtins: Float.ofInt, Float.toInt, Float.sqrt, Float.pow
+#           Float.sin, Float.cos, Float.tan, Float.log, Float.log2
+#           Float.log10, Float.exp, Float.floor, Float.ceil, Float.abs
+#
+# NOTE: Float arithmetic (+, -, *, /) is not yet supported by the typechecker.
+# Float constants and comparisons work, but binary operations on floats
+# require using the builtins directly.
+
+fn min a b = if a < b then a else b
+
+fn max a b = if a > b then a else b

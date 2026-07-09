@@ -1,0 +1,74 @@
+# Numeric algorithms — GCD, power, primes, digit operations
+
+fn gcd a b =
+  if b == 0 then a
+  else gcd b (a % b)
+
+fn lcm a b = (a * b) / gcd a b
+
+fn pow base exp =
+  if exp == 0 then 1
+  else if exp % 2 == 0 then pow (base * base) (exp / 2)
+  else base * pow base (exp - 1)
+
+fn is_prime n =
+  if n < 2 then 0
+  else if n == 2 then 1
+  else if n % 2 == 0 then 0
+  else is_prime_aux n 3
+
+fn is_prime_aux n d =
+  if d * d > n then 1
+  else if n % d == 0 then 0
+  else is_prime_aux n (d + 2)
+
+fn digit_sum n =
+  if n < 10 then n
+  else n % 10 + digit_sum (n / 10)
+
+fn num_digits n =
+  if n < 10 then 1
+  else 1 + num_digits (n / 10)
+
+fn reverse_num n = reverse_num_aux n 0
+
+fn reverse_num_aux n acc =
+  if n == 0 then acc
+  else reverse_num_aux (n / 10) (acc * 10 + n % 10)
+
+fn is_palindrome n =
+  if n == reverse_num n then 1
+  else 0
+
+fn triangle n = n * (n + 1) / 2
+
+fn main =
+  println (gcd 12 8)         # 4
+  println (gcd 100 75)       # 25
+  println (lcm 4 6)          # 12
+  println (lcm 3 7)          # 21
+
+  println (pow 2 10)         # 1024
+  println (pow 3 5)          # 243
+
+  println (is_prime 2)       # 1
+  println (is_prime 7)       # 1
+  println (is_prime 4)       # 0
+  println (is_prime 13)      # 1
+  println (is_prime 100)     # 0
+
+  println (digit_sum 123)    # 6
+  println (digit_sum 999)    # 27
+  println (num_digits 123)   # 3
+  println (num_digits 1)     # 1
+  println (reverse_num 123)  # 321
+  println (reverse_num 1221) # 1221
+
+  println (is_palindrome 121)   # 1
+  println (is_palindrome 123)   # 0
+  println (is_palindrome 1221)  # 1
+
+  println (triangle 1)       # 1
+  println (triangle 5)       # 15
+  println (triangle 10)      # 55
+

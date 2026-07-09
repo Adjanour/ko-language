@@ -340,7 +340,7 @@ fn handleHover(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.A
                 try md.append(gpa, '\n');
             }
 
-            try md.print(gpa, "```kō\\n{s} : {s}\\n```", .{ wi.word, type_str });
+            try md.print(gpa, "```kō\n{s} : {s}\n```", .{ wi.word, type_str });
 
             var body = try std.ArrayList(u8).initCapacity(gpa, 256);
             defer body.deinit(gpa);

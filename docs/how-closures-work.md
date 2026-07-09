@@ -9,7 +9,7 @@ A visual guide to the scariest functional programming concept.
 ```kō
 let secret = 10
 let add_secret = \x -> x + secret
-println (add_secret 5)  // How does this know about secret?
+println (add_secret 5)  # How does this know about secret?
 ```
 
 When `add_secret` is called, `secret` is defined **outside** the function. Normally, functions can't see outside variables. But closures can.
@@ -18,35 +18,29 @@ When `add_secret` is called, `secret` is defined **outside** the function. Norma
 
 ## What Happens Under the Hood
 
-When the compiler sees:
+Kō compiles to LLVM IR. When the compiler sees:
 
 ```kō
 let secret = 10
 let add_secret = \x -> x + secret
 ```
 
-It generates something like:
+It generates a **closure struct** on the heap:
 
-```c
-// Step 1: Create the environment (a "bag" of captured variables)
-Env* env = make_env(1);
-env_pack(env, 0, make_int(10));  // pack "secret" into the bag
-
-// Step 2: Create closure = function + environment
-Value add_secret = make_closure(env, add_secret_func);
+```
+Closure struct (heap-allocated):
+┌──────────────┬──────────────┬──────────────┬──────────────────┐
+│ fn_ptr       │ total_arity  │ applied_count│ applied_args[]   │
+│ (pointer to  │ (1)          │ (0)          │ (none yet)       │
+│  the wrapper)│              │              │                  │
+└──────────────┴──────────────┴──────────────┴──────────────────┘
 ```
 
-When you call `add_secret 5`:
+But for a simple lambda like `\x -> x + secret`, the captured variable `secret` is embedded directly in the function's scope — no separate environment struct needed. The lambda becomes an anonymous LLVM function that loads `secret` from its enclosing scope.
 
-```c
-// Step 3: Unpack variables from the bag inside the function
-Value add_secret_func(Env* env, Value x) {
-    Value secret = env_unpack(env, 0);  // get secret from bag
-    return make_int(x.as.int_val + secret.as.int_val);
-}
-```
+When you call `add_secret 5`, LLVM calls the function pointer, passing `5` as the argument.
 
-**Closure = function + bag of captured variables.**
+**Closure = function + captured variables.**
 
 ---
 
@@ -59,21 +53,25 @@ let increment = \_ -> counter := (!counter + 1)
 
 increment 0
 increment 0
-println !counter  // 2
+println !counter  # 2
 ```
 
 Here's what the compiler does:
 
 ```
-┌─────────────────────────────────────┐
-│ 1. Create ref cell: counter = ref 0 │
-│ 2. Create closure:                  │
-│    - Function: \_ -> counter := ... │
-│    - Environment: { counter }       │
-│ 3. Call increment:                  │
-│    - Unpack counter from env        │
-│    - Mutate it: counter := ...      │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────┐
+│ 1. Create ref cell: counter = ref 0     │
+│    → heap-allocated { rc: 1, value: 0 } │
+│                                         │
+│ 2. Create closure:                      │
+│    → LLVM function that loads counter   │
+│      from enclosing scope, increments   │
+│                                         │
+│ 3. Call increment:                      │
+│    → function loads counter ptr         │
+│    → deref: load value (0 → 1 → 2)     │
+│    → assign: store new value            │
+└─────────────────────────────────────────┘
 ```
 
 Both `increment` calls share the **same** `counter` ref cell. That's why it goes from 0 to 1 to 2.
@@ -83,6 +81,8 @@ Both `increment` calls share the **same** `counter` ref cell. That's why it goes
 ## Visual: How map Uses Closures
 
 ```kō
+type List a = Cons a (List a) | Nil
+
 let nums = Cons 1 (Cons 2 (Cons 3 Nil))
 let doubled = map (\x -> x * 2) nums
 ```
@@ -98,7 +98,7 @@ Step 3: f applied to 3 → 3 * 2 = 6
 Result: Cons 2 (Cons 4 (Cons 6 Nil))
 ```
 
-The closure `\x -> x * 2` has no captured variables (empty env), but it's still a closure.
+The closure `\x -> x * 2` has no captured variables, but it's still a closure (a function value at runtime).
 
 ---
 
@@ -107,23 +107,32 @@ The closure `\x -> x * 2` has no captured variables (empty env), but it's still 
 ```kō
 fn add a b = a + b
 let add_ten = add 10
-println (add_ten 5)  // 15
+println (add_ten 5)  # 15
 ```
 
 ```
+add is a 2-arity function. When called with 1 arg:
+
 add 10 is called:
   add = \a -> \b -> a + b
   
   Step 1: apply add to 10
-          → (\b -> 10 + b)
-          → new closure with env { a = 10 }
-  
+          → needs 1 more arg (arity 2, got 1)
+          → create closure struct:
+            ┌────────────┬───────────────┬───────────────┬──────────────┐
+            │ fn_ptr     │ total_arity   │ applied_count │ applied_args │
+            │ (wrapper)  │ 2             │ 1             │ [10]         │
+            └────────────┴───────────────┴───────────────┴──────────────┘
+          → return closure with bit 0 set (tag for partial application)
+
   Step 2: apply add_ten to 5
-          → 10 + 5
-          → 15
+          → detect bit 0 = 1 (partial application)
+          → load wrapper fn_ptr from closure
+          → wrapper loads applied args [10], calls add(10, 5)
+          → 10 + 5 = 15
 ```
 
-Each partial application creates a new closure with more captured variables.
+Each partial application creates a new closure with more captured arguments.
 
 ---
 
@@ -136,8 +145,8 @@ fn make_adder n = \x -> x + n
 let add5 = make_adder 5
 let add10 = make_adder 10
 
-println (add5 3)    // 8
-println (add10 3)   // 13
+println (add5 3)    # 8
+println (add10 3)   # 13
 ```
 
 `make_adder` returns a closure that "remembers" `n`. You get different functions for different `n` values.
@@ -176,13 +185,32 @@ let on_click = \_ ->
 
 ---
 
+## Memory Management
+
+Kō uses **reference counting** for heap-allocated objects (including closure structs).
+
+```
+Closure struct memory layout:
+┌─────────┬──────────────────────────────────┐
+│ i64 rc  │ ... closure data ...             │
+└─────────┴──────────────────────────────────┘
+^         ^
+|         pointer returned by ko_alloc
+raw malloc ptr
+```
+
+When a closure is no longer referenced, its reference count drops to zero and the memory is freed immediately — no garbage collector needed.
+
+---
+
 ## TL;DR
 
 | Concept | What it is | Example |
 |---------|-----------|---------|
 | Closure | Function + captured variables | `\x -> x + secret` |
-| Environment | Bag of captured variables | `{ secret = 10 }` |
+| Environment | Captured variables in scope | `secret` is captured |
 | Capture | Grabbing outside variables | `\x -> x + secret` captures `secret` |
-| Partial Application | Applying some args now, rest later | `add 10` returns `\b -> 10 + b` |
+| Partial Application | Applying some args now, rest later | `add 10` returns a closure |
+| Closure struct | Heap-allocated `{ fn_ptr, arity, count, args[] }` | The runtime representation |
 
-**Rule of thumb:** If you see `\` and it uses variables from outside, it's a closure. The compiler packs those variables into an "environment" so the function can access them later.
+**Rule of thumb:** If you see `\` and it uses variables from outside, it's a closure. The compiler ensures those variables are available when the function is called later.

@@ -1,7 +1,7 @@
 # Kō Language Roadmap
 
-> **Version:** 0.3.0  
-> **Date:** 2026-06-27  
+> **Version:** 0.4.0  
+> **Date:** 2026-07-03  
 > **Status:** In Progress
 
 ---
@@ -10,27 +10,34 @@
 
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Current state:** Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, and partial application.
+**Current state:** Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, LSP server, REPL with pretty-printing, and 77 passing tests.
 
 ---
 
 ## Part 1: Language Feature Roadmap
 
-### 1.1 Current State (v0.3.0)
+### 1.1 Current State (v0.4.0)
 
 **Zig Compiler (complete):**
 
-- Lexer (~693 lines) — all token types, indentation tracking
-- Parser (~1155 lines) — full grammar implementation
-- Typechecker (~999 lines) — Hindley-Milner inference, let-polymorphism
-- Codegen (~1850 lines) — LLVM IR via kassane/llvm-zig bindings
+- Lexer (~727 lines) — all token types, indentation tracking, comment tokens, `::` for cons
+- Parser (~1275 lines) — full grammar implementation, multi-line lambdas, block doc comments, `comptime fn`/`comptime expr`
+- Typechecker (~1179 lines) — Hindley-Milner inference, let-polymorphism, polymorphic println/print
+- Codegen (~2145 lines) — LLVM IR via kassane/llvm-zig bindings
   - JIT execution (MCJIT) and AOT compilation
   - Sum types, records, tuples, lambdas, pattern matching
-  - Built-in functions (println, print, inspect)
+  - Built-in polymorphic functions (println, print, inspect)
   - Reference counting for heap-allocated objects
   - Partial application (currying)
   - Module definitions with pub visibility
-- 75 tests passing, 43 .ko test programs
+  - `::` infix operator for list construction
+  - Compile-time evaluation (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else
+- Pretty-printer (`prettyprint.zig`) — type-directed value display for REPL/results
+- LSP server (`lsp.zig`) — hover, completion, diagnostics, documentSymbol, go-to-definition
+- REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands
+- VS Code extension (v0.5.0) with LSP client
+- Tree-sitter grammar (~450 lines) with nvim integration
+- 77 tests passing, 45 .ko test programs, 12 examples
 
 **Python Compiler (archived):**
 
@@ -1094,10 +1101,17 @@ pub fn build(b: *std.Build) void {
 
 ### Phase 2: Language Features (In Progress)
 
-- [ ] File-based imports
-- [ ] General recursion safety
-- [ ] Closure codegen for multi-param lambdas
+- [x] `::` infix constructor syntax (desugars to `Cons a b`)
+- [x] Polymorphic println/print (type-directed runtime dispatch)
+- [x] Multi-line lambda bodies (`\x -> \n expr`)
+- [x] Auto-return 0 from `main` for all expression types
+- [x] REPL pretty-printing (int, float, bool, char, string, unit, tuple, constructors)
+- [x] LSP server (hover, completion, diagnostics)
+- [x] **General recursion safety** — stack overflow detection with clear error message
+- [ ] **File-based imports** — `import foo` reads and compiles `foo.ko`
+- [ ] Closure codegen for multi-param lambdas (partial fix)
 - [ ] Full decref for intermediate variables
+- [ ] Fix multi-arg constructor pretty-printing in REPL
 
 ### Phase 3: Standard Library (Planned)
 
@@ -1175,5 +1189,5 @@ pub fn build(b: *std.Build) void {
 ---
 
 *Document generated: 2026-06-20*  
-*Last updated: 2026-06-20*  
+*Last updated: 2026-07-03*  
 *Status: Planning Phase*

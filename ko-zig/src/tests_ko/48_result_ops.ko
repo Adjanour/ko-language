@@ -1,0 +1,36 @@
+fn divide a b =
+  if b == 0 then Err "div by zero"
+  else Ok (a / b)
+
+fn showResult r =
+  match r
+    | Ok v => println v
+    | Err e => println 0
+
+fn main =
+  let r1 = Ok 42
+  showResult r1
+
+  println (Result.is_ok r1)
+  println (Result.is_err r1)
+
+  let r2 = Err 0
+  println (Result.is_ok r2)
+  println (Result.is_err r2)
+
+  let default = 0
+  println (Result.unwrap default r1)
+  println (Result.unwrap default r2)
+
+  let doubled = Result.map (\x -> x * 2) r1
+  showResult doubled
+
+  let folded = Result.fold (\x -> x + 1) (\x -> 0) r1
+  println folded
+
+  let chained = Result.and_then (\x -> Ok (x * 10)) r1
+  showResult chained
+
+  let r3 = (divide 10 2)?
+  let r4 = (divide r3 5)?
+  println r4

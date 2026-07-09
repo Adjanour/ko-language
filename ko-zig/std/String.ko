@@ -1,0 +1,19 @@
+# String.ko — String operations for Kō
+# Builtins: String.length, String.append
+# These are pre-registered and available without import.
+#
+# MISSING (need C-level builtins, planned for future):
+#   String.split, String.replace, String.trim, String.contains,
+#   String.charAt, String.toUpperCase, String.toLowerCase,
+#   String.substring, String.indexOf, String.startsWith, String.endsWith
+# These exist in the Python compiler and are planned for the Zig compiler.
+
+fn isEmpty s = String.length s == 0
+
+fn repeat s n = repeatAux s n ""
+
+fn repeatAux s n acc =
+  if n <= 0 then acc
+  else repeatAux s (n - 1) (String.append acc s)
+
+fn replicate n s = repeat s n

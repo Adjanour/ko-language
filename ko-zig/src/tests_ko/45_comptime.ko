@@ -1,0 +1,13 @@
+comptime fn add x y = x + y
+comptime fn fact n = if n == 0 then 1 else n * fact (n - 1)
+comptime fn pi = 3
+comptime fn abs n = if n < 0 then 0 - n else n
+
+fn main =
+  println (comptime add 1 2)
+  println (comptime fact 5)
+  println (comptime pi)
+  println (comptime 10 + 20)
+  println (comptime 10 > 5)
+  let n = 7
+  println (abs n)

@@ -1,5 +1,26 @@
 # AGENTS.md - Zig Development Patterns for Kō Compiler
 
+## Workflow Pattern: Research → Design → Implement
+
+**MUST DO:** Before implementing any feature or fix, follow this process:
+
+1. **Explain the problem** — Understand what's broken or missing
+2. **Research** — Look at how other languages solve this (OCaml, Haskell, Rust, Zig, etc.)
+3. **Finalize design decisions** — Choose an approach based on research, document why
+4. **Identify implementation options** — What are the tradeoffs?
+5. **Implement** — Write the code
+6. **Test** — Verify with `zig build test --summary all`
+
+This applies to ALL changes: features, bugs, architecture, syntax decisions.
+
+**Example:**
+- Problem: "Multi-arg constructors crash in REPL"
+- Research: "How does OCaml handle boxed vs unboxed constructors?"
+- Design: "Use raw tags for zero-arg, boxed structs for multi-arg"
+- Options: "Fix inspectValue vs change constructor representation"
+- Implement: Write the fix
+- Test: Run `zig build test --summary all`
+
 ## Zig 0.17 API Patterns
 
 ### Main Function Signature
@@ -151,6 +172,23 @@ test "description" {
 }
 ```
 
+#### `zig build test` output is misleading
+
+The default `zig build test` output often shows `failed command:` lines and truncated status. This is noise from the Zig test runner's `--listen=-` protocol, not actual failures. **Always use `--summary all` to see the real result:**
+
+```bash
+zig build test --summary all 2>&1
+# Shows: Build Summary: 3/3 steps succeeded; 77/77 tests passed
+```
+
+Without `--summary all`, the output may look like it failed even when all tests pass and exit code is 0.
+
+#### Test memory management
+
+- Use `ArenaAllocator` wrapping `std.testing.allocator` for parser/typechecker tests — frees everything on `defer arena.deinit()`
+- Never use `std.testing.allocator` directly for parser tests without an arena — the parsed AST leaks
+- The `page_allocator` bypasses leak detection entirely — use `std.testing.allocator` when you want leak checking
+
 ## Kō Language Patterns
 
 ### Indentation Tracking
@@ -192,6 +230,7 @@ test "description" {
   - `not expr` for boolean negation
   - `ref expr` for creating references
   - `:=` for assignment
+  - `::` for infix constructor (right-associative, desugars to `Cons a b`)
   - `type List a = Cons a (List a) | Nil` syntax (type params before `=`)
   - Constructor params are individual type primaries, not applied types
   - `fn f x : Int = ...` — `: Int` is param annotation, not return type
@@ -300,8 +339,8 @@ Never skip stages. A test that only does codegen without verifying parsing is fr
 # Build the project
 zig build
 
-# Run tests
-zig build test
+# Run tests (use --summary all to see clean output)
+zig build test --summary all
 
 # JIT-execute a program
 ko --run file.ko
@@ -333,12 +372,25 @@ ko-zig/
 │   ├── errors.zig     # Error types
 │   ├── typecheck.zig  # HM type inference
 │   ├── codegen.zig    # LLVM IR generation
-│   ├── ko_runtime.c   # C runtime for built-in functions (println, print)
+│   ├── stdlib.zig     # Zig stdlib implementations (math, string, int ops)
+│   ├── stdlib_codegen.zig # LLVM IR generation for ALL stdlib functions
+│   ├── ko_runtime.c   # Minimal C stub for AOT libc linkage
+│   ├── comptime.zig   # Compile-time evaluator
+│   ├── module_loader.zig # File-based module imports
+│   ├── prettyprint.zig # Type-directed value pretty-printing
+│   ├── repl.zig       # REPL implementation
+│   ├── lsp.zig        # LSP server
 │   ├── llvm/          # kassane/llvm-zig bindings source
-│   ├── tests.zig      # All tests (71 tests)
-│   └── tests_ko/      # .ko test programs (40 files)
-│       ├── 01_literal.ko .. 40_minimal.ko
+│   ├── tests.zig      # All tests (77 tests, zero leaks)
+│   └── tests_ko/      # .ko test programs (47 files)
+│       ├── 01_literal.ko .. 47_float_math.ko
 ├── std/               # Kō stdlib (written in Kō)
+│   ├── List.ko        # List operations (25 ops)
+│   ├── Int.ko         # Extra Int operations
+│   ├── Float.ko       # Float operations
+│   ├── String.ko      # String operations
+│   ├── Bool.ko        # Bool operations
+│   └── Math.ko        # Pure Kō math operations
 └── tests/             # (unused, test .ko files are in src/tests_ko/)
 ```
 
@@ -349,6 +401,8 @@ main.zig → parser.zig → lexer.zig
                        → ast.zig
          → typecheck.zig → parser.zig (re-exports ast types)
          → codegen.zig → parser.zig, typecheck.zig
+                       → stdlib.zig (JIT function implementations)
+                       → llvm/ (kassane/llvm-zig bindings)
                        → llvm/ (kassane/llvm-zig bindings)
 ```
 
@@ -356,6 +410,96 @@ main.zig → parser.zig → lexer.zig
 - `parser.zig` re-exports ast types for backward compatibility
 - `typecheck.zig` imports parser types (which are re-exports from ast.zig)
 - `codegen.zig` uses kassane/llvm-zig bindings (source in `src/llvm/`)
+
+## File-Based Imports
+
+### How It Works
+- `import lib.math` resolves to `{base_dir}/lib/math.ko`
+- `import std.math` resolves to `{base_dir}/std/math.ko`
+- Alias: `import lib.math as m` makes the module available as `m.add`, etc.
+- Selective import: `import lib.math.{add, mul}` imports only named definitions
+
+### Architecture
+- `module_loader.zig` — `ModuleLoader` struct with raw Linux syscall file I/O
+- `typecheck.zig` — `processImports` method loads/parses/typechecks imported modules
+- `codegen.zig` — `codegenProgram` processes imports: loads, registers types/constructors, codegens functions
+
+### Gotcha: Qualified Names
+- Imported functions are registered as `module_name.fn_name` (e.g., `math.add`)
+- Imported constructors are registered as both `module_name.CtorName` and `CtorName`
+- Field access syntax `math.add` is parsed as `field_access(math, add)` — codegen resolves it via qualified name lookup
+
+### Gotcha: HashMap Key Memory
+- `std.fmt.allocPrint` allocates key strings — do NOT free them with `defer`
+- The HashMap stores `[]const u8` slices (pointer + length), not copies of the underlying data
+- Freeing the key string causes use-after-free during HashMap grow/rehash → crash
+
+### Gotcha: Imported Module Codegen
+- Imported modules are codegen'd in the same LLVM module as the main program
+- The `Codegen.module_loader` field enables codegen to process imports
+- Imported functions get both declarations and body codegen
+- Import processing happens BEFORE the main program's flatten/codegen passes
+
+### Known Limitations (v0.1)
+- Imported type info doesn't propagate to main Inferer's type environment (type variables instead of concrete types)
+- Constructor type tags from imported modules may show raw values in `println`
+- No circular import detection
+- No package/module system — just flat file imports
+
+## Standard Library
+
+### Architecture
+- **Zig stdlib** (`src/stdlib.zig`): Canonical implementations for all builtins (math, string, int ops)
+- **LLVM IR stdlib** (`src/stdlib_codegen.zig`): Generates LLVM IR for ALL stdlib functions including I/O (inspect, println, print)
+- **Kō stdlib files** (`std/*.ko`): Higher-level operations written in Kō
+- Builtins are auto-registered in typechecker and codegen — no import needed
+
+### How It Works
+- **JIT mode**: All functions are generated as LLVM IR in the module; only libc externals (printf, malloc, etc.) and LLVM intrinsics are linked at JIT time
+- **AOT mode**: Same LLVM IR is emitted as object file; minimal `ko_runtime.c` stub provides libc linkage
+- The canonical implementation is in stdlib_codegen.zig — no C copies needed
+
+### Built-in Functions (auto-available)
+- `println x`, `print x`, `inspect x` — polymorphic I/O
+- `Int.toString n`, `Int.abs n`, `Int.min a b`, `Int.max a b`
+- `Int.pow base exp`, `Int.gcd a b`, `Int.lcm a b`, `Int.factorial n`, `Int.isqrt n`
+- `Float.ofInt n`, `Float.toInt f`, `Float.sqrt f`, `Float.pow b e`
+- `Float.sin f`, `Float.cos f`, `Float.tan f`, `Float.log f`, `Float.log2 f`, `Float.log10 f`
+- `Float.exp f`, `Float.floor f`, `Float.ceil f`, `Float.abs f`
+- `String.length s`, `String.append a b`
+- `True`, `False` — Bool constructors
+- `Result.is_ok r` — returns `True` if Ok, `False` if Err
+- `Result.is_err r` — returns `True` if Err, `False` if Ok
+- `Result.unwrap default r` — returns Ok value, or `default` if Err
+- `Result.map f r` — applies `f` to Ok value, returns new Result
+- `Result.fold ok_fn err_fn r` — applies `ok_fn` to Ok value, `err_fn` to Err value
+- `Result.and_then f r` — applies `f` to Ok value (f must return a Result)
+- `expr?` — postfix try operator; unwraps Result, propagates Err
+
+### Kō Stdlib Files (`std/`)
+- `std/List.ko` — List type and operations (25 ops: foldl, foldr, head, tail, length, append, reverse, map, filter, any, all, find, take, drop, elem, zip, concat, sum, product, maximum, minimum, etc.)
+- `std/Int.ko` — Extra Int operations (even, odd, clamp, sign, div, mod, max, min)
+- `std/String.ko` — Extra String operations (isEmpty)
+- `std/Bool.ko` — Bool operations (not)
+- `std/Math.ko` — Pure Kō math operations (abs, max, min, gcd, lcm, factorial, pow, isqrt, sum, product, average)
+
+### How to Add New Builtins
+1. Add implementation to `src/stdlib_codegen.zig` (generates LLVM IR directly in module)
+2. Register type in `typecheck.zig` (in `inferProgram`)
+3. Register in `codegen.zig` `declareBuiltins` (look up with `LLVMGetNamedFunction`)
+
+### Gotcha: JIT vs AOT
+- **JIT**: All functions are LLVM IR in the module; only libc/LLVM intrinsics linked at JIT time
+- **AOT**: Same LLVM IR emitted as object file; minimal `ko_runtime.c` stub provides libc linkage
+- No C copies needed — `stdlib_codegen.zig` is the single source of truth
+
+### Future: Eliminate ko_runtime.c entirely
+- The C stub only exists to provide libc headers for AOT linking
+- Could be replaced by linking against libc directly from LLVM's target machine
+
+### Known Limitations
+- Multi-line closures capturing free variables cause LLVM codegen errors
+- `True`/`False` only work as match patterns or top-level values, not inside lambdas
 
 ## LLVM Codegen (kassane/llvm-zig bindings)
 
@@ -467,22 +611,41 @@ ko --emit-exe out file.ko     # Emit object file + link to executable
 
 `println` and `print` are pre-declared in both the typechecker and codegen.
 
-- Type: `Int -> Int` (returns 0 after printing)
-- JIT: mapped to native C functions via `LLVMAddGlobalMapping`
-- AOT: implemented in `src/ko_runtime.c`, compiled at link time with `/usr/bin/gcc -c`
+- Type: `forall a. a -> a` (polymorphic, prints and returns the value)
+- Runtime: uses `inspect` with type tags to print any type correctly
+- **All functions are generated as LLVM IR** — no external C functions needed
+- `inspect` uses an LLVM switch instruction with printf calls for each type tag
+- Type tags: 0=int, 1=float, 2=bool, 3=char, 4=string, 5=unit, 6=constructor, 7=record, 8=function, 9=tuple
 
 #### Key pattern for built-in functions
 ```zig
-// In typechecker: register in inferProgram
-try self.global.set("println", .{ .quantified = &.{}, .body = int_to_int });
+// In typechecker: register as polymorphic
+const println_from = try self.newVarType("a");
+const println_to = println_from;
+const println_ty = try self.allocator.create(Type);
+println_ty.* = .{ .arrow = .{ .from = println_from, .to = println_to } };
+const println_var_id = println_from.variable.id;
+const println_quantified = try self.allocator.alloc(usize, 1);
+println_quantified[0] = println_var_id;
+try self.global.set("println", .{ .quantified = println_quantified, .body = println_ty });
 
-// In codegen: declare with LLVMAddFunction
-const println_type = core.LLVMFunctionType(i64_type, &param_i64, 1, 0);
-const println_fn = core.LLVMAddFunction(self.module, "println", println_type);
+// In codegen: declare with 2 params (value, type_tag)
+var param_i64_tag: [2]types.LLVMTypeRef = .{ i64_type, i64_type };
+const println_type = core.LLVMFunctionType(i64_type, &param_i64_tag, 2, 0);
+const println_fn = core.LLVMAddFunction(self.module, "println_with_tag", println_type);
 
 // In JIT: map to native function
-engine.LLVMAddGlobalMapping(jit_engine, println_fn, @constCast(@ptrCast(&builtin_println)));
+engine.LLVMAddGlobalMapping(jit_engine, println_fn, @constCast(@ptrCast(&builtin_println_tag)));
 ```
+
+#### Gotcha: String/char literals need quote stripping
+String literals include surrounding quotes in the lexer. Codegen must strip them before creating the LLVM constant, otherwise `inspect` double-quotes the output.
+
+#### Gotcha: Float literals need bitcast
+Float literals produce `double` in LLVM, but the C functions expect `i64`. Use `LLVMBuildBitCast` to convert before passing.
+
+#### Gotcha: Type tag for identifiers is always 100
+The codegen type-tag heuristic uses syntactic form (identifier → 100). This means `println xs` where `xs` is a list prints with tag 100 (unknown). Use a let-binding first: `let n = length xs; println n`.
 
 #### Gotcha: `process.run` doesn't inherit PATH
 When spawning subprocesses (like `gcc`), use absolute paths (`/usr/bin/gcc`). Zig's `process.run` doesn't inherit environment by default, so `gcc` can't find `cc1`.
@@ -588,7 +751,7 @@ Kō uses reference counting for heap-allocated objects. The runtime provides `ko
 raw malloc ptr
 ```
 
-#### Runtime functions (in `ko_runtime.c`)
+#### Runtime functions (in `stdlib.zig`)
 - `ko_alloc(user_size)` — allocate with RC header (rc=1), return pointer to user data
 - `ko_incref(ptr)` — increment RC, return ptr
 - `ko_decref(ptr)` — decrement RC, free if rc<=0
@@ -596,14 +759,17 @@ raw malloc ptr
 #### Codegen integration
 - All heap allocations use `ko_alloc` instead of raw `malloc`
 - `scope_heap_values` tracks all heap-allocated ptrs per function
-- Before function return, `ko_decref` is called on all tracked values except the return value
-- Return value detection: if body is `ptrtoint`, skip the underlying ptr
+- **Ownership-based decref**: Track "consumed" heap values; at exit only decref unconsumed values
+- `heap_allocas` map: conditional allocations get allocas in the entry block (initialized to 0)
+- `consumed_heap_values` set: heap values stored in parents (constructor/tuple/record/closure)
+- `emitDecrefAll`: loads from alloca, null-checks via `select`, calls `ko_decref`
+- `markConsumed`: called when heap values are stored in parents
 
-#### Gotcha: Only function-level decref
-Currently only decref at function return is implemented. Intermediate variable reassignment, closure captures, and loop-scoped values are NOT decref'd. This means:
-- Programs that return heap-allocated values: no leak (return value is skipped)
-- Programs that allocate and discard (e.g., `let _ = (1,2,3)`): still leaks
-- Closures capturing variables: captured values are not decref'd
+#### Gotcha: Allocas must be before the entry block terminator
+When creating allocas for conditional allocations, you MUST position the builder BEFORE the first instruction in the entry block, not at the end. After `codegenIf` emits a branch, positioning at the end places allocas AFTER the terminator (unreachable code). Use `LLVMPositionBuilder(builder, entry, first_inst)` to insert before the first instruction.
+
+#### Gotcha: emitDecrefAll must use select for conditional values
+Creating new basic blocks for decref null-checks causes control flow issues. Use `LLVMVMBuildSelect` instead: load from alloca, check if non-null, select between real pointer and null. This avoids creating new blocks and keeps the decref inline.
 
 #### Gotcha: Zig 0.17 ArrayList API
 In Zig 0.17, `std.ArrayList(T)` uses `.empty` default init and takes allocator on each call:
@@ -676,7 +842,8 @@ ko --emit-exe out file.ko      # Emit object file + link to executable
 - Follows `variable.instance` chain to resolve type variables to concrete types
 - Handles: `Int`, `Float`, `Bool`, `String`, `Char`, `()`, arrows, tuples, constructors, records, refs
 - Arrow types auto-parenthesize: `(Int -> Int) -> Int`
-- Polymorphic type variables show internal names (e.g., `ret8`) — improvement opportunity
+- Polymorphic type variables show friendly names (a, b, c) based on quantified list position
+- **Parenthesization fix**: Check resolved type (via `variable.instance`) not raw type tag for parenthesization decisions
 
 ### I/O Pattern — Raw Linux Syscalls (NOT std.Io)
 
@@ -761,3 +928,176 @@ zig build lsp      # Build + run ko-lsp (requires piped input)
 - Extension in `vscode-ko/` (v0.5.0)
 - Extension provides: TextMate grammar, LSP client via `vscode-languageclient`
 - LSP server launched as `ko-lsp` subprocess
+
+## REPL (`src/repl.zig`)
+
+### Architecture
+- Separate binary `ko --repl` — uses parser + typechecker + codegen (requires LLVM)
+- Raw Linux syscalls for I/O (same pattern as LSP)
+- Accumulates definitions across iterations; expressions are evaluated fresh each time
+- Each expression is wrapped in a unique function: `fn __repl_eval_N =\n  expr\n`
+
+### Expression Wrapping
+Expressions are wrapped in `fn __repl_eval_N =\n  expr\n` (indented body). This is critical — a non-indented body like `fn __repl_eval_N = expr\n` causes `parse_block` to consume the next line as part of the function body, breaking multi-line workflows.
+
+### Definition Detection
+`isDefinition()` checks for:
+- Keywords: `fn`, `type`, `let`, `module`, `pub`, `import`, `package`
+- `=` at parenthesis depth 0 (catches `name = expr` patterns)
+
+### Gotcha: `let` bindings at top level aren't codegen'd
+`codegenProgram` only handles `fn_def` and `type_def` in its second pass. `let_binding` falls through to `else`. For the REPL, all definitions must use `fn`.
+
+### Gotcha: `LLVMGetFunctionAddress` needs null-terminated names
+`eval_name` must be null-terminated. Use `allocator.dupeZ(u8, slice)` to convert.
+
+### Gotcha: REPL type lookup must walk blocks
+The eval function body is `fn __repl_eval_N =\n  expr\n`. The parser creates a block wrapping the expression. `fd.body` is the block, not the expression. Type lookup must walk down blocks to find the innermost expression:
+```zig
+var inner = fd.body;
+while (true) {
+    switch (inner.*) {
+        .block => |items| {
+            if (items.len > 0) { inner = items[items.len - 1]; continue; }
+        },
+        else => {},
+    }
+    break;
+}
+result_type = inferer.expr_types.get(inner);
+```
+
+### Gotcha: REPL must look at LAST definition
+`prog.definitions[0]` is the FIRST accumulated definition, not the eval function. Use `prog.definitions[prog.definitions.len - 1]` to find the eval function.
+
+### Gotcha: `std.ArrayList(u8).empty` is unmanaged
+In Zig 0.17, `std.ArrayList(u8).empty` creates an unmanaged list. Use `allocator` parameter on each call (e.g., `list.append(allocator, item)`). Use `std.ArrayList(u8).init(allocator)` for managed version with `.writer()`.
+
+### Gotcha: `readLine` with raw Linux syscalls
+The `readLine` function reads one byte at a time from stdin via `linux.read()`. The Zig `and` operator may NOT short-circuit bounds checks in all cases — use explicit `while` loops instead of `if (x > 0 and arr[x - 1] == ...)`. The pattern:
+```zig
+while (line_len > 0) {
+    const last = line_buf[line_len - 1];
+    if (last == '\n' or last == '\r') { line_len -= 1; } else { break; }
+}
+```
+
+### Pretty-printing REPL results (`src/prettyprint.zig`)
+- `inspectValue(alloc, val, ty, ctor_tag_names)` produces human-readable output for REPL results
+- Handles: int, float, bool, char, string, unit, arrow (`<fn>`), tuple, con (constructors), record
+- **Float literals must be bitcast to i64** before returning from functions: `LLVMConstBitCast(double_val, i64_type)`
+- **Constructor name resolution**: `ctor_tag_names` map (type_name → {tag → ctor_name}) maps runtime tags to constructor names for display
+- **Zero-arg constructors**: value IS the tag (not boxed). Heuristic: `val < 4096` → tag, `val > 4096 and aligned` → pointer
+- **Multi-arg constructors**: value is heap pointer, tag at `ptr[0]`, args at `ptr[1..]`
+- **Safety check**: if tag at `ptr[0]` > 255, it's likely a function pointer → show `<fn>`
+
+### Gotcha: Zero-arg constructor boxing
+When a zero-arg constructor (like `Nil`) is used as an **argument** to another constructor, it's boxed into a heap-allocated `{i64}` struct via `boxZeroArgCtor`. When used as a **value** (standalone), it returns the raw tag. This asymmetry exists because:
+- Raw tags can't be dereferenced (they're small integers)
+- Boxed values need heap allocation for consistent pointer semantics
+- Pattern matching codegen needs to dereference constructor args
+
+### Gotcha: `?` operator GEP element type
+The `?` (try) operator accesses the Result struct `{ i64, i64 }` via GEP. The GEP element type **must** be the struct type, not `i64_type`. Using `i64_type` with 2 indices is invalid because `i64` is not an aggregate type. The working pattern:
+```zig
+const result_struct = core.LLVMStructTypeInContext(self.context, &result_struct_fields, 2, 0);
+var tag_gep_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
+const tag_ptr = core.LLVMBuildGEP2(self.builder, result_struct, result_ptr, @ptrCast(&tag_gep_args), 2, "tag_ptr");
+```
+This matches the pattern used by `codegenConstructorFn` and inline constructor codegen. All GEP2 calls accessing struct fields through a pointer must use the struct type as the element type.
+
+### Gotcha: `?` operator precedence
+`?` is postfix and binds tighter than function application. `f x?` parses as `f (x?)`, not `(f x)?`. Use parentheses: `(f x)?`.
+
+### Gotcha: Result operations as built-ins (not .ko files)
+Result operations (`Result.is_ok`, `Result.map`, etc.) are built-in functions, not importable from a `.ko` file. This is because the imported module typechecker creates a fresh `Inferer` whose `deinit` frees types that the main inferer still references (dangling pointers). Any `.ko` file that uses built-in constructors (`Ok`, `Err`) in imported modules crashes during typechecking.
+
+### Gotcha: Multi-line match body parser limitation
+A multi-line `match` expression followed by another expression can cause the next expression to be swallowed by the parser's `parse_postfix` as a match arm argument. Workaround: extract the match into a helper function, or use single-line match arms.
+
+### Gotcha: Constructor-as-value (first-class constructors)
+Constructors can be used as function values (e.g., `foldr Cons ys xs`). The representation depends on arity:
+- **Zero-arity constructors** (e.g., `Nil`): return raw tag when used as values. They are data, not functions.
+- **Multi-arity constructors** (e.g., `Cons`): return wrapper function pointer when used as values. They are callable.
+
+**How it works:**
+1. `registerTypeDef` generates wrapper functions for each constructor (stored in `constructor_fns` map)
+2. `codegenExpr` for `.constructor`: arity > 0 → ptrtoint of wrapper; arity == 0 → raw tag
+3. `codegenFnCall` for constructor calls (e.g., `Cons 1 Nil`): constructs boxed value directly (unchanged)
+4. When a multi-arity constructor is passed as an argument (e.g., `foldr Cons ys xs`), it's a function pointer
+5. The indirect call path (bit 0 check) detects it's a raw function pointer (bit 0 = 0) and calls via inttoptr
+
+**Wrapper function layout:**
+- Zero-arg: `fn Nil() -> i64` returns raw tag
+- Multi-arg: `fn Cons(i64, i64) -> i64` allocates tagged struct via ko_alloc, stores tag + args, returns ptr as i64
+
+**Gotcha: Don't change zero-arg constructors to return function pointers**
+If zero-arg constructors return function pointers, pattern matching breaks because the match codegen compares values < 4096 as raw tags. A function pointer (e.g., 0x7fff12345678) would be treated as a boxed pointer and dereferenced, causing a crash.
+
+### Gotcha: Auto-return 0 from `main`
+`codegenFn` for `main` checks if the body is a "value" expression (literal, binary_op, unary_op, if/else, fn_call, lambda, tuple, record, field_access, match, let, block, ref, assign). If not, auto-returns 0. This prevents undefined behavior from missing return statements.
+
+### REPL Commands
+- `:quit`, `:q` — exit
+- `:type <expr>` — show type (uses `fn __type_query _ =\n  expr\n`)
+- `:env` — show accumulated definitions
+- `:reset` — clear accumulated source
+- `:help`, `:h` — show help
+
+### Stack Overflow Detection
+
+Kō detects stack overflow at runtime and aborts with a clear error message instead of segfaulting.
+
+**How it works:**
+1. `ko_init_stack()` is called at the start of `main()` — captures the stack base address using `__builtin_frame_address(0)`
+2. `ko_check_stack()` is called at the entry of every other function — compares current frame address against base + 8MB limit
+3. If distance > limit, writes error to stderr and calls `std.c.abort()`
+
+**Stack limit:** 8MB default. For AOT programs, override with `KO_STACK_LIMIT=N` environment variable (in bytes).
+
+**JIT vs AOT:**
+- JIT: Stack check functions are mapped to Zig wrapper functions via `LLVMAddGlobalMapping`
+- AOT: Stack check functions are in `ko_runtime.c` (compiled by gcc at link time)
+
+**Gotcha: `@frameAddress()` in JIT mode**
+In Zig's JIT context, `@frameAddress()` returns the frame pointer. The stack check works because each recursive call adds a frame, increasing the distance from the base.
+
+**Gotcha: TCO bypasses stack check**
+Tail-call optimized functions (detected in `codegenFn`) don't add stack frames, so they don't trigger overflow. This is correct behavior — TCO converts recursion to iteration.
+
+**Gotcha: Lambda stack check**
+Lambda functions also get stack checks at entry, since they can be called recursively.
+
+**Testing:**
+- `sum_to 1000000` (non-tail-recursive) → triggers stack overflow
+- `countdown 1000000` (tail-recursive with TCO) → works fine
+- `fib 40` (tree recursion, ~40 frames deep) → works fine
+
+## Compile-Time Evaluation (`src/comptime.zig`)
+
+### Architecture
+- `ComptimeValue` union: `int`, `float`, `bool`, `char`, `string`, `unit`
+- `CompileTimeWorld` struct with hash maps for functions, constructors, values
+- `evalExpr()` recursive evaluator supporting literals, binary/unary ops, if-then-else, let bindings, function calls, blocks, recursion (max depth 1000)
+- `evalFnCall()` handles comptime functions with literal args; falls back to `error.CannotEvalAtCompileTime` for non-literal args
+
+### Integration in codegen
+- `comptime_world` field on `Codegen` struct
+- Pass 1: populate comptime world with comptime functions + constructor info
+- `codegenExpr` for `.comptime_expr`: try comptime eval, fall back to runtime
+- `codegenFnCall`: intercept calls to comptime functions with all-literal args
+- `comptimeValueToLlvm`: convert `ComptimeValue` to LLVM constants
+
+### Parser: `comptime` keyword
+- `comptime fn name ...` — defines a comptime function (sets `FnDef.is_comptime = true`)
+- `comptime expr` — marks an expression for compile-time evaluation
+- `keyword_comptime` is in `top_level_stops` so `comptime fn` inside function bodies terminates the block (hoisted to top level)
+
+### Gotcha: Comptime functions are also regular functions
+Comptime functions must be declared AND codegen'd as regular LLVM functions. The comptime optimization is an EXTRA optimization on top of normal function support. Without the LLVM declaration, runtime fallback calls (`abs n` where `n` is runtime) fail with `UndefinedVariable`.
+
+### Gotcha: `println` output during JIT
+During JIT, `println` output goes to stdout. If a comptime expression calls `println`, the output happens at JIT time, not runtime. Comptime evaluators should NOT have side effects — they should only return values.
+
+### Gotcha: Multi-line `if`/`else` in comptime fn bodies
+The `if` expression's `else` branch must be on the same line or indented. A bare `else` on a new line after `then ...` may cause the block parser to split the definition. Test with single-line bodies first.

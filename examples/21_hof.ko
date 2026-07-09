@@ -12,4 +12,5 @@ fn main =
   let b = apply inc 10
   let c = compose inc double 5
   let d = compose negate inc 5
-  a + b + c + d
+  println(a + b + c + d)
+  println "hello"

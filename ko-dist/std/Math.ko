@@ -1,0 +1,55 @@
+# Math.ko — Math operations for Kō
+# Builtins: Int.pow, Int.gcd, Int.lcm, Int.factorial, Int.isqrt
+#           Float.ofInt, Float.toInt, Float.sqrt, Float.pow
+#           Float.sin, Float.cos, Float.tan, Float.log, Float.log2
+#           Float.log10, Float.exp, Float.floor, Float.ceil, Float.abs
+
+fn abs x =
+  if x < 0 then -x
+  else x
+
+fn max a b =
+  if a > b then a
+  else b
+
+fn min a b =
+  if a < b then a
+  else b
+
+fn clamp lo hi x = min hi (max lo x)
+
+fn div a b = a / b
+
+fn mod a b = a % b
+
+fn gcd_loop a b =
+  if b == 0 then a
+  else gcd_loop b (a % b)
+
+fn gcd a b = gcd_loop (abs a) (abs b)
+
+fn lcm a b =
+  if a == 0 then 0
+  else if b == 0 then 0
+  else abs (a / gcd a b) * b
+
+fn factorial_loop n acc =
+  if n <= 1 then acc
+  else factorial_loop (n - 1) (acc * n)
+
+fn factorial n = factorial_loop n 1
+
+fn pow_loop base exp acc =
+  if exp == 0 then acc
+  else if exp % 2 == 1 then pow_loop (base * base) (exp / 2) (acc * base)
+  else pow_loop (base * base) (exp / 2) acc
+
+fn pow base exp = pow_loop base exp 1
+
+fn isqrt_loop n x y =
+  if y < x then isqrt_loop n y ((y + n / y) / 2)
+  else x
+
+fn isqrt n = isqrt_loop n n ((n + 1) / 2)
+
+

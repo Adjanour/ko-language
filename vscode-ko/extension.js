@@ -7,11 +7,17 @@ let client;
 function activate(context) {
     console.log('Kō language support is now active!');
 
-    // Path to ko-lsp binary
-    const lspPath = path.join(
-        path.dirname(__dirname),
-        'ko-zig', 'zig-out', 'bin', 'ko-lsp'
-    );
+    // Path to ko-lsp binary — look in PATH first, then fallback to dev layout
+    const { execSync } = require('child_process');
+    let lspPath;
+    try {
+        lspPath = execSync('which ko-lsp', { encoding: 'utf-8' }).trim();
+    } catch {
+        lspPath = path.join(
+            path.dirname(__dirname),
+            'ko-zig', 'zig-out', 'bin', 'ko-lsp'
+        );
+    }
 
     // Server options — run ko-lsp as a subprocess
     const serverOptions = {

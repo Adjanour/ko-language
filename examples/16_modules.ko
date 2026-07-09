@@ -10,8 +10,8 @@ module Geometry
   fn distance p = p.x * p.x + p.y * p.y
 
 fn main =
-  let a = Math.add 1 2
-  let b = Math.square 5
-  let pt = Geometry.Point { x = 3, y = 4 }
+  let a = Math.add 1 2 # 3
+  let b = Math.square 5 # 25
+  let pt = Geometry.Point { x = 3, y = 4 } # 25
   let d = Geometry.distance pt
-  a + b + d
+  println(a + b + d) # 53

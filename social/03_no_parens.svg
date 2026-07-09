@@ -1,44 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
   <rect width="1080" height="1080" fill="#0D0D1A"/>
 
-  <text x="540" y="270" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="110" font-weight="800" fill="#FFFFFF" letter-spacing="-3">No parentheses.</text>
-  <text x="540" y="350" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="400" fill="#A1A1AA">Everywhere else uses them. Kō doesn't.</text>
+  <text x="540" y="220" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="90" font-weight="800" fill="#FFFFFF" letter-spacing="-3">Less noise. More clarity.</text>
+  <text x="540" y="290" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="400" fill="#A1A1AA">Kō removes the ceremony so intent is obvious.</text>
 
-  <rect x="60" y="430" width="460" height="370" rx="12" fill="#1A1A2E"/>
-  <rect x="60" y="430" width="460" height="50" rx="12" fill="#27272A"/>
-  <text x="290" y="462" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#71717A">BEFORE (other langs)</text>
-  <text x="90" y="540" font-family="ui-monospace, monospace" font-size="24" fill="#A1A1AA">
+  <rect x="60" y="380" width="460" height="360" rx="12" fill="#1A1A2E"/>
+  <rect x="60" y="380" width="460" height="50" rx="12" fill="#27272A"/>
+  <text x="290" y="412" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#71717A">BEFORE (JavaScript-style)</text>
+  <text x="90" y="500" font-family="ui-monospace, monospace" font-size="24" fill="#A1A1AA">
     <tspan x="90" dy="0">function </tspan>
     <tspan fill="#F59E0B">greet</tspan>
     <tspan>(</tspan>
     <tspan fill="#F59E0B">name</tspan>
     <tspan>) {</tspan>
-    <tspan x="90" dy="48">  return </tspan>
-    <tspan fill="#F59E0B">printf</tspan>
+    <tspan x="120" dy="48">  return </tspan>
+    <tspan fill="#F59E0B">console.log</tspan>
     <tspan>(</tspan>
-    <tspan x="90" dy="48">    "Hello, %s",</tspan>
-    <tspan x="90" dy="48">    name</tspan>
-    <tspan x="90" dy="48">  );</tspan>
+    <tspan x="150" dy="48">    "Hello, " + name</tspan>
+    <tspan x="120" dy="48">  );</tspan>
     <tspan x="90" dy="48">}</tspan>
   </text>
+  <text x="290" y="720" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" fill="#52525B">Dozens of characters of syntax noise</text>
 
-  <rect x="560" y="430" width="460" height="370" rx="12" fill="#1A1A2E"/>
-  <rect x="560" y="430" width="460" height="50" rx="12" fill="#F59E0B" opacity="0.15"/>
-  <text x="790" y="462" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#F59E0B">AFTER (Kō)</text>
-  <text x="590" y="540" font-family="ui-monospace, monospace" font-size="24" fill="#E4E4E7">
+  <rect x="560" y="380" width="460" height="360" rx="12" fill="#1A1A2E"/>
+  <rect x="560" y="380" width="460" height="50" rx="12" fill="#F59E0B" opacity="0.15"/>
+  <text x="790" y="412" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#F59E0B">AFTER (Kō)</text>
+  <text x="590" y="500" font-family="ui-monospace, monospace" font-size="24" fill="#E4E4E7">
     <tspan x="590" dy="0">fn </tspan>
     <tspan fill="#F59E0B">greet</tspan>
     <tspan> name =</tspan>
-    <tspan x="590" dy="48">  </tspan>
-    <tspan fill="#F59E0B">println</tspan>
-    <tspan>"Hello, " ++ name</tspan>
-    <tspan x="590" dy="48">main =</tspan>
-    <tspan x="590" dy="48">  </tspan>
-    <tspan fill="#F59E0B">greet</tspan>
-    <tspan>"World"</tspan>
+    <tspan x="620" dy="48">println name</tspan>
+    <tspan x="590" dy="48">fn main =</tspan>
+    <tspan x="620" dy="48">greet "World"</tspan>
   </text>
+  <text x="790" y="720" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" fill="#F59E0B">Just the logic</text>
 
-  <text x="540" y="630" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="300" fill="#52525B">vs</text>
+  <text x="540" y="840" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="700" fill="#FFFFFF">Reads like prose. Compiles like a rocket.</text>
 
   <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>
   <text x="540" y="1024" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>

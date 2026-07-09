@@ -1,0 +1,27 @@
+# State machine — counter using refs
+
+type State = Idle | Counting Int | Done
+
+fn extract state =
+  match state
+    | Counting v => v
+    | Done => 99
+    | Idle => 0
+
+fn next_state current limit =
+  let c = !current
+  if c >= limit then Done
+  else
+    current := c + 1
+    Counting (c + 1)
+
+fn main =
+  let current = ref 0
+
+  println (extract (next_state current 5))
+  println (extract (next_state current 5))
+  println (extract (next_state current 5))
+  println (extract (next_state current 5))
+  println (extract (next_state current 5))
+  println (extract (next_state current 5))
+

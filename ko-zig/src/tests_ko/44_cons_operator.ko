@@ -1,0 +1,17 @@
+# Cons operator (::) syntax test
+
+type List a = Cons a (List a) | Nil
+
+fn length xs =
+  match xs
+    | Cons _ rest => 1 + length rest
+    | Nil => 0
+
+fn main =
+  let xs = 1 :: 2 :: 3 :: Nil
+  let ys = "a" :: "b" :: Nil
+  let empty = Nil
+  println (length xs)
+  println (length ys)
+  println (length empty)
+  0

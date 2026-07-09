@@ -1,24 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
   <rect width="1080" height="1080" fill="#0D0D1A"/>
 
-  <text x="540" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="72" font-weight="800" fill="#FFFFFF" letter-spacing="-2">Kō → C</text>
-  <text x="540" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#A1A1AA">Functional in. Fast binary out.</text>
+  <text x="540" y="150" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" fill="#FFFFFF" letter-spacing="-2">From idea to native binary.</text>
+  <text x="540" y="210" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#A1A1AA">No VM. No runtime. No garbage-collection pauses.</text>
 
   <rect x="80" y="320" width="260" height="400" rx="12" fill="#1A1A2E"/>
   <rect x="80" y="320" width="260" height="50" rx="12" fill="#F59E0B" opacity="0.15"/>
   <text x="210" y="352" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#F59E0B">Kō Source</text>
   <text x="110" y="420" font-family="ui-monospace, monospace" font-size="24" fill="#E4E4E7">
     <tspan x="110" dy="0">fn greet name =</tspan>
-    <tspan x="110" dy="40">  </tspan>
-    <tspan fill="#F59E0B">println</tspan>
-    <tspan>"Hello, " ++ name</tspan>
-    <tspan x="110" dy="40">main =</tspan>
-    <tspan x="110" dy="40">  </tspan>
-    <tspan fill="#F59E0B">greet</tspan>
-    <tspan>"World"</tspan>
+    <tspan x="130" dy="40">  println name</tspan>
+    <tspan x="110" dy="40">fn main =</tspan>
+    <tspan x="130" dy="40">  greet "World"</tspan>
   </text>
 
-  <text x="390" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="300" fill="#52525B">→</text>
+  <text x="375" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="300" fill="#52525B">→</text>
 
   <rect x="410" y="320" width="260" height="400" rx="12" fill="#1A1A2E"/>
   <rect x="410" y="320" width="260" height="50" rx="12" fill="#F59E0B" opacity="0.15"/>
@@ -27,26 +23,23 @@
     <tspan x="440" dy="0">parse       ✓</tspan>
     <tspan x="440" dy="40">typecheck ✓</tspan>
     <tspan x="440" dy="40">comptime    ✓</tspan>
-    <tspan x="440" dy="40">codegen   ✓</tspan>
+    <tspan x="440" dy="40">LLVM IR    ✓</tspan>
   </text>
-  <text x="540" y="670" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#A1A1AA">~2000 lines, one pass</text>
+  <text x="540" y="670" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" fill="#A1A1AA">Zig + LLVM, one pass</text>
 
-  <text x="720" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="300" fill="#52525B">→</text>
+  <text x="705" y="530" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="48" font-weight="300" fill="#52525B">→</text>
 
   <rect x="740" y="320" width="260" height="400" rx="12" fill="#1A1A2E"/>
   <rect x="740" y="320" width="260" height="50" rx="12" fill="#F59E0B" opacity="0.15"/>
-  <text x="870" y="352" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#F59E0B">C Code</text>
+  <text x="870" y="352" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="600" fill="#F59E0B">Native Binary</text>
   <text x="770" y="420" font-family="ui-monospace, monospace" font-size="22" fill="#E4E4E7">
-    <tspan x="770" dy="0">void greet</tspan>
-    <tspan x="770" dy="36">  (string name)</tspan>
-    <tspan x="770" dy="36">{</tspan>
-    <tspan x="770" dy="36">  </tspan>
-    <tspan fill="#F59E0B">printf</tspan>
-    <tspan>(</tspan>
-    <tspan x="770" dy="36">    "Hello, %s"</tspan>
-    <tspan x="770" dy="36">  );</tspan>
-    <tspan x="770" dy="36">}</tspan>
+    <tspan x="770" dy="0">./my_program</tspan>
+    <tspan x="770" dy="40" fill="#A1A1AA"># No interpreter</tspan>
+    <tspan x="770" dy="40" fill="#A1A1AA"># No JIT warmup</tspan>
+    <tspan x="770" dy="40" fill="#A1A1AA"># No GC pauses</tspan>
   </text>
+
+  <text x="540" y="820" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="700" fill="#F59E0B">Functional ergonomics. Systems performance.</text>
 
   <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>
   <text x="540" y="1024" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>

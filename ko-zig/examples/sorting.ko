@@ -1,0 +1,40 @@
+# Sorting — insertion sort on linked lists
+
+type List a = Cons a (List a) | Nil
+
+fn insert_sorted x xs =
+  match xs
+    | Cons y rest =>
+      if x <= y then Cons x (Cons y rest)
+      else Cons y (insert_sorted x rest)
+    | Nil => Cons x Nil
+
+fn insertion_sort xs =
+  match xs
+    | Cons x rest => insert_sorted x (insertion_sort rest)
+    | Nil => Nil
+
+fn sum xs =
+  match xs
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+fn is_sorted xs =
+  match xs
+    | Cons x rest =>
+      match rest
+        | Cons y _ =>
+          if x <= y then is_sorted rest
+          else 0
+        | Nil => 1
+    | Nil => 1
+
+fn main =
+  let sorted1 = insertion_sort (Cons 5 (Cons 3 (Cons 8 (Cons 1 (Cons 4 Nil)))))
+  println (is_sorted sorted1)    # 1
+  println (sum sorted1)          # 21
+
+  let sorted2 = insertion_sort (Cons 5 (Cons 4 (Cons 3 (Cons 2 (Cons 1 Nil)))))
+  println (is_sorted sorted2)    # 1
+  println (sum sorted2)          # 15
+

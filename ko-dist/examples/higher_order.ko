@@ -1,0 +1,58 @@
+# Higher-order functions — map, filter, fold, apply_n
+
+type List a = Cons a (List a) | Nil
+
+fn map f xs =
+  match xs
+    | Cons x rest => Cons (f x) (map f rest)
+    | Nil => Nil
+
+fn filter f xs =
+  match xs
+    | Cons x rest =>
+      if f x then Cons x (filter f rest)
+      else filter f rest
+    | Nil => Nil
+
+fn fold f acc xs =
+  match xs
+    | Cons x rest => fold f (f acc x) rest
+    | Nil => acc
+
+fn sum xs = fold (\a x -> a + x) 0 xs
+fn product xs = fold (\a x -> a * x) 1 xs
+
+fn apply_n f n x =
+  if n == 0 then x
+  else f (apply_n f (n - 1) x)
+
+fn main =
+  let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
+
+  # Map: double all
+  let doubled = map (\x -> x * 2) nums
+  println (sum doubled)          # 30
+
+  # Map: square all
+  let squared = map (\x -> x * x) nums
+  println (sum squared)          # 55
+
+  # Filter: keep evens
+  let evens = filter (\x -> x % 2 == 0) nums
+  println (sum evens)            # 6
+
+  # Fold: sum
+  println (sum nums)             # 15
+
+  # Fold: product
+  println (product nums)         # 120
+
+  # Fold: max
+  let maximum = fold (\a x -> if x > a then x else a) 0 nums
+  println maximum                # 5
+
+  # Apply function n times
+  let inc = \x -> x + 1
+  println (apply_n inc 10 0)    # 10
+  println (apply_n (\x -> x * 2) 3 1)  # 8
+

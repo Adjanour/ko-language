@@ -72,7 +72,28 @@ pub fn main(init: std.process.Init) !void {
     // Typecheck
     var inferer = typecheck.Inferer.init(init.arena.allocator());
     defer inferer.deinit();
-    try inferer.inferProgram(&prog);
+    inferer.inferProgram(&prog) catch |err| {
+        const stderr = Io.File.stderr();
+        var err_buf: [4096]u8 = undefined;
+        var err_writer = stderr.writer(io, &err_buf);
+        if (inferer.last_error) |ec| {
+            if (ec.loc) |loc| {
+                if (ec.message) |msg| {
+                    try err_writer.interface.print("type error at line {d}, col {d}: {s}\n", .{ loc.line, loc.col, msg });
+                } else {
+                    try err_writer.interface.print("type error at line {d}, col {d}: {s}\n", .{ loc.line, loc.col, @errorName(err) });
+                }
+            } else if (ec.message) |msg| {
+                try err_writer.interface.print("type error: {s}\n", .{msg});
+            } else {
+                try err_writer.interface.print("type error: {s}\n", .{@errorName(err)});
+            }
+        } else {
+            try err_writer.interface.print("type error: {s}\n", .{@errorName(err)});
+        }
+        try err_writer.interface.flush();
+        std.process.exit(1);
+    };
     try writer.interface.print("Typechecked OK\n", .{});
     try writer.interface.flush();
 

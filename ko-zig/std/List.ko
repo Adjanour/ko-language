@@ -1,0 +1,135 @@
+# List.ko — List operations for Kō
+
+type List a = Cons a (List a) | Nil
+
+# --- Basic operations ---
+
+fn head xs = match xs
+  | Cons x _ => x
+  | Nil => 0
+
+fn tail xs = match xs
+  | Cons _ rest => rest
+  | Nil => Nil
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn append xs ys = match xs
+  | Cons x rest => Cons x (append rest ys)
+  | Nil => ys
+
+fn reverse xs = reverseAux xs Nil
+
+fn reverseAux xs acc = match xs
+  | Cons x rest => reverseAux rest (Cons x acc)
+  | Nil => acc
+
+# --- Higher-order functions ---
+
+fn map f xs = match xs
+  | Cons x rest => Cons (f x) (map f rest)
+  | Nil => Nil
+
+fn filter f xs = match xs
+  | Cons x rest =>
+    if f x then Cons x (filter f rest)
+    else filter f rest
+  | Nil => Nil
+
+fn foldl f acc xs = match xs
+  | Cons x rest => foldl f (f acc x) rest
+  | Nil => acc
+
+fn foldr f acc xs = match xs
+  | Cons x rest => f x (foldr f acc rest)
+  | Nil => acc
+
+fn any f xs = match xs
+  | Cons x rest => if f x then True else any f rest
+  | Nil => False
+
+fn all f xs = match xs
+  | Cons x rest => if f x then all f rest else False
+  | Nil => True
+
+fn find f xs = match xs
+  | Cons x rest => if f x then Cons x Nil else find f rest
+  | Nil => Nil
+
+fn take n xs = match xs
+  | Cons x rest =>
+    if n > 0 then Cons x (take (n - 1) rest)
+    else Nil
+  | Nil => Nil
+
+fn drop n xs = match xs
+  | Cons _ rest =>
+    if n > 0 then drop (n - 1) rest
+    else xs
+  | Nil => Nil
+
+fn elem x xs = match xs
+  | Cons y rest => if x == y then True else elem x rest
+  | Nil => False
+
+# --- New operations ---
+
+fn is_empty xs = match xs
+  | Cons _ _ => False
+  | Nil => True
+
+fn contains x xs = elem x xs
+
+fn last xs = match xs
+  | Cons x Nil => x
+  | Cons _ rest => last rest
+  | Nil => 0
+
+fn init xs = match xs
+  | Cons _ Nil => Nil
+  | Cons x rest => Cons x (init rest)
+  | Nil => Nil
+
+fn nth n xs = match xs
+  | Cons x rest =>
+    if n == 0 then x
+    else nth (n - 1) rest
+  | Nil => 0
+
+fn flat_map f xs = match xs
+  | Cons x rest => append (f x) (flat_map f rest)
+  | Nil => Nil
+
+fn flatten xss = flat_map (\x -> x) xss
+
+fn take_while f xs = match xs
+  | Cons x rest =>
+    if f x then Cons x (take_while f rest)
+    else Nil
+  | Nil => Nil
+
+fn drop_while f xs = match xs
+  | Cons x rest =>
+    if f x then drop_while f rest
+    else xs
+  | Nil => Nil
+
+fn replicate n x = replicateAux n x Nil
+
+fn replicateAux n x acc =
+  if n <= 0 then acc
+  else replicateAux (n - 1) x (Cons x acc)
+
+fn sum xs = foldl (\acc x -> acc + x) 0 xs
+
+fn product xs = foldl (\acc x -> acc * x) 1 xs
+
+fn maximum xs = match xs
+  | Cons x rest => foldl (\acc y -> if y > acc then y else acc) x rest
+  | Nil => 0
+
+fn minimum xs = match xs
+  | Cons x rest => foldl (\acc y -> if y < acc then y else acc) x rest
+  | Nil => 0

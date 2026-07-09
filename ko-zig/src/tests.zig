@@ -2,6 +2,7 @@ const std = @import("std");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
+const repl_mod = @import("repl.zig");
 
 test "lexer: keywords" {
     var tok = lexer.Tokenizer.init("fn let if then else match type import package pub module true false and or not");
@@ -239,7 +240,7 @@ test "parser: pipe and named args" {
                 try std.testing.expectEqual(@as(usize, 1), call.args.len);
                 try std.testing.expectEqual(@as(usize, 1), call.named_args.len);
                 switch (call.func.*) {
-                    .identifier => |name| try std.testing.expectEqualStrings("normalize", name),
+                    .identifier => |id| try std.testing.expectEqualStrings("normalize", id.name),
                     else => return error.TestExpectedEqual,
                 }
                 try std.testing.expectEqualStrings("mode", call.named_args[0].name);
@@ -564,7 +565,7 @@ test "parser: ref and assign" {
         .fn_def => |f| switch (f.body.*) {
             .assign_expr => |a| {
                 switch (a.target.*) {
-                    .identifier => |name| try std.testing.expectEqualStrings("counter", name),
+                    .identifier => |id| try std.testing.expectEqualStrings("counter", id.name),
                     else => return error.TestExpectedEqual,
                 }
             },
@@ -1119,10 +1120,18 @@ test "parser: all .ko test files parse successfully" {
         .{ .name = "41_partial.ko", .source = @embedFile("tests_ko/41_partial.ko") },
         .{ .name = "42_curry_compose.ko", .source = @embedFile("tests_ko/42_curry_compose.ko") },
         .{ .name = "43_closure.ko", .source = @embedFile("tests_ko/43_closure.ko") },
+        .{ .name = "44_cons_operator.ko", .source = @embedFile("tests_ko/44_cons_operator.ko") },
+        .{ .name = "45_comptime.ko", .source = @embedFile("tests_ko/45_comptime.ko") },
+        .{ .name = "46_math.ko", .source = @embedFile("tests_ko/46_math.ko") },
+        .{ .name = "47_float_math.ko", .source = @embedFile("tests_ko/47_float_math.ko") },
+        .{ .name = "48_result_ops.ko", .source = @embedFile("tests_ko/48_result_ops.ko") },
     };
 
     for (files) |f| {
-        var p = parser.Parser.init(std.testing.allocator, f.source) catch |err| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var p = parser.Parser.init(allocator, f.source) catch |err| {
             std.debug.print("FAIL: {s} - parser init error: {}\n", .{ f.name, err });
             return error.TestFailed;
         };
@@ -1179,4 +1188,26 @@ test "multi-line doc comments per function" {
     } else {
         return error.TestExpectedResult;
     }
+}
+
+test "tuple destructuring in let" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source_z = try allocator.dupeZ(u8,
+        \\fn main =
+        \\  let (x, y) = (10, 20)
+        \\  println (x + y)
+    );
+
+    var p = try parser.Parser.init(allocator, source_z);
+    defer p.deinit();
+    const prog = try p.parse_program();
+
+    try std.testing.expectEqual(@as(usize, 1), prog.definitions.len);
+
+    var infer = typecheck.Inferer.init(allocator);
+    defer infer.deinit();
+    try infer.inferProgram(&prog);
 }

@@ -1,0 +1,10 @@
+# 47_float_math.ko — Test float math builtins
+println (Float.sqrt 4.0)
+println (Float.sqrt 9.0)
+println (Float.floor 3.7)
+println (Float.ceil 3.2)
+println (Float.abs 5.0)
+println (Float.abs 0.0)
+println (Float.ofInt 42)
+println (Float.toInt 3.7)
+println (Float.pow 2.0 3.0)

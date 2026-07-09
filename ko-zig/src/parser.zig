@@ -25,6 +25,7 @@ pub const Package = ast.Package;
 pub const ModuleDef = ast.ModuleDef;
 pub const Definition = ast.Definition;
 pub const Program = ast.Program;
+pub const Loc = ast.Loc;
 
 pub const Parser = struct {
     pub const Error = error{ UnexpectedToken, OutOfMemory, InvalidCharacter, Overflow, InvalidBase };
@@ -111,9 +112,41 @@ pub const Parser = struct {
         return out;
     }
 
-    fn newExpr(self: *Parser, expr: Expr) !*Expr {
+    fn lineCol(self: *Parser, tok: lexer.Token) struct { line: usize, col: usize } {
+        var line: usize = 1;
+        var col: usize = 1;
+        var i: usize = 0;
+        while (i < tok.loc.start and i < self.source.len) : (i += 1) {
+            if (self.source[i] == '\n') {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        return .{ .line = line, .col = col };
+    }
+
+    fn tokenLoc(self: *Parser, tok: lexer.Token) Loc {
+        const start = self.lineCol(tok);
+        var end_line = start.line;
+        var end_col = start.col;
+        var i: usize = tok.loc.start;
+        while (i < tok.loc.end and i < self.source.len) : (i += 1) {
+            if (self.source[i] == '\n') {
+                end_line += 1;
+                end_col = 1;
+            } else {
+                end_col += 1;
+            }
+        }
+        return .{ .line = start.line, .col = start.col, .end_line = end_line, .end_col = end_col };
+    }
+
+    fn newExpr(self: *Parser, expr: Expr, loc: Loc) !*Expr {
         const ptr = try self.allocator.create(Expr);
         ptr.* = expr;
+        ptr.setLoc(loc);
         return ptr;
     }
 
@@ -268,7 +301,7 @@ pub const Parser = struct {
             const body = if (trailing.items.len == 1)
                 trailing.items[0]
             else
-                try self.newExpr(.{ .block = try self.allocExprPtrSlice(trailing.items) });
+                try self.newExpr(.{ .block = .{ .items = try self.allocExprPtrSlice(trailing.items) } }, self.tokenLoc(self.current()));
             try defs.append(self.allocator, .{ .fn_def = .{
                 .name = "main",
                 .params = &.{},
@@ -589,9 +622,9 @@ pub const Parser = struct {
             self.skip_newlines();
         }
 
-        if (exprs.items.len == 0) return self.newExpr(.{ .block = &.{} });
+        if (exprs.items.len == 0) return self.newExpr(.{ .block = .{ .items = &.{} } }, self.tokenLoc(self.current()));
         if (exprs.items.len == 1) return exprs.items[0];
-        return self.newExpr(.{ .block = try self.allocExprPtrSlice(exprs.items) });
+        return self.newExpr(.{ .block = .{ .items = try self.allocExprPtrSlice(exprs.items) } }, self.tokenLoc(self.current()));
     }
 
     fn parse_let_expr_in_block(self: *Parser, stop_tags: []const lexer.Token.Tag) Error!*Expr {
@@ -609,14 +642,14 @@ pub const Parser = struct {
         if (self.current().tag == .keyword_let) {
             body = try self.parse_let_expr_in_block(stop_tags);
         } else if (self.current().tag == .dedent or self.current().tag == .eof or Parser.is_stop(self.current().tag, stop_tags)) {
-            body = try self.newExpr(.{ .block = &.{} });
+            body = try self.newExpr(.{ .block = .{ .items = &.{} } }, self.tokenLoc(self.current()));
         } else {
             const prev = self.allow_let_in_body;
             self.allow_let_in_body = true;
             body = try self.parse_block(fn_body_stops);
             self.allow_let_in_body = prev;
         }
-        return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body } });
+        return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body } }, self.tokenLoc(self.current()));
     }
 
     // =========================================================================
@@ -708,15 +741,15 @@ pub const Parser = struct {
         const left = try self.parse_pipe();
         if (self.match(.colon_equal)) {
             const value = try self.parse_expr();
-            return self.newExpr(.{ .assign_expr = .{ .target = left, .value = value } });
+            return self.newExpr(.{ .assign_expr = .{ .target = left, .value = value } }, self.tokenLoc(self.current()));
         }
         return left;
     }
 
     fn parse_pipe(self: *Parser) Error!*Expr {
-        var left = try self.parse_or();
+        var left = try self.parse_cons();
         while (self.match(.pipe_gt)) {
-            const right = try self.parse_or();
+            const right = try self.parse_cons();
             switch (right.*) {
                 .fn_call => |call| {
                     var args: std.ArrayList(*Expr) = .empty;
@@ -731,10 +764,19 @@ pub const Parser = struct {
                     left = right;
                 },
                 else => {
-                    const call = try self.newExpr(.{ .fn_call = .{ .func = right, .args = try self.allocExprPtrSlice(&.{ left }), .named_args = &.{} } });
+                    const call = try self.newExpr(.{ .fn_call = .{ .func = right, .args = try self.allocExprPtrSlice(&.{ left }), .named_args = &.{} } }, self.tokenLoc(self.current()));
                     left = call;
                 },
             }
+        }
+        return left;
+    }
+
+    fn parse_cons(self: *Parser) Error!*Expr {
+        var left = try self.parse_or();
+        while (self.match(.double_colon)) {
+            const right = try self.parse_or();
+            left = try self.newExpr(.{ .binary_op = .{ .op = .cons, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -744,7 +786,7 @@ pub const Parser = struct {
         while (self.current().tag == .or_or or self.current().tag == .keyword_or) {
             _ = self.advance();
             const right = try self.parse_and();
-            left = try self.newExpr(.{ .binary_op = .{ .op = .or_op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = .or_op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -754,7 +796,7 @@ pub const Parser = struct {
         while (self.current().tag == .and_and or self.current().tag == .keyword_and) {
             _ = self.advance();
             const right = try self.parse_equality();
-            left = try self.newExpr(.{ .binary_op = .{ .op = .and_op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = .and_op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -765,7 +807,7 @@ pub const Parser = struct {
             const op = if (self.current().tag == .equal_equal) BinaryOp.eq else BinaryOp.neq;
             _ = self.advance();
             const right = try self.parse_compare();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -783,7 +825,7 @@ pub const Parser = struct {
             if (op == null) break;
             _ = self.advance();
             const right = try self.parse_term();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op.?, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = op.?, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -794,7 +836,7 @@ pub const Parser = struct {
             const op = if (self.current().tag == .plus) BinaryOp.add else BinaryOp.sub;
             _ = self.advance();
             const right = try self.parse_factor_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -809,20 +851,20 @@ pub const Parser = struct {
             };
             _ = self.advance();
             const right = try self.parse_unary_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
 
     fn parse_unary(self: *Parser) Error!*Expr {
-        if (self.match(.minus)) return self.newExpr(.{ .unary_op = .{ .op = .neg, .expr = try self.parse_unary() } });
+        if (self.match(.minus)) return self.newExpr(.{ .unary_op = .{ .op = .neg, .expr = try self.parse_unary() } }, self.tokenLoc(self.current()));
         return self.parse_unary_no_prefix();
     }
 
     fn parse_unary_no_prefix(self: *Parser) Error!*Expr {
-        if (self.match(.keyword_not)) return self.newExpr(.{ .unary_op = .{ .op = .not, .expr = try self.parse_unary() } });
-        if (self.match(.not)) return self.newExpr(.{ .unary_op = .{ .op = .deref, .expr = try self.parse_unary() } });
-        if (self.match(.keyword_ref)) return self.newExpr(.{ .ref_expr = try self.parse_unary() });
+        if (self.match(.keyword_not)) return self.newExpr(.{ .unary_op = .{ .op = .not, .expr = try self.parse_unary() } }, self.tokenLoc(self.current()));
+        if (self.match(.not)) return self.newExpr(.{ .unary_op = .{ .op = .deref, .expr = try self.parse_unary() } }, self.tokenLoc(self.current()));
+        if (self.match(.keyword_ref)) return self.newExpr(.{ .ref_expr = try self.parse_unary() }, self.tokenLoc(self.current()));
         return self.parse_postfix();
     }
 
@@ -836,7 +878,7 @@ pub const Parser = struct {
             };
             _ = self.advance();
             const right = try self.parse_unary_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } });
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
     }
@@ -849,8 +891,10 @@ pub const Parser = struct {
             if (self.match(.dot)) {
                 const tag = self.current().tag;
                 if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
-                const field = self.slice(self.advance());
-                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } });
+                const field_tok = self.current();
+                const field = self.slice(field_tok);
+                _ = self.advance();
+                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } }, self.tokenLoc(field_tok));
                 continue;
             }
 
@@ -858,7 +902,7 @@ pub const Parser = struct {
             if (self.current().tag == .lbrace and expr.* == .field_access) {
                 const fa = expr.field_access;
                 if (fa.object.* == .constructor) {
-                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor, fa.field });
+                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor.name, fa.field });
                     expr = try self.parse_record_literal(combined);
                     continue;
                 }
@@ -875,8 +919,10 @@ pub const Parser = struct {
             if (self.match(.dot)) {
                 const tag = self.current().tag;
                 if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
-                const field = self.slice(self.advance());
-                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } });
+                const field_tok = self.current();
+                const field = self.slice(field_tok);
+                _ = self.advance();
+                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } }, self.tokenLoc(field_tok));
                 continue;
             }
 
@@ -885,7 +931,7 @@ pub const Parser = struct {
                 const fa = expr.field_access;
                 if (fa.object.* == .constructor) {
                     // Geo.Point { ... } → record literal with name "Geo.Point"
-                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor, fa.field });
+                    const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor.name, fa.field });
                     expr = try self.parse_record_literal(combined);
                     continue;
                 }
@@ -917,7 +963,7 @@ pub const Parser = struct {
                 .func = expr,
                 .args = try self.allocExprPtrSlice(args.items),
                 .named_args = try self.allocSlice(NamedArg, named.items),
-            } });
+            } }, self.tokenLoc(self.current()));
         }
         return expr;
     }
@@ -929,35 +975,35 @@ pub const Parser = struct {
                 _ = self.advance();
                 const s = self.slice(t);
                 if (std.mem.indexOfScalar(u8, s, '.') != null) {
-                    return self.newExpr(.{ .float_literal = try std.fmt.parseFloat(f64, s) });
+                    return self.newExpr(.{ .float_literal = try std.fmt.parseFloat(f64, s) }, self.tokenLoc(t));
                 }
                 if (std.mem.startsWith(u8, s, "0x") or std.mem.startsWith(u8, s, "0X")) {
-                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 16) });
+                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 16) }, self.tokenLoc(t));
                 }
                 if (std.mem.startsWith(u8, s, "0b") or std.mem.startsWith(u8, s, "0B")) {
-                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 2) });
+                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 2) }, self.tokenLoc(t));
                 }
                 if (std.mem.startsWith(u8, s, "0o") or std.mem.startsWith(u8, s, "0O")) {
-                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 8) });
+                    return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s[2..], 8) }, self.tokenLoc(t));
                 }
-                return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s, 10) });
+                return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s, 10) }, self.tokenLoc(t));
             },
-            .string => return self.newExpr(.{ .string_literal = self.slice(self.advance()) }),
-            .char => return self.newExpr(.{ .char_literal = self.slice(self.advance()) }),
-            .keyword_true => { _ = self.advance(); return self.newExpr(.{ .bool_literal = true }); },
-            .keyword_false => { _ = self.advance(); return self.newExpr(.{ .bool_literal = false }); },
+            .string => return self.newExpr(.{ .string_literal = self.slice(self.advance()) }, self.tokenLoc(t)),
+            .char => return self.newExpr(.{ .char_literal = self.slice(self.advance()) }, self.tokenLoc(t)),
+            .keyword_true => { _ = self.advance(); return self.newExpr(.{ .bool_literal = true }, self.tokenLoc(t)); },
+            .keyword_false => { _ = self.advance(); return self.newExpr(.{ .bool_literal = false }, self.tokenLoc(t)); },
             .identifier => {
                 const name = self.slice(self.advance());
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
                     if (self.current().tag == .lbrace) return self.parse_record_literal(name);
-                    return self.newExpr(.{ .constructor = name });
+                    return self.newExpr(.{ .constructor = .{ .name = name } }, self.tokenLoc(t));
                 }
-                return self.newExpr(.{ .identifier = name });
+                return self.newExpr(.{ .identifier = .{ .name = name } }, self.tokenLoc(t));
             },
             .constructor => {
                 const name = self.slice(self.advance());
                 if (self.current().tag == .lbrace) return self.parse_record_literal(name);
-                return self.newExpr(.{ .constructor = name });
+                return self.newExpr(.{ .constructor = .{ .name = name } }, self.tokenLoc(t));
             },
             .lparen => return self.parse_group_or_tuple(),
             .backslash => return self.parse_lambda(),
@@ -971,14 +1017,14 @@ pub const Parser = struct {
     fn parse_comptime(self: *Parser) Error!*Expr {
         _ = try self.expect(.keyword_comptime);
         const expr = try self.parse_expr();
-        return self.newExpr(.{ .comptime_expr = expr });
+        return self.newExpr(.{ .comptime_expr = expr }, self.tokenLoc(self.current()));
     }
 
     fn parse_group_or_tuple(self: *Parser) Error!*Expr {
         _ = try self.expect(.lparen);
         if (self.current().tag == .rparen) {
             _ = self.advance();
-            return self.newExpr(.{ .tuple = &.{} });
+            return self.newExpr(.{ .tuple = .{ .items = &.{} } }, self.tokenLoc(self.current()));
         }
         var items: std.ArrayList(*Expr) = .empty;
         defer items.deinit(self.allocator);
@@ -986,7 +1032,7 @@ pub const Parser = struct {
         while (self.match(.comma)) try items.append(self.allocator, try self.parse_expr());
         _ = try self.expect(.rparen);
         if (items.items.len == 1) return items.items[0];
-        return self.newExpr(.{ .tuple = try self.allocExprPtrSlice(items.items) });
+        return self.newExpr(.{ .tuple = .{ .items = try self.allocExprPtrSlice(items.items) } }, self.tokenLoc(self.current()));
     }
 
     fn parse_lambda(self: *Parser) Error!*Expr {
@@ -998,7 +1044,7 @@ pub const Parser = struct {
         }
         _ = try self.expect(.arrow);
         const body = try self.parse_expr();
-        return self.newExpr(.{ .lambda = .{ .params = try self.allocSlice(Pattern, params.items), .body = body } });
+        return self.newExpr(.{ .lambda = .{ .params = try self.allocSlice(Pattern, params.items), .body = body } }, self.tokenLoc(self.current()));
     }
 
     fn parse_if(self: *Parser) Error!*Expr {
@@ -1020,7 +1066,7 @@ pub const Parser = struct {
             else
                 try self.parse_expr();
         }
-        return self.newExpr(.{ .if_expr = .{ .condition = cond, .then_branch = then_branch, .else_branch = else_branch } });
+        return self.newExpr(.{ .if_expr = .{ .condition = cond, .then_branch = then_branch, .else_branch = else_branch } }, self.tokenLoc(self.current()));
     }
 
     fn parse_match(self: *Parser) Error!*Expr {
@@ -1047,7 +1093,7 @@ pub const Parser = struct {
             self.skip_newlines();
         }
         if (has_indent and self.current().tag == .dedent) _ = self.advance();
-        return self.newExpr(.{ .match_expr = .{ .value = value, .arms = try self.allocSlice(MatchArm, arms.items) } });
+        return self.newExpr(.{ .match_expr = .{ .value = value, .arms = try self.allocSlice(MatchArm, arms.items) } }, self.tokenLoc(self.current()));
     }
 
     fn parse_record_literal(self: *Parser, name: []const u8) Error!*Expr {
@@ -1068,7 +1114,7 @@ pub const Parser = struct {
             break;
         }
         _ = try self.expect(.rbrace);
-        return self.newExpr(.{ .record_literal = .{ .name = name, .fields = try self.allocSlice(NamedArg, fields.items) } });
+        return self.newExpr(.{ .record_literal = .{ .name = name, .fields = try self.allocSlice(NamedArg, fields.items) } }, self.tokenLoc(self.current()));
     }
 
     // =========================================================================

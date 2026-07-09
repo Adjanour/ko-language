@@ -1,4 +1,4 @@
 # Test: selective import
-import Math.{add, double}
+import Math.{abs, gcd}
 
 fn main = 1

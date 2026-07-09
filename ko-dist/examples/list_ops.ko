@@ -1,0 +1,56 @@
+# Linked list — ADTs, pattern matching, higher-order functions
+
+type List a = Cons a (List a) | Nil
+
+fn length xs =
+  match xs
+    | Cons _ rest => 1 + length rest
+    | Nil => 0
+
+fn sum xs =
+  match xs
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+fn map f xs =
+  match xs
+    | Cons x rest => Cons (f x) (map f rest)
+    | Nil => Nil
+
+fn filter f xs =
+  match xs
+    | Cons x rest =>
+      if f x then Cons x (filter f rest)
+      else filter f rest
+    | Nil => Nil
+
+fn fold f acc xs =
+  match xs
+    | Cons x rest => fold f (f acc x) rest
+    | Nil => acc
+
+fn reverse_aux xs acc =
+  match xs
+    | Cons x rest => reverse_aux rest (Cons x acc)
+    | Nil => acc
+
+fn reverse xs = reverse_aux xs Nil
+
+fn main =
+  let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
+
+  println (length nums)          # 5
+  println (sum nums)             # 15
+
+  let rev = reverse nums
+  println (sum rev)              # 15
+
+  let doubled = map (\x -> x * 2) nums
+  println (sum doubled)          # 30
+
+  let evens = filter (\x -> x % 2 == 0) nums
+  println (sum evens)            # 6
+
+  let total = fold (\a x -> a + x) 0 nums
+  println total                  # 15
+

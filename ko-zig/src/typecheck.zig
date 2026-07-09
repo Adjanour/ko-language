@@ -76,6 +76,7 @@ pub const ErrorContext = struct {
     message: ?[]const u8 = null,
     expected: ?[]const u8 = null,
     actual: ?[]const u8 = null,
+    loc: ?parser.Loc = null,
 };
 
 pub const Inferer = struct {
@@ -87,6 +88,7 @@ pub const Inferer = struct {
     type_names: std.StringHashMap(usize),
     current_module: ?[]const u8,
     last_error: ?ErrorContext,
+    current_loc: ?parser.Loc = null,
     doc_comments: std.StringHashMap([]const []const u8),
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
@@ -215,6 +217,7 @@ pub const Inferer = struct {
                     }) catch null,
                     .expected = exp_str,
                     .actual = act_str,
+                    .loc = self_inner.current_loc,
                 };
                 return error.TypeMismatch;
             }
@@ -441,17 +444,24 @@ pub const Inferer = struct {
             }
         }
 
-        // Predeclare built-in functions (Int -> Int)
-        const from_ty = try self.allocator.create(Type);
-        from_ty.* = .{ .int = {} };
-        const to_ty = try self.allocator.create(Type);
-        to_ty.* = .{ .int = {} };
-        const int_to_int = try self.allocator.create(Type);
-        int_to_int.* = .{ .arrow = .{ .from = from_ty, .to = to_ty } };
-        try self.global.set("println", .{ .quantified = &.{}, .body = int_to_int });
-        const int_to_int2 = try self.allocator.create(Type);
-        int_to_int2.* = .{ .arrow = .{ .from = from_ty, .to = to_ty } };
-        try self.global.set("print", .{ .quantified = &.{}, .body = int_to_int2 });
+        // Predeclare built-in functions (polymorphic, prints and returns the value)
+        const println_from = try self.newVarType("a");
+        const println_to = println_from;
+        const println_ty = try self.allocator.create(Type);
+        println_ty.* = .{ .arrow = .{ .from = println_from, .to = println_to } };
+        const println_var_id = println_from.variable.id;
+        const println_quantified = try self.allocator.alloc(usize, 1);
+        println_quantified[0] = println_var_id;
+        try self.global.set("println", .{ .quantified = println_quantified, .body = println_ty });
+
+        const print_from = try self.newVarType("b");
+        const print_to = print_from;
+        const print_ty = try self.allocator.create(Type);
+        print_ty.* = .{ .arrow = .{ .from = print_from, .to = print_to } };
+        const print_var_id = print_from.variable.id;
+        const print_quantified = try self.allocator.alloc(usize, 1);
+        print_quantified[0] = print_var_id;
+        try self.global.set("print", .{ .quantified = print_quantified, .body = print_ty });
 
         // inspect: forall a. a -> a (polymorphic, prints and returns the value)
         const inspect_from = try self.newVarType("a");
@@ -462,6 +472,56 @@ pub const Inferer = struct {
         const quantified = try self.allocator.alloc(usize, 1);
         quantified[0] = var_id;
         try self.global.set("inspect", .{ .quantified = quantified, .body = inspect_ty });
+
+        // String module builtins
+        const string_ty = try self.newType(.string);
+        const string_to_int = try self.allocator.create(Type);
+        string_to_int.* = .{ .arrow = .{ .from = string_ty, .to = try self.newType(.int) } };
+        try self.global.set("String.length", .{ .quantified = &.{}, .body = string_to_int });
+
+        const string_string_to_string = try self.allocator.create(Type);
+        const string_param = try self.newType(.string);
+        const string_result = try self.newType(.string);
+        const inner_arrow = try self.allocator.create(Type);
+        inner_arrow.* = .{ .arrow = .{ .from = string_result, .to = try self.newType(.string) } };
+        string_string_to_string.* = .{ .arrow = .{ .from = string_param, .to = inner_arrow } };
+        try self.global.set("String.append", .{ .quantified = &.{}, .body = string_string_to_string });
+
+        const string_string_to_bool = try self.allocator.create(Type);
+        const string_param2 = try self.newType(.string);
+        const string_param3 = try self.newType(.string);
+        const inner_arrow2 = try self.allocator.create(Type);
+        inner_arrow2.* = .{ .arrow = .{ .from = string_param3, .to = try self.newType(.bool) } };
+        string_string_to_bool.* = .{ .arrow = .{ .from = string_param2, .to = inner_arrow2 } };
+        try self.global.set("String.contains", .{ .quantified = &.{}, .body = string_string_to_bool });
+
+        const string_int_to_char = try self.allocator.create(Type);
+        const string_param4 = try self.newType(.string);
+        const int_param = try self.newType(.int);
+        const inner_arrow3 = try self.allocator.create(Type);
+        inner_arrow3.* = .{ .arrow = .{ .from = int_param, .to = try self.newType(.char) } };
+        string_int_to_char.* = .{ .arrow = .{ .from = string_param4, .to = inner_arrow3 } };
+        try self.global.set("String.charAt", .{ .quantified = &.{}, .body = string_int_to_char });
+
+        const string_to_string = try self.allocator.create(Type);
+        const string_param5 = try self.newType(.string);
+        const string_result2 = try self.newType(.string);
+        string_to_string.* = .{ .arrow = .{ .from = string_param5, .to = string_result2 } };
+        try self.global.set("String.toUpperCase", .{ .quantified = &.{}, .body = string_to_string });
+        try self.global.set("String.toLowerCase", .{ .quantified = &.{}, .body = string_to_string });
+        try self.global.set("String.trim", .{ .quantified = &.{}, .body = string_to_string });
+
+        const string_string_string_to_string = try self.allocator.create(Type);
+        const string_param6 = try self.newType(.string);
+        const string_param7 = try self.newType(.string);
+        const string_param8 = try self.newType(.string);
+        const string_result3 = try self.newType(.string);
+        const inner_arrow4 = try self.allocator.create(Type);
+        inner_arrow4.* = .{ .arrow = .{ .from = string_param8, .to = string_result3 } };
+        const inner_arrow5 = try self.allocator.create(Type);
+        inner_arrow5.* = .{ .arrow = .{ .from = string_param7, .to = inner_arrow4 } };
+        string_string_string_to_string.* = .{ .arrow = .{ .from = string_param6, .to = inner_arrow5 } };
+        try self.global.set("String.replace", .{ .quantified = &.{}, .body = string_string_string_to_string });
 
         // Predeclare functions for recursion.
         for (program.definitions) |def| {
@@ -641,23 +701,28 @@ pub const Inferer = struct {
     }
 
     fn inferExpr(self: *Inferer, env: *Env, expr: *const parser.Expr) Error!*Type {
+        self.current_loc = expr.getLoc();
         return switch (expr.*) {
             .int_literal => try self.newType(.int),
             .float_literal => try self.newType(.float),
             .string_literal => try self.newType(.string),
             .char_literal => try self.newType(.char),
             .bool_literal => try self.newType(.bool),
-            .identifier => |name| blk: {
-                const scheme = self.resolveName(env, name) orelse return error.UndefinedName;
+            .identifier => |id| blk: {
+                const scheme = self.resolveName(env, id.name) orelse {
+                    return error.UndefinedName;
+                };
                 break :blk try self.instantiate(scheme);
             },
-            .constructor => |name| blk: {
-                const scheme = self.resolveName(env, name) orelse return error.UndefinedName;
+            .constructor => |c| blk: {
+                const scheme = self.resolveName(env, c.name) orelse {
+                    return error.UndefinedName;
+                };
                 break :blk try self.instantiate(scheme);
             },
-            .tuple => |items| {
-                const tys = try self.allocator.alloc(*Type, items.len);
-                for (items, 0..) |item, i| tys[i] = try self.inferExpr(env, item);
+            .tuple => |t| {
+                const tys = try self.allocator.alloc(*Type, t.items.len);
+                for (t.items, 0..) |item, i| tys[i] = try self.inferExpr(env, item);
                 return try self.newType(.{ .tuple = tys });
             },
             .record_literal => |rec| try self.inferRecordLiteral(env, rec.name, rec.fields),
@@ -668,7 +733,7 @@ pub const Inferer = struct {
             .binary_op => |b| try self.inferBinary(env, b.op, b.left, b.right),
             .let_expr => |l| try self.inferLetExpr(env, l.name, l.value, l.body, l.type_ann),
             .if_expr => |i| try self.inferIf(env, i.condition, i.then_branch, i.else_branch),
-            .block => |items| try self.inferBlock(env, items),
+            .block => |b| try self.inferBlock(env, b.items),
             .match_expr => |m| try self.inferMatch(env, m.value, m.arms),
             .comptime_expr => |inner| try self.inferExpr(env, inner),
             .pat_record => try self.newType(.unit),
@@ -729,6 +794,12 @@ pub const Inferer = struct {
                 try self.unify(ty, try self.newType(.{ .@"ref" = inner_ty }));
                 break :blk inner_ty;
             },
+            .try_op => blk: {
+                const result_ty = try self.newVarType(try self.freshName("result"));
+                const ok_ty = try self.newVarType(try self.freshName("ok"));
+                try self.unify(ty, try self.newType(.{ .con = .{ .name = "Result", .args = &.{ ok_ty, result_ty } } }));
+                break :blk ok_ty;
+            },
         };
     }
 
@@ -762,6 +833,20 @@ pub const Inferer = struct {
             },
             .pipe => blk: {
                 break :blk rt;
+            },
+            .cons => blk: {
+                // desugar: left :: right  →  Cons left right
+                const ctor_scheme = self.resolveName(env, "Cons") orelse return error.UndefinedName;
+                const ctor_ty = try self.instantiate(ctor_scheme);
+                // Cons : a -> List a -> List a
+                // Apply to left and right, return List a
+                const elem_ty = try self.newVarType(try self.freshName("elem"));
+                const list_ty = try self.newType(.{ .con = .{ .name = "List", .args = try self.allocator.dupe(*Type, &.{elem_ty}) } });
+                const expected = try self.newType(.{ .arrow = .{ .from = elem_ty, .to = try self.newType(.{ .arrow = .{ .from = list_ty, .to = list_ty } }) } });
+                try self.unify(ctor_ty, expected);
+                try self.unify(lt, elem_ty);
+                try self.unify(rt, list_ty);
+                break :blk list_ty;
             },
         };
     }
@@ -817,8 +902,8 @@ pub const Inferer = struct {
         if (object.* == .identifier or object.* == .constructor) {
             // Try dot-separated module name (e.g., Math.add)
             const obj_name = switch (object.*) {
-                .identifier => |n| n,
-                .constructor => |n| n,
+                .identifier => |id| id.name,
+                .constructor => |c| c.name,
                 else => unreachable,
             };
             const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ obj_name, field });

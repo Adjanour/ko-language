@@ -1,0 +1,54 @@
+# Function composition and combinators
+
+fn compose f g x = f (g x)
+fn id x = x
+fn flip f x y = f y x
+
+fn double x = x * 2
+fn inc x = x + 1
+fn square x = x * x
+
+fn map f xs =
+  match xs
+    | Cons x rest => Cons (f x) (map f rest)
+    | Nil => Nil
+
+fn filter f xs =
+  match xs
+    | Cons x rest =>
+      if f x then Cons x (filter f rest)
+      else filter f rest
+    | Nil => Nil
+
+fn fold f acc xs =
+  match xs
+    | Cons x rest => fold f (f acc x) rest
+    | Nil => acc
+
+fn sum xs = fold (\a x -> a + x) 0 xs
+
+type List a = Cons a (List a) | Nil
+
+fn main =
+  # Compose functions
+  let double_then_inc = compose inc double
+  let inc_then_double = compose double inc
+  println (double_then_inc 5)   # 11
+  println (inc_then_double 5)   # 12
+
+  # Pipeline with pipe operator
+  let result = 5 |> double |> inc |> square
+  println result                 # 121
+
+  # Flip arguments
+  let sub = \a b -> a - b
+  let rev_sub = flip sub
+  println (sub 10 3)            # 7
+  println (rev_sub 10 3)        # -7
+
+  # List operations
+  let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
+  let evens = filter (\x -> x % 2 == 0) nums
+  let doubled = map double evens
+  println (sum doubled)          # 12
+

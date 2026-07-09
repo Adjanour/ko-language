@@ -68,6 +68,7 @@ pub const Token = struct {
         arrow,
         backslash,
         tilde,
+        question,
 
         // Delimiters
         lparen,
@@ -79,6 +80,7 @@ pub const Token = struct {
         comma,
         colon,
         colon_equal,
+        double_colon,
         semicolon,
         dot,
         underscore,
@@ -88,8 +90,16 @@ pub const Token = struct {
 
         pub fn lexeme(tag: Tag) ?[]const u8 {
             return switch (tag) {
-                .invalid, .eof, .newline, .indent, .dedent,
-                .number, .string, .char, .identifier, .constructor,
+                .invalid,
+                .eof,
+                .newline,
+                .indent,
+                .dedent,
+                .number,
+                .string,
+                .char,
+                .identifier,
+                .constructor,
                 .comment,
                 => null,
 
@@ -135,6 +145,7 @@ pub const Token = struct {
                 .arrow => "->",
                 .backslash => "\\",
                 .tilde => "~",
+                .question => "?",
 
                 .lparen => "(",
                 .rparen => ")",
@@ -145,6 +156,7 @@ pub const Token = struct {
                 .comma => ",",
                 .colon => ":",
                 .colon_equal => ":=",
+                .double_colon => "::",
                 .semicolon => ";",
                 .dot => ".",
                 .underscore => "_",
@@ -329,25 +341,62 @@ pub const Tokenizer = struct {
                 },
 
                 // Single-char tokens
-                '(' => { result.tag = .lparen; self.index += 1; },
-                ')' => { result.tag = .rparen; self.index += 1; },
-                '{' => { result.tag = .lbrace; self.index += 1; },
-                '}' => { result.tag = .rbrace; self.index += 1; },
-                '[' => { result.tag = .lbracket; self.index += 1; },
-                ']' => { result.tag = .rbracket; self.index += 1; },
-                ',' => { result.tag = .comma; self.index += 1; },
+                '(' => {
+                    result.tag = .lparen;
+                    self.index += 1;
+                },
+                ')' => {
+                    result.tag = .rparen;
+                    self.index += 1;
+                },
+                '{' => {
+                    result.tag = .lbrace;
+                    self.index += 1;
+                },
+                '}' => {
+                    result.tag = .rbrace;
+                    self.index += 1;
+                },
+                '[' => {
+                    result.tag = .lbracket;
+                    self.index += 1;
+                },
+                ']' => {
+                    result.tag = .rbracket;
+                    self.index += 1;
+                },
+                ',' => {
+                    result.tag = .comma;
+                    self.index += 1;
+                },
                 ':' => {
                     self.index += 1;
                     if (self.source[self.index] == '=') {
                         result.tag = .colon_equal;
                         self.index += 1;
+                    } else if (self.source[self.index] == ':') {
+                        result.tag = .double_colon;
+                        self.index += 1;
                     } else {
                         result.tag = .colon;
                     }
                 },
-                ';' => { result.tag = .semicolon; self.index += 1; },
-                '.' => { result.tag = .dot; self.index += 1; },
-                '~' => { result.tag = .tilde; self.index += 1; },
+                ';' => {
+                    result.tag = .semicolon;
+                    self.index += 1;
+                },
+                '.' => {
+                    result.tag = .dot;
+                    self.index += 1;
+                },
+                '~' => {
+                    result.tag = .tilde;
+                    self.index += 1;
+                },
+                '?' => {
+                    result.tag = .question;
+                    self.index += 1;
+                },
 
                 // Multi-char operators
                 '=' => continue :state .equal,
@@ -376,7 +425,7 @@ pub const Tokenizer = struct {
             .identifier => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                'a'...'z', 'A'...'Z', '_', '0'...'9' => continue :state .identifier,
+                    'a'...'z', 'A'...'Z', '_', '0'...'9' => continue :state .identifier,
                     '-' => continue :state .identifier,
                     else => {
                         const ident = self.source[result.loc.start..self.index];
@@ -510,8 +559,14 @@ pub const Tokenizer = struct {
             .equal => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '=' => { result.tag = .equal_equal; self.index += 1; },
-                    '>' => { result.tag = .fat_arrow; self.index += 1; },
+                    '=' => {
+                        result.tag = .equal_equal;
+                        self.index += 1;
+                    },
+                    '>' => {
+                        result.tag = .fat_arrow;
+                        self.index += 1;
+                    },
                     else => result.tag = .equal,
                 }
             },
@@ -519,7 +574,10 @@ pub const Tokenizer = struct {
             .bang => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '=' => { result.tag = .not_equal; self.index += 1; },
+                    '=' => {
+                        result.tag = .not_equal;
+                        self.index += 1;
+                    },
                     else => result.tag = .not,
                 }
             },
@@ -527,7 +585,10 @@ pub const Tokenizer = struct {
             .less_than => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '=' => { result.tag = .less_equal; self.index += 1; },
+                    '=' => {
+                        result.tag = .less_equal;
+                        self.index += 1;
+                    },
                     else => result.tag = .less_than,
                 }
             },
@@ -535,7 +596,10 @@ pub const Tokenizer = struct {
             .greater_than => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '=' => { result.tag = .greater_equal; self.index += 1; },
+                    '=' => {
+                        result.tag = .greater_equal;
+                        self.index += 1;
+                    },
                     else => result.tag = .greater_than,
                 }
             },
@@ -543,8 +607,14 @@ pub const Tokenizer = struct {
             .pipe => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '|' => { result.tag = .or_or; self.index += 1; },
-                    '>' => { result.tag = .pipe_gt; self.index += 1; },
+                    '|' => {
+                        result.tag = .or_or;
+                        self.index += 1;
+                    },
+                    '>' => {
+                        result.tag = .pipe_gt;
+                        self.index += 1;
+                    },
                     else => result.tag = .pipe,
                 }
             },
@@ -552,7 +622,10 @@ pub const Tokenizer = struct {
             .minus => {
                 self.index += 1;
                 switch (self.source[self.index]) {
-                    '>' => { result.tag = .arrow; self.index += 1; },
+                    '>' => {
+                        result.tag = .arrow;
+                        self.index += 1;
+                    },
                     else => result.tag = .minus,
                 }
             },
@@ -712,7 +785,7 @@ test "comment skipping" {
 }
 
 test "indentation" {
-    var tok = Tokenizer.init("fn main =\n  42");
+    var tok = Tokenizer.init("fn main =\n   42");
     const t1 = tok.next();
     try std.testing.expectEqual(Token.Tag.keyword_fn, t1.tag);
 

@@ -1,30 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
   <rect width="1080" height="1080" fill="#0D0D1A"/>
 
-  <text x="80" y="130" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" fill="#FFFFFF" letter-spacing="-2">The 7 Rules of Kō</text>
-  <text x="80" y="185" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#A1A1AA">A language designed by stealing ideas.</text>
+  <text x="540" y="130" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="64" font-weight="800" fill="#FFFFFF" letter-spacing="-2">7 reasons Kō is different</text>
+  <text x="540" y="185" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#A1A1AA">A small language with strong opinions.</text>
 
-  <g transform="translate(80, 270)">
+  <g transform="translate(80, 260)">
     <text x="0" y="0" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">01</text>
-    <text x="70" y="0" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Functional first — no mutable state by default</text>
+    <text x="70" y="0" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Immutable by default — fewer bugs, less mental load</text>
 
     <text x="0" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">02</text>
-    <text x="70" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">No parentheses — syntax is for humans, not compilers</text>
+    <text x="70" y="80" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">No parentheses — read code as fast as prose</text>
 
     <text x="0" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">03</text>
-    <text x="70" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">ADTs over null — every type tells the truth</text>
+    <text x="70" y="160" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">ADTs over null — the compiler catches what tests miss</text>
 
     <text x="0" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">04</text>
-    <text x="70" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Comptime metaprogramming — code that writes code</text>
+    <text x="70" y="240" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Comptime metaprogramming — zero-cost abstraction</text>
 
     <text x="0" y="320" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">05</text>
-    <text x="70" y="320" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Compile to C — portable, fast, battle-tested IR</text>
+    <text x="70" y="320" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">LLVM-native — the speed of C with modern ergonomics</text>
 
     <text x="0" y="400" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">06</text>
-    <text x="70" y="400" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">15 keywords — you can fit the language in your head</text>
+    <text x="70" y="400" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">19 keywords — the whole language fits in your head</text>
 
     <text x="0" y="480" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#F59E0B" font-weight="700">07</text>
-    <text x="70" y="480" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Open source — one person's weird idea, everyone's tool</text>
+    <text x="70" y="480" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#FFFFFF">Open source — built by a human, for humans</text>
   </g>
 
   <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>

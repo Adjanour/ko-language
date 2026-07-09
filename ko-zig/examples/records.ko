@@ -1,0 +1,39 @@
+# Record types and operations
+
+type Point = { x: Int, y: Int }
+type Rect = { x: Int, y: Int, w: Int, h: Int }
+
+fn dist_sq p1 p2 =
+  let dx = p1.x - p2.x
+  let dy = p1.y - p2.y
+  dx * dx + dy * dy
+
+fn midpoint p1 p2 =
+  Point { x = (p1.x + p2.x) / 2, y = (p1.y + p2.y) / 2 }
+
+fn translate pt dx dy =
+  Point { x = pt.x + dx, y = pt.y + dy }
+
+fn area r = r.w * r.h
+fn perimeter r = 2 * (r.w + r.h)
+
+fn main =
+  let origin = Point { x = 0, y = 0 }
+  let p1 = Point { x = 3, y = 4 }
+
+  println p1.x                    # 3
+  println p1.y                    # 4
+  println (dist_sq origin p1)     # 25
+
+  let mid = midpoint origin p1
+  println mid.x                   # 1
+  println mid.y                   # 2
+
+  let moved = translate p1 10 20
+  println moved.x                 # 13
+  println moved.y                 # 24
+
+  let rect = Rect { x = 0, y = 0, w = 10, h = 5 }
+  println (area rect)             # 50
+  println (perimeter rect)        # 30
+

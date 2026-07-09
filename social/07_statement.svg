@@ -1,34 +1,32 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1080" viewBox="0 0 1080 1080">
   <rect width="1080" height="1080" fill="#0D0D1A"/>
 
-  <!-- Opening quote mark -->
   <text x="80" y="120" font-family="system-ui, -apple-system, sans-serif" font-size="80" font-weight="800" fill="#F59E0B" opacity="0.3">"</text>
 
-  <!-- Statement body -->
-  <text x="100" y="280" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="700" fill="#FFFFFF">
-    <tspan x="100" dy="0">For fun and to see what's possible,</tspan>
-    <tspan x="100" dy="55">I built a programming language.</tspan>
+  <text x="100" y="260" font-family="system-ui, -apple-system, sans-serif" font-size="42" font-weight="700" fill="#FFFFFF">
+    <tspan x="100" dy="0">I built a programming language</tspan>
+    <tspan x="100" dy="60">to prove a point.</tspan>
   </text>
 
-  <text x="100" y="450" font-family="system-ui, -apple-system, sans-serif" font-size="28" fill="#A1A1AA">
-    <tspan x="100" dy="0">Not because it's production-ready.</tspan>
-    <tspan x="100" dy="48">Not because I think AI can just</tspan>
-    <tspan x="100" dy="48">build a language.</tspan>
+  <text x="100" y="440" font-family="system-ui, -apple-system, sans-serif" font-size="30" fill="#A1A1AA">
+    <tspan x="100" dy="0">Not because Kō is production-ready today.</tspan>
+    <tspan x="100" dy="50">Or that AI can replace the craft.</tspan>
   </text>
 
-  <text x="100" y="660" font-family="system-ui, -apple-system, sans-serif" font-size="32" fill="#E4E4E7">
-    <tspan x="100" dy="0">But because I had ideas,</tspan>
-    <tspan x="100" dy="50">understood enough about how these things worked,</tspan>
-    <tspan x="100" dy="50">and believe you now have the ability</tspan>
-    <tspan x="100" dy="50">to realise a vision —</tspan>
-    <tspan x="100" dy="55" font-weight="700" fill="#F59E0B">then after actually go learn</tspan>
-    <tspan x="100" dy="55" font-weight="700" fill="#F59E0B">and build something useful.</tspan>
+  <text x="100" y="620" font-family="system-ui, -apple-system, sans-serif" font-size="34" fill="#E4E4E7">
+    <tspan x="100" dy="0">But I believe understanding plus conviction</tspan>
+    <tspan x="100" dy="55">is still enough to turn an idea into</tspan>
+    <tspan x="100" dy="55">something real. And that skill is worth</tspan>
+    <tspan x="100" dy="55">more than any generated shortcut.</tspan>
   </text>
 
-  <!-- Closing quote -->
+  <text x="100" y="870" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="800" fill="#F59E0B">
+    <tspan x="100" dy="0">Build weird things.</tspan>
+    <tspan x="100" dy="60">Then go build useful ones.</tspan>
+  </text>
+
   <text x="980" y="920" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="80" font-weight="800" fill="#F59E0B" opacity="0.3">"</text>
 
-  <!-- Footer -->
   <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>
   <text x="540" y="1024" text-anchor="middle" font-family="ui-monospace, monospace" font-size="18" fill="#52525B">github.com/Adjanour/ko-language</text>
 </svg>

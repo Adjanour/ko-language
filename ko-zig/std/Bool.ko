@@ -1,0 +1,5 @@
+# Bool.ko — Boolean operations for Kō
+# Builtins: True, False (constructors)
+# These are pre-registered and available without import.
+
+fn bool_not b = if b then False else True

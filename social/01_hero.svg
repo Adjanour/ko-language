@@ -8,16 +8,17 @@
   <rect x="880" y="48" width="160" height="44" rx="22" fill="#1A1A2E" stroke="#F59E0B" stroke-width="1.5"/>
   <text x="960" y="76" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="18" font-weight="600" fill="#F59E0B">vibecoded</text>
 
-  <text x="540" y="450" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="140" font-weight="800" fill="#FFFFFF" letter-spacing="-4">I'm Kō.</text>
+  <text x="540" y="420" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="132" font-weight="800" fill="#FFFFFF" letter-spacing="-4">Kō.</text>
+  <text x="540" y="510" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="40" font-weight="700" fill="#F59E0B" letter-spacing="-1">Functional code that runs fast.</text>
 
-  <text x="540" y="560" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="36" font-weight="400" fill="#A1A1AA" letter-spacing="2">A functional language that compiles to C</text>
+  <text x="540" y="590" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="28" font-weight="400" fill="#A1A1AA" letter-spacing="1">No parentheses. No null. No runtime crashes. Just native binaries.</text>
 
-  <g transform="translate(540, 690)">
-    <text x="-200" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">15 keywords</text>
-    <circle cx="-90" cy="-5" r="3" fill="#52525B"/>
-    <text x="0" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">ADTs</text>
-    <circle cx="90" cy="-5" r="3" fill="#52525B"/>
-    <text x="200" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" fill="#52525B">comptime</text>
+  <g transform="translate(540, 720)">
+    <text x="-220" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#F59E0B">19 keywords</text>
+    <circle cx="-110" cy="-8" r="3" fill="#52525B"/>
+    <text x="0" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#F59E0B">ADTs</text>
+    <circle cx="110" cy="-8" r="3" fill="#52525B"/>
+    <text x="220" y="0" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#F59E0B">Native</text>
   </g>
 
   <line x1="80" y1="980" x2="1000" y2="980" stroke="#27272A" stroke-width="1"/>

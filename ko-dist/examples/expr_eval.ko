@@ -1,0 +1,48 @@
+# Expression evaluator — tree-walking interpreter
+
+type Expr = Lit Int | Add Expr Expr | Sub Expr Expr | Mul Expr Expr | Neg Expr
+
+fn eval expr =
+  match expr
+    | Lit n => n
+    | Add a b => eval a + eval b
+    | Sub a b => eval a - eval b
+    | Mul a b => eval a * eval b
+    | Neg e => 0 - eval e
+
+fn max a b = if a > b then a else b
+
+fn depth expr =
+  match expr
+    | Lit _ => 1
+    | Add a b => 1 + max (depth a) (depth b)
+    | Sub a b => 1 + max (depth a) (depth b)
+    | Mul a b => 1 + max (depth a) (depth b)
+    | Neg e => 1 + depth e
+
+fn sum_literals expr =
+  match expr
+    | Lit n => n
+    | Add a b => sum_literals a + sum_literals b
+    | Sub a b => sum_literals a + sum_literals b
+    | Mul a b => sum_literals a + sum_literals b
+    | Neg e => sum_literals e
+
+fn main =
+  # (2 + 3) * 4
+  let expr1 = Mul (Add (Lit 2) (Lit 3)) (Lit 4)
+  println (eval expr1)          # 20
+  println (depth expr1)         # 3
+
+  # (10 - 3) * (7 + 1)
+  let expr2 = Mul (Sub (Lit 10) (Lit 3)) (Add (Lit 7) (Lit 1))
+  println (eval expr2)          # 56
+
+  # -(5 + 3)
+  let expr3 = Neg (Add (Lit 5) (Lit 3))
+  println (eval expr3)          # -8
+
+  println (sum_literals expr1)  # 9
+  println (sum_literals expr2)  # 21
+  println 4
+

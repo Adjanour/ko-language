@@ -25,6 +25,13 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(ko_exe);
 
+    // REPL step
+    const repl_cmd = b.addRunArtifact(ko_exe);
+    repl_cmd.step.dependOn(b.getInstallStep());
+    repl_cmd.addArgs(&.{"--repl"});
+    const repl_step = b.step("repl", "Run the Kō REPL");
+    repl_step.dependOn(&repl_cmd.step);
+
     // Kō LSP server (no LLVM dependency)
     const ko_lsp = b.addExecutable(.{
         .name = "ko-lsp",

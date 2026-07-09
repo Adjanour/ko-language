@@ -1,3 +1,10 @@
+pub const Loc = struct {
+    line: usize = 0,
+    col: usize = 0,
+    end_line: usize = 0,
+    end_col: usize = 0,
+};
+
 pub const Literal = union(enum) {
     int: i64,
     float: f64,
@@ -38,12 +45,14 @@ pub const FnCallExpr = struct {
     func: *Expr,
     args: []const *Expr,
     named_args: []const NamedArg,
+    loc: Loc = .{},
 };
 
 pub const IfExpr = struct {
     condition: *Expr,
     then_branch: *Expr,
     else_branch: ?*Expr,
+    loc: Loc = .{},
 };
 
 pub const LetExprExpr = struct {
@@ -51,6 +60,8 @@ pub const LetExprExpr = struct {
     type_ann: ?TypeExpr,
     value: *Expr,
     body: *Expr,
+    loc: Loc = .{},
+    pattern: ?Pattern = null,
 };
 
 pub const MatchArm = struct {
@@ -73,6 +84,7 @@ pub const BinaryOp = enum {
     and_op,
     or_op,
     pipe,
+    cons,
 };
 
 pub const UnaryOp = enum {
@@ -80,6 +92,7 @@ pub const UnaryOp = enum {
     not,
     ref,
     deref,
+    try_op,
 };
 
 pub const Expr = union(enum) {
@@ -88,23 +101,69 @@ pub const Expr = union(enum) {
     string_literal: []const u8,
     char_literal: []const u8,
     bool_literal: bool,
-    identifier: []const u8,
-    constructor: []const u8,
-    record_literal: struct { name: []const u8, fields: []const NamedArg },
-    tuple: []const *Expr,
-    block: []const *Expr,
-    field_access: struct { object: *Expr, field: []const u8 },
+    identifier: struct { name: []const u8, loc: Loc = .{} },
+    constructor: struct { name: []const u8, loc: Loc = .{} },
+    record_literal: struct { name: []const u8, fields: []const NamedArg, loc: Loc = .{} },
+    tuple: struct { items: []const *Expr, loc: Loc = .{} },
+    block: struct { items: []const *Expr, loc: Loc = .{} },
+    field_access: struct { object: *Expr, field: []const u8, loc: Loc = .{} },
     fn_call: FnCallExpr,
-    lambda: struct { params: []const Pattern, body: *Expr },
+    lambda: struct { params: []const Pattern, body: *Expr, loc: Loc = .{} },
     comptime_expr: *Expr,
-    unary_op: struct { op: UnaryOp, expr: *Expr },
-    binary_op: struct { op: BinaryOp, left: *Expr, right: *Expr },
+    unary_op: struct { op: UnaryOp, expr: *Expr, loc: Loc = .{} },
+    binary_op: struct { op: BinaryOp, left: *Expr, right: *Expr, loc: Loc = .{} },
     let_expr: LetExprExpr,
     if_expr: IfExpr,
-    match_expr: struct { value: *Expr, arms: []const MatchArm },
-    assign_expr: struct { target: *Expr, value: *Expr },
+    match_expr: struct { value: *Expr, arms: []const MatchArm, loc: Loc = .{} },
+    assign_expr: struct { target: *Expr, value: *Expr, loc: Loc = .{} },
     ref_expr: *Expr,
-    pat_record: struct { name: []const u8, bindings: []const []const u8, rest: bool },
+    pat_record: struct { name: []const u8, bindings: []const []const u8, rest: bool, loc: Loc = .{} },
+
+    pub fn getLoc(self: *const Expr) Loc {
+        return switch (self.*) {
+            .int_literal, .float_literal, .bool_literal, .string_literal, .char_literal => .{},
+            .identifier => |id| id.loc,
+            .constructor => |c| c.loc,
+            .record_literal => |r| r.loc,
+            .tuple => |t| t.loc,
+            .block => |b| b.loc,
+            .field_access => |fa| fa.loc,
+            .fn_call => |call| call.loc,
+            .lambda => |lam| lam.loc,
+            .comptime_expr => |inner| inner.getLoc(),
+            .unary_op => |u| u.loc,
+            .binary_op => |b| b.loc,
+            .let_expr => |l| l.loc,
+            .if_expr => |i| i.loc,
+            .match_expr => |m| m.loc,
+            .assign_expr => |a| a.loc,
+            .ref_expr => |inner| inner.getLoc(),
+            .pat_record => |r| r.loc,
+        };
+    }
+
+    pub fn setLoc(self: *Expr, loc: Loc) void {
+        switch (self.*) {
+            .int_literal, .float_literal, .bool_literal, .string_literal, .char_literal => {},
+            .identifier => |*id| id.loc = loc,
+            .constructor => |*c| c.loc = loc,
+            .record_literal => |*r| r.loc = loc,
+            .tuple => |*t| t.loc = loc,
+            .block => |*b| b.loc = loc,
+            .field_access => |*fa| fa.loc = loc,
+            .fn_call => |*call| call.loc = loc,
+            .lambda => |*lam| lam.loc = loc,
+            .comptime_expr => |inner| inner.setLoc(loc),
+            .unary_op => |*u| u.loc = loc,
+            .binary_op => |*b| b.loc = loc,
+            .let_expr => |*l| l.loc = loc,
+            .if_expr => |*i| i.loc = loc,
+            .match_expr => |*m| m.loc = loc,
+            .assign_expr => |*a| a.loc = loc,
+            .ref_expr => |inner| inner.setLoc(loc),
+            .pat_record => |*r| r.loc = loc,
+        }
+    }
 };
 
 pub const Constructor = struct {
@@ -141,6 +200,7 @@ pub const FnDef = struct {
     is_pub: bool,
     is_comptime: bool,
     doc_comments: ?[]const []const u8 = null,
+    loc: Loc = .{},
 };
 
 pub const LetBinding = struct {
@@ -149,6 +209,7 @@ pub const LetBinding = struct {
     value: *Expr,
     is_pub: bool,
     doc_comments: ?[]const []const u8 = null,
+    loc: Loc = .{},
 };
 
 pub const Import = struct {
@@ -182,5 +243,3 @@ pub const Program = struct {
     definitions: []const Definition,
     package: ?[]const []const u8,
 };
-
-

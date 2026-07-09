@@ -1,0 +1,31 @@
+# 46_math.ko — Test math builtins
+
+fn assert_eq actual expected =
+  if actual == expected then 1
+  else 0
+
+# Integer math builtins
+println (Int.pow 2 10)
+println (Int.pow 3 0)
+println (Int.pow 5 3)
+
+println (Int.gcd 12 8)
+println (Int.gcd 7 5)
+println (Int.gcd 100 75)
+
+println (Int.lcm 4 6)
+println (Int.lcm 3 5)
+println (Int.lcm 0 5)
+
+println (Int.factorial 0)
+println (Int.factorial 1)
+println (Int.factorial 5)
+println (Int.factorial 10)
+
+println (Int.isqrt 0)
+println (Int.isqrt 1)
+println (Int.isqrt 4)
+println (Int.isqrt 9)
+println (Int.isqrt 10)
+println (Int.isqrt 100)
+println (Int.isqrt 99)

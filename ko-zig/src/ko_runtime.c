@@ -1,92 +1,110 @@
+// ko_runtime.c — Minimal C runtime stub for AOT linking
+//
+// All Kō builtins are now generated as LLVM IR by stdlib_codegen.zig.
+// This file exists only to provide libc linkage during AOT compilation.
+// The only external symbols needed are from libc: printf, malloc, free, etc.
+
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
-// ============================================================
-// Reference counting
-// ============================================================
-// Every heap-allocated Kō object has an i64 RC header before the data.
-// Memory layout: [ i64 rc ][ ... user data ... ]
-// The pointer passed around in Kō code points to the user data (after the header).
+// Empty stub — all Kō functions are now LLVM IR.
+// This file is compiled by gcc and linked with the object file to provide libc.
 
-#define RC_OFFSET 8
+// String builtins
+int64_t ko_string_contains(const char* haystack, const char* needle) {
+    if (!haystack || !needle) return 0;
+    return strstr(haystack, needle) != NULL;
+}
 
-// Allocate a heap object with RC header. Returns pointer to user data area.
-// user_size = size of the user data (excluding the RC header).
-void *ko_alloc(int64_t user_size) {
-    void *raw = malloc(RC_OFFSET + user_size);
-    if (!raw) {
-        fprintf(stderr, "ko: out of memory\n");
-        exit(1);
+int64_t ko_string_char_at(const char* str, int64_t index) {
+    if (!str || index < 0) return 0;
+    int64_t len = strlen(str);
+    if (index >= len) return 0;
+    return (int64_t)(unsigned char)str[index];
+}
+
+const char* ko_string_to_upper(const char* str) {
+    if (!str) return str;
+    int64_t len = strlen(str);
+    char* result = malloc(len + 1);
+    if (!result) return str;
+    for (int64_t i = 0; i < len; i++) {
+        result[i] = toupper((unsigned char)str[i]);
     }
-    int64_t *rc_ptr = (int64_t *)raw;
-    *rc_ptr = 1; // initial refcount = 1
-    return (char *)raw + RC_OFFSET;
+    result[len] = '\0';
+    return result;
 }
 
-// Increment reference count.
-void *ko_incref(void *ptr) {
-    if (!ptr) return ptr;
-    int64_t *rc_ptr = (int64_t *)((char *)ptr - RC_OFFSET);
-    (*rc_ptr)++;
-    return ptr;
-}
-
-// Decrement reference count. Free if it reaches 0.
-void ko_decref(void *ptr) {
-    if (!ptr) return;
-    int64_t *rc_ptr = (int64_t *)((char *)ptr - RC_OFFSET);
-    (*rc_ptr)--;
-    if (*rc_ptr <= 0) {
-        free(rc_ptr);
+const char* ko_string_to_lower(const char* str) {
+    if (!str) return str;
+    int64_t len = strlen(str);
+    char* result = malloc(len + 1);
+    if (!result) return str;
+    for (int64_t i = 0; i < len; i++) {
+        result[i] = tolower((unsigned char)str[i]);
     }
+    result[len] = '\0';
+    return result;
 }
 
-// Get current reference count (for debugging).
-int64_t ko_get_rc(void *ptr) {
-    if (!ptr) return 0;
-    int64_t *rc_ptr = (int64_t *)((char *)ptr - RC_OFFSET);
-    return *rc_ptr;
-}
-
-int64_t println(int64_t val) {
-    printf("%ld\n", val);
-    return 0;
-}
-
-int64_t print(int64_t val) {
-    printf("%ld", val);
-    return 0;
-}
-
-// Type tags for inspect:
-// 0=int, 1=float, 2=bool, 3=char, 4=string, 5=unit,
-// 6=constructor, 7=record, 8=function, 9=tuple, 100=unknown
-int64_t inspect(int64_t val, int64_t type_tag, const char *name_ptr) {
-    switch (type_tag) {
-        case 0: printf("%ld", val); break;
-        case 1: {
-            double f;
-            memcpy(&f, &val, sizeof(double));
-            printf("%f", f);
-            break;
-        }
-        case 2: printf("%s", val == 0 ? "False" : "True"); break;
-        case 3: printf("'%c'", (char)val); break;
-        case 4: printf("\"%s\"", (const char *)(intptr_t)val); break;
-        case 5: printf("()"); break;
-        case 6:
-            if (name_ptr) printf("%s", name_ptr);
-            else printf("Constructor(%ld)", val);
-            break;
-        case 7:
-            if (name_ptr) printf("%s { ... }", name_ptr);
-            else printf("Record(%ld)", val);
-            break;
-        case 8: printf("<fn>"); break;
-        case 9: printf("(%ld)", val); break;
-        default: printf("%ld", val); break;
+const char* ko_string_trim(const char* str) {
+    if (!str) return str;
+    int64_t len = strlen(str);
+    int64_t start = 0;
+    while (start < len && isspace((unsigned char)str[start])) {
+        start++;
     }
-    return val;
+    int64_t end = len - 1;
+    while (end >= start && isspace((unsigned char)str[end])) {
+        end--;
+    }
+    int64_t new_len = end - start + 1;
+    if (new_len <= 0) {
+        char* empty = malloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+    char* result = malloc(new_len + 1);
+    if (!result) return str;
+    memcpy(result, str + start, new_len);
+    result[new_len] = '\0';
+    return result;
+}
+
+const char* ko_string_replace(const char* str, const char* from, const char* to) {
+    if (!str || !from || !to) return str;
+    int64_t from_len = strlen(from);
+    if (from_len == 0) return str;
+    
+    // Count occurrences
+    int64_t count = 0;
+    const char* pos = str;
+    while ((pos = strstr(pos, from)) != NULL) {
+        count++;
+        pos += from_len;
+    }
+    if (count == 0) return str;
+    
+    int64_t str_len = strlen(str);
+    int64_t to_len = strlen(to);
+    int64_t new_len = str_len + count * (to_len - from_len);
+    char* result = malloc(new_len + 1);
+    if (!result) return str;
+    
+    char* dst = result;
+    const char* src = str;
+    const char* match;
+    while ((match = strstr(src, from)) != NULL) {
+        int64_t segment_len = match - src;
+        memcpy(dst, src, segment_len);
+        dst += segment_len;
+        memcpy(dst, to, to_len);
+        dst += to_len;
+        src = match + from_len;
+    }
+    strcpy(dst, src);
+    return result;
 }
