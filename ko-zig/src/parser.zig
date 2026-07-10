@@ -29,6 +29,11 @@ pub const Loc = ast.Loc;
 
 pub const Parser = struct {
     pub const Error = error{ UnexpectedToken, OutOfMemory, InvalidCharacter, Overflow, InvalidBase };
+
+    pub const ErrorContext = struct {
+        message: []const u8,
+        loc: Loc,
+    };
     const top_level_stops = &.{
         .keyword_fn,
         .keyword_type,
@@ -36,6 +41,7 @@ pub const Parser = struct {
         .keyword_module,
         .keyword_import,
         .keyword_pub,
+        .keyword_comptime,
     };
 
     const fn_body_stops = &.{
@@ -44,6 +50,7 @@ pub const Parser = struct {
         .keyword_module,
         .keyword_import,
         .keyword_pub,
+        .keyword_comptime,
     };
 
     allocator: std.mem.Allocator,
@@ -52,6 +59,7 @@ pub const Parser = struct {
     pos: usize,
     allow_let_in_body: bool = false,
     pending_doc_comments: std.ArrayList([]const u8) = .empty,
+    last_error: ?ErrorContext = null,
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Error!Parser {
         var tok = lexer.Tokenizer.init(source);
@@ -92,8 +100,35 @@ pub const Parser = struct {
     }
 
     fn expect(self: *Parser, tag: lexer.Token.Tag) !lexer.Token {
-        if (self.current().tag != tag) return error.UnexpectedToken;
+        if (self.current().tag != tag) {
+            const found = self.current();
+            const expected_name = tag.humanName();
+            const found_name = found.tag.humanName();
+            const loc = self.tokenLoc(found);
+            if (found.tag == .identifier or found.tag == .constructor) {
+                const text = self.slice(found);
+                self.last_error = .{
+                    .message = std.fmt.allocPrint(self.allocator, "expected {s}, got '{s}' ({s})", .{ expected_name, text, found_name }) catch "unexpected token",
+                    .loc = loc,
+                };
+            } else {
+                self.last_error = .{
+                    .message = std.fmt.allocPrint(self.allocator, "expected {s}, got {s}", .{ expected_name, found_name }) catch "unexpected token",
+                    .loc = loc,
+                };
+            }
+            return error.UnexpectedToken;
+        }
         return self.advance();
+    }
+
+    fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) Error {
+        const loc = self.tokenLoc(self.current());
+        self.last_error = .{
+            .message = std.fmt.allocPrint(self.allocator, fmt, args) catch "unexpected token",
+            .loc = loc,
+        };
+        return error.UnexpectedToken;
     }
 
     fn slice(self: *Parser, token: lexer.Token) []const u8 {
@@ -252,7 +287,7 @@ pub const Parser = struct {
                     try defs.append(self.allocator, .{ .let_binding = .{ .name = name, .type_ann = null, .value = value, .is_pub = true, .doc_comments = doc } });
                     continue;
                 }
-                return error.UnexpectedToken;
+                return self.fail("expected 'fn', 'type', 'let', or definition after 'pub'", .{});
             }
 
             switch (self.current().tag) {
@@ -286,13 +321,13 @@ pub const Parser = struct {
                         try defs.append(self.allocator, .{ .fn_def = fn_def });
                         continue;
                     }
-                    return error.UnexpectedToken;
+                    return self.fail("expected 'fn' after 'comptime'", .{});
                 },
                 .identifier, .number, .string, .char, .keyword_true, .keyword_false,
                 .lparen, .keyword_if, .keyword_match, .backslash, .keyword_ref, .minus, .keyword_not => {
                     try trailing.append(self.allocator, try self.parse_expr());
                 },
-                else => return error.UnexpectedToken,
+                else => return self.fail("unexpected token at top level", .{}),
             }
             self.skip_layout();
         }
@@ -340,12 +375,12 @@ pub const Parser = struct {
             try parts.append(self.allocator, self.slice(self.advance()));
         } else {
             const name_token = self.current();
-            if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
+            if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected module name after 'import'", .{});
             try parts.append(self.allocator, self.slice(self.advance()));
             while (self.match(.dot)) {
                 if (self.current().tag == .lbrace or self.current().tag == .keyword_as) break;
                 const part_token = self.current();
-                if (part_token.tag != .identifier and part_token.tag != .constructor) return error.UnexpectedToken;
+                if (part_token.tag != .identifier and part_token.tag != .constructor) return self.fail("expected module path component", .{});
                 try parts.append(self.allocator, self.slice(self.advance()));
             }
         }
@@ -357,7 +392,7 @@ pub const Parser = struct {
             defer sels.deinit(self.allocator);
             while (self.current().tag != .rbrace) {
                 const sel_token = self.current();
-                if (sel_token.tag != .identifier and sel_token.tag != .constructor) return error.UnexpectedToken;
+                if (sel_token.tag != .identifier and sel_token.tag != .constructor) return self.fail("expected name in selective import", .{});
                 try sels.append(self.allocator, self.slice(self.advance()));
                 if (self.current().tag != .rbrace) _ = try self.expect(.comma);
             }
@@ -387,7 +422,7 @@ pub const Parser = struct {
     fn parse_module_def(self: *Parser) Error!ModuleDef {
         _ = try self.expect(.keyword_module);
         const name_token = self.current();
-        if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
+        if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected module name", .{});
         const name = self.slice(self.advance());
         const defs = try self.parse_block_defs();
         // Consume the dedent that ends the module block
@@ -454,7 +489,7 @@ pub const Parser = struct {
     fn parse_type_def(self: *Parser) Error!TypeDef {
         _ = try self.expect(.keyword_type);
         const name_token = self.current();
-        if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
+        if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected type name", .{});
         const name = self.slice(self.advance());
         var type_params: std.ArrayList([]const u8) = .empty;
         defer type_params.deinit(self.allocator);
@@ -516,7 +551,7 @@ pub const Parser = struct {
 
     fn parse_constructor(self: *Parser) Error!Constructor {
         const name_token = self.current();
-        if (name_token.tag != .identifier and name_token.tag != .constructor) return error.UnexpectedToken;
+        if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected constructor name", .{});
         const name = self.slice(self.advance());
         var params: std.ArrayList(TypeExpr) = .empty;
         defer params.deinit(self.allocator);
@@ -629,11 +664,28 @@ pub const Parser = struct {
 
     fn parse_let_expr_in_block(self: *Parser, stop_tags: []const lexer.Token.Tag) Error!*Expr {
         _ = try self.expect(.keyword_let);
-        const name = self.slice(try self.expect(.identifier));
+        var name: []const u8 = "";
         var type_ann: ?TypeExpr = null;
-        if (self.match(.colon)) {
-            type_ann = try self.parse_type_expr();
+        var pattern: ?Pattern = null;
+
+        if (self.current().tag == .lparen) {
+            // Tuple destructuring: let (x, y) = ...
+            _ = self.advance();
+            var items: std.ArrayList(Pattern) = .empty;
+            defer items.deinit(self.allocator);
+            try items.append(self.allocator, try self.parse_pattern());
+            while (self.match(.comma)) {
+                try items.append(self.allocator, try self.parse_pattern());
+            }
+            _ = try self.expect(.rparen);
+            pattern = .{ .tuple = try self.allocSlice(Pattern, items.items) };
+        } else {
+            name = self.slice(try self.expect(.identifier));
+            if (self.match(.colon)) {
+                type_ann = try self.parse_type_expr();
+            }
         }
+
         _ = try self.expect(.equal);
         const value = try self.parse_expr();
 
@@ -649,7 +701,7 @@ pub const Parser = struct {
             body = try self.parse_block(fn_body_stops);
             self.allow_let_in_body = prev;
         }
-        return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body } }, self.tokenLoc(self.current()));
+        return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body, .pattern = pattern } }, self.tokenLoc(self.current()));
     }
 
     // =========================================================================
@@ -719,7 +771,7 @@ pub const Parser = struct {
                 _ = try self.expect(.rbrace);
                 return .{ .record = try self.allocSlice(RecordField, fields.items) };
             },
-            else => return error.UnexpectedToken,
+            else => return self.fail("expected type expression", .{}),
         }
     }
 
@@ -774,8 +826,8 @@ pub const Parser = struct {
 
     fn parse_cons(self: *Parser) Error!*Expr {
         var left = try self.parse_or();
-        while (self.match(.double_colon)) {
-            const right = try self.parse_or();
+        if (self.match(.double_colon)) {
+            const right = try self.parse_cons();
             left = try self.newExpr(.{ .binary_op = .{ .op = .cons, .left = left, .right = right } }, self.tokenLoc(self.current()));
         }
         return left;
@@ -890,7 +942,7 @@ pub const Parser = struct {
         while (true) {
             if (self.match(.dot)) {
                 const tag = self.current().tag;
-                if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
+                if (tag != .identifier and tag != .constructor) return self.fail("expected field name after '.'", .{});
                 const field_tok = self.current();
                 const field = self.slice(field_tok);
                 _ = self.advance();
@@ -908,6 +960,12 @@ pub const Parser = struct {
                 }
             }
 
+            // Postfix ? operator (try/unwrap Result)
+            if (self.match(.question)) {
+                expr = try self.newExpr(.{ .unary_op = .{ .op = .try_op, .expr = expr } }, self.tokenLoc(self.current()));
+                continue;
+            }
+
             break;
         }
         return expr;
@@ -918,7 +976,7 @@ pub const Parser = struct {
         while (true) {
             if (self.match(.dot)) {
                 const tag = self.current().tag;
-                if (tag != .identifier and tag != .constructor) return error.UnexpectedToken;
+                if (tag != .identifier and tag != .constructor) return self.fail("expected field name after '.'", .{});
                 const field_tok = self.current();
                 const field = self.slice(field_tok);
                 _ = self.advance();
@@ -935,6 +993,13 @@ pub const Parser = struct {
                     expr = try self.parse_record_literal(combined);
                     continue;
                 }
+            }
+
+            // Postfix ? operator (try/unwrap Result) — binds tighter than application
+            if (self.current().tag == .question) {
+                _ = self.advance();
+                expr = try self.newExpr(.{ .unary_op = .{ .op = .try_op, .expr = expr } }, self.tokenLoc(self.current()));
+                continue;
             }
 
             if (!is_expr_start(self.current().tag) and self.current().tag != .tilde) break;
@@ -1010,7 +1075,7 @@ pub const Parser = struct {
             .keyword_comptime => return self.parse_comptime(),
             .keyword_if => return self.parse_if(),
             .keyword_match => return self.parse_match(),
-            else => return error.UnexpectedToken,
+            else => return self.fail("expected expression", .{}),
         }
     }
 
@@ -1130,7 +1195,7 @@ pub const Parser = struct {
                 switch (lit.*) {
                     .int_literal => |v| return .{ .literal = .{ .int = v } },
                     .float_literal => |v| return .{ .literal = .{ .float = v } },
-                    else => return error.UnexpectedToken,
+                else => return self.fail("unexpected token at top level", .{}),
                 }
             },
             .string => {
@@ -1178,7 +1243,7 @@ pub const Parser = struct {
                 if (items.items.len == 1) return items.items[0];
                 return .{ .tuple = try self.allocSlice(Pattern, items.items) };
             },
-            else => return error.UnexpectedToken,
+            else => return self.fail("expected pattern", .{}),
         }
     }
 

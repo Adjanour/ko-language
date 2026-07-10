@@ -117,12 +117,13 @@ pub const Codegen = struct {
         const size_val = self.storeSize(tagged_type);
         var alloc_args: [1]types.LLVMValueRef = .{size_val};
         const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "box_alloc");
-        self.trackHeapAlloc(raw_ptr);
+        const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "boxed_ctor");
+        self.trackHeapAlloc(result);
         const tag_val = core.LLVMConstInt(i64_type, @bitCast(tag), 0);
         var tag_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
         const tag_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, raw_ptr, @ptrCast(&tag_gep), 2, "tag_ptr");
         _ = core.LLVMBuildStore(self.builder, tag_val, tag_ptr);
-        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "boxed_ctor");
+        return result;
     }
 
     /// Emit ko_decref(ptr) call for a heap-allocated value.
@@ -817,9 +818,10 @@ pub const Codegen = struct {
         const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
         const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
         const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "ref_alloc");
-        self.trackHeapAlloc(raw_ptr);
+        const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "ref_val");
+        self.trackHeapAlloc(result);
         _ = core.LLVMBuildStore(self.builder, val, raw_ptr);
-        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "ref_val");
+        return result;
     }
 
     /// Create a global string constant and return a pointer to it as LLVMValueRef
@@ -906,7 +908,8 @@ pub const Codegen = struct {
         const alloc_fn = self.named_values.get("ko_alloc") orelse return error.UndefinedVariable;
         const alloc_fn_type = core.LLVMGlobalGetValueType(alloc_fn);
         const closure_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "closure");
-        self.trackHeapAlloc(closure_ptr);
+        const closure_i64 = core.LLVMBuildPtrToInt(self.builder, closure_ptr, i64_type, "closure_as_int");
+        self.trackHeapAlloc(closure_i64);
 
         // Store fn_ptr at offset 0
         const fn_ptr_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 0, 0)}), 1, "fn_ptr_ptr");
@@ -922,10 +925,11 @@ pub const Codegen = struct {
 
         // Store applied args at offsets 24+
         for (applied_args, 0..) |arg, i| {
-            // Mark heap values stored in the closure as consumed (closure takes ownership)
+            // Inc ref when storing in closure (parent takes shared ownership)
             if (self.scope_heap_values.items.len > 0) {
                 for (self.scope_heap_values.items) |hv| {
                     if (hv == arg) {
+                        self.emitIncref(arg);
                         self.markConsumed(arg);
                         break;
                     }
@@ -937,7 +941,6 @@ pub const Codegen = struct {
         }
 
         // Return closure pointer with bit 0 set (tag for partial application)
-        const closure_i64 = core.LLVMBuildPtrToInt(self.builder, closure_ptr, i64_type, "closure_as_int");
         return core.LLVMBuildOr(self.builder, closure_i64, core.LLVMConstInt(i64_type, 1, 0), "tagged_closure");
     }
 
@@ -963,10 +966,11 @@ pub const Codegen = struct {
                             }
                         }
                     }
-                    // Mark heap values stored in the constructor as consumed (parent takes ownership)
+                    // Inc ref when storing in constructor (parent takes shared ownership)
                     if (self.scope_heap_values.items.len > 0) {
                         for (self.scope_heap_values.items) |hv| {
                             if (hv == arg_val) {
+                                self.emitIncref(arg_val);
                                 self.markConsumed(arg_val);
                                 break;
                             }
@@ -982,7 +986,8 @@ pub const Codegen = struct {
                     const size_val = self.storeSize(tagged_type);
                     var alloc_args: [1]types.LLVMValueRef = .{size_val};
                     const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tagged_alloc");
-                    self.trackHeapAlloc(raw_ptr);
+                    const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tagged_ptr");
+                    self.trackHeapAlloc(result);
                     // Store tag + value
                     const tag_val = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
                     var tag_gep_indices: [2]types.LLVMValueRef = .{
@@ -997,8 +1002,7 @@ pub const Codegen = struct {
                     };
                     const val_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, raw_ptr, @ptrCast(&val_gep_indices), 2, "val_ptr");
                     _ = core.LLVMBuildStore(self.builder, arg_val, val_ptr);
-                    // Return pointer as i64
-                    return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tagged_ptr");
+                    return result;
                 }
                 // Multi-arg constructors: allocate tagged struct on heap with tag + all args
                 var struct_fields: [33]types.LLVMTypeRef = undefined;
@@ -1014,10 +1018,11 @@ pub const Codegen = struct {
                             }
                         }
                     }
-                    // Mark heap values stored in the constructor as consumed (parent takes ownership)
+                    // Inc ref when storing in constructor (parent takes shared ownership)
                     if (self.scope_heap_values.items.len > 0) {
                         for (self.scope_heap_values.items) |hv| {
                             if (hv == arg_val) {
+                                self.emitIncref(arg_val);
                                 self.markConsumed(arg_val);
                                 break;
                             }
@@ -1033,7 +1038,8 @@ pub const Codegen = struct {
                 const size_val = self.storeSize(tagged_type);
                 var alloc_args: [1]types.LLVMValueRef = .{size_val};
                 const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tagged_alloc");
-                self.trackHeapAlloc(raw_ptr);
+                const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tagged_ptr");
+                self.trackHeapAlloc(result);
                 // Store tag at index 0
                 const tag_val = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
                 var tag_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
@@ -1045,7 +1051,7 @@ pub const Codegen = struct {
                     const val_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, raw_ptr, @ptrCast(&val_gep), 2, "val_ptr");
                     _ = core.LLVMBuildStore(self.builder, arg_vals[i], val_ptr);
                 }
-                return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tagged_ptr");
+                return result;
             }
         }
 
@@ -1418,15 +1424,17 @@ pub const Codegen = struct {
         const fn_type = core.LLVMGlobalGetValueType(alloc_fn);
         var alloc_args: [1]types.LLVMValueRef = .{size_val};
         const raw_ptr = core.LLVMBuildCall2(self.builder, fn_type, alloc_fn, &alloc_args, 1, "record_alloc");
-        self.trackHeapAlloc(raw_ptr);
+        const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "record_ptr");
+        self.trackHeapAlloc(result);
 
         // Store each field (raw_ptr is already ptr type)
         for (fields, 0..) |field, i| {
             const field_val = try self.codegenExpr(field.value);
-            // Mark heap values stored in the record as consumed (parent takes ownership)
+            // Inc ref when storing in record (parent takes shared ownership)
             if (self.scope_heap_values.items.len > 0) {
                 for (self.scope_heap_values.items) |hv| {
                     if (hv == field_val) {
+                        self.emitIncref(field_val);
                         self.markConsumed(field_val);
                         break;
                     }
@@ -1449,7 +1457,7 @@ pub const Codegen = struct {
         }
 
         // Return pointer as i64
-        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "record_ptr");
+        return result;
     }
 
     fn comptimeValueToLlvm(self: *Codegen, val: comptime_mod.ComptimeValue) types.LLVMValueRef {
@@ -1567,14 +1575,16 @@ pub const Codegen = struct {
         const size = core.LLVMConstInt(i64_type, elems.len * 8, 0);
         var alloc_args: [1]types.LLVMValueRef = .{size};
         const raw_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, &alloc_args, 1, "tuple_alloc");
-        self.trackHeapAlloc(raw_ptr);
+        const result = core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tuple_ptr");
+        self.trackHeapAlloc(result);
 
         for (elems, 0..) |elem, i| {
             const val = try self.codegenExpr(elem);
-            // Mark heap values stored in the tuple as consumed (parent takes ownership)
+            // Inc ref when storing in tuple (parent takes shared ownership)
             if (self.scope_heap_values.items.len > 0) {
                 for (self.scope_heap_values.items) |hv| {
                     if (hv == val) {
+                        self.emitIncref(val);
                         self.markConsumed(val);
                         break;
                     }
@@ -1585,7 +1595,7 @@ pub const Codegen = struct {
             const elem_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), raw_ptr, @constCast(&[_]types.LLVMValueRef{offset}), 1, "elem_off");
             _ = core.LLVMBuildStore(self.builder, val, elem_ptr);
         }
-        return core.LLVMBuildPtrToInt(self.builder, raw_ptr, i64_type, "tuple_ptr");
+        return result;
     }
 
     // =========================================================================
@@ -1812,7 +1822,8 @@ pub const Codegen = struct {
         const struct_size = 8 + 8 * @as(i64, @intCast(captured_names.items.len));
         const alloc_size = core.LLVMConstInt(i64_type, @bitCast(struct_size), 0);
         const closure_ptr = core.LLVMBuildCall2(self.builder, alloc_fn_type, alloc_fn, @constCast(&[_]types.LLVMValueRef{alloc_size}), 1, "closure");
-        self.trackHeapAlloc(closure_ptr);
+        const closure_i64 = core.LLVMBuildPtrToInt(self.builder, closure_ptr, i64_type, "closure_as_int");
+        self.trackHeapAlloc(closure_i64);
 
         const i8_type = core.LLVMInt8TypeInContext(self.context);
 
@@ -1823,10 +1834,11 @@ pub const Codegen = struct {
 
         // Store captured values at offsets 8, 16, 24, ...
         for (captured_values.items, 0..) |cap_val, i| {
-            // Mark heap values captured by the closure as consumed (closure takes ownership)
+            // Inc ref when capturing in closure (closure takes shared ownership)
             if (self.scope_heap_values.items.len > 0) {
                 for (self.scope_heap_values.items) |hv| {
                     if (hv == cap_val) {
+                        self.emitIncref(cap_val);
                         self.markConsumed(cap_val);
                         break;
                     }
@@ -1839,7 +1851,6 @@ pub const Codegen = struct {
         }
 
         // Return closure pointer with bit 0 set (tag for closure)
-        const closure_i64 = core.LLVMBuildPtrToInt(self.builder, closure_ptr, i64_type, "closure_as_int");
         return core.LLVMBuildOr(self.builder, closure_i64, core.LLVMConstInt(i64_type, 1, 0), "tagged_closure");
     }
 
@@ -2328,10 +2339,36 @@ pub const Codegen = struct {
 
         const body_val = try self.codegenExpr(fn_def.body);
 
-        // Decref all heap values not consumed by parent structures
-        if (self.scope_heap_values.items.len > 0) {
-            self.emitDecrefAll();
+        // Decref all heap values not consumed by parent structures.
+        // Handles both unconditional (SSA values) and conditional (alloca-tracked) allocations.
+        // Skips the return value — caller takes ownership.
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+        for (self.scope_heap_values.items) |heap_val| {
+            if (self.consumed_heap_values.contains(heap_val)) continue;
+            if (self.heap_allocas.get(heap_val)) |alloca| {
+                // Conditional allocation: load from alloca, check non-null AND not return value
+                const loaded = core.LLVMBuildLoad2(self.builder, i64_type, alloca, "heap_loaded");
+                const is_nonnull = core.LLVMBuildICmp(self.builder, .LLVMIntNE, loaded, core.LLVMConstInt(i64_type, 0, 0), "is_nonnull");
+                const is_return = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, loaded, body_val, "is_return_val");
+                // Decref only if non-null AND not the return value
+                const not_return = core.LLVMBuildXor(self.builder, is_return, core.LLVMConstInt(core.LLVMInt1TypeInContext(self.context), 1, 0), "not_return");
+                const should_decref = core.LLVMBuildAnd(self.builder, is_nonnull, not_return, "should_decref");
+                const null_ptr = core.LLVMConstPointerNull(core.LLVMPointerTypeInContext(self.context, 0));
+                const real_ptr = core.LLVMBuildIntToPtr(self.builder, loaded, core.LLVMPointerTypeInContext(self.context, 0), "decref_ptr");
+                const selected_ptr = core.LLVMBuildSelect(self.builder, should_decref, real_ptr, null_ptr, "safe_ptr");
+                const ko_decref_fn = self.named_values.get("ko_decref") orelse continue;
+                const fn_type = core.LLVMGlobalGetValueType(ko_decref_fn);
+                var args = [_]types.LLVMValueRef{selected_ptr};
+                _ = core.LLVMBuildCall2(self.builder, fn_type, ko_decref_fn, &args, 1, "");
+            } else {
+                // Unconditional allocation: skip if it's the return value (caller owns it)
+                if (heap_val == body_val) continue;
+                self.emitDecref(heap_val);
+            }
         }
+        self.scope_heap_values.shrinkRetainingCapacity(0);
+        self.heap_allocas.clearRetainingCapacity();
+        self.consumed_heap_values.clearRetainingCapacity();
 
         // For main(): auto-return 0 unless body is a direct expression
         if (std.mem.eql(u8, fn_def.name, "main")) {

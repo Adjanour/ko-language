@@ -1,8 +1,8 @@
 # Kō Language Roadmap
 
-> **Version:** 0.4.0  
-> **Date:** 2026-07-03  
-> **Status:** In Progress
+> **Version:** 0.1.0-alpha  
+> **Date:** 2026-07-10  
+> **Status:** Alpha Release
 
 ---
 
@@ -10,7 +10,7 @@
 
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Current state:** Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, LSP server, REPL with pretty-printing, and 77 passing tests.
+**Current state:** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, LSP server, REPL with pretty-printing, and 78 passing tests.
 
 ---
 
@@ -525,41 +525,41 @@ import std.math  # resolved to BLAKE3 hash
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Kō Compiler (Zig)                       │
+│                      Kō Compiler (Zig)                      │
 ├─────────────────────────────────────────────────────────────┤
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
-│  │  Lexer   │  │  Parser  │  │  Type    │  │  Module  │   │
-│  │          │  │          │  │  Checker │  │  System  │   │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
-│       │              │              │              │          │
-│       └──────────────┴──────────────┴──────────────┘          │
-│                            │                                  │
-│                    ┌───────▼───────┐                         │
-│                    │  AST / HIR    │                         │
-│                    └───────┬───────┘                         │
-│                            │                                  │
-│              ┌─────────────┼─────────────┐                   │
-│              │             │             │                    │
-│        ┌─────▼─────┐ ┌─────▼─────┐ ┌─────▼─────┐           │
-│        │  LLVM IR  │ │  Zig IR   │ │  C IR     │           │
-│        │  Codegen  │ │  Codegen  │ │  Codegen  │           │
-│        └─────┬─────┘ └─────┬─────┘ └─────┬─────┘           │
-│              │             │             │                    │
-│              └─────────────┼─────────────┘                   │
-│                            │                                  │
-│                    ┌───────▼───────┐                         │
-│                    │   LLVM Pass   │                         │
-│                    │   Optimization│                         │
-│                    └───────┬───────┘                         │
-│                            │                                  │
-│                    ┌───────▼───────┐                         │
-│                    │   Object File │                         │
-│                    └───────┬───────┘                         │
-│                            │                                  │
-│                    ┌───────▼───────┐                         │
-│                    │    Linker     │                         │
-│                    │  (system ld)  │                         │
-│                    └───────────────┘                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │  Lexer   │  │  Parser  │  │  Type    │  │  Module  │     │
+│  │          │  │          │  │  Checker │  │  System  │     │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘     │
+│       │              │              │              │        │
+│       └──────────────┴──────────────┴──────────────┘        │
+│                            │                                │
+│                    ┌───────▼───────┐                        │
+│                    │  AST / HIR    │                        │
+│                    └───────┬───────┘                        │
+│                            │                                │
+│              ┌─────────────┼─────────────┐                  │
+│              │             │             │                  │
+│        ┌─────▼─────┐ ┌─────▼─────┐ ┌─────▼─────┐            │
+│        │  LLVM IR  │ │  Zig IR   │ │  C IR     │            │
+│        │  Codegen  │ │  Codegen  │ │  Codegen  │            │
+│        └─────┬─────┘ └─────┬─────┘ └─────┬─────┘            │
+│              │             │             │                  │
+│              └─────────────┼─────────────┘                  │
+│                            │                                │
+│                    ┌───────▼───────┐                        │
+│                    │   LLVM Pass   │                        │
+│                    │   Optimization│                        │
+│                    └───────┬───────┘                        │
+│                            │                                │
+│                    ┌───────▼───────┐                        │
+│                    │   Object File │                        │
+│                    └───────┬───────┘                        │
+│                            │                                │
+│                    ┌───────▼───────┐                        │
+│                    │    Linker     │                        │
+│                    │  (system ld)  │                        │
+│                    └───────────────┘                        │
 └─────────────────────────────────────────────────────────────┘
 ```
 

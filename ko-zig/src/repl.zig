@@ -4,7 +4,6 @@ const llvm_engine = llvm.engine;
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
-const prettyprint = @import("prettyprint.zig");
 
 const linux = std.os.linux;
 
@@ -188,7 +187,6 @@ pub const Repl = struct {
             try inferer.inferProgram(&prog);
 
             var cg = codegen_mod.Codegen.init(self.allocator, "ko_repl");
-            cg.expr_type_tags = inferer.expr_type_tags;
             defer cg.deinit();
             cg.module_owned_by_jit = true;
             cg.quiet = true;
@@ -207,36 +205,7 @@ pub const Repl = struct {
             const eval_fn: *const fn () callconv(.c) i64 = @ptrFromInt(fn_addr);
             const result = eval_fn();
 
-            var result_type: ?*typecheck.Type = null;
-            if (prog.definitions.len > 0) {
-                const last_def = prog.definitions[prog.definitions.len - 1];
-                switch (last_def) {
-                    .fn_def => |fd| {
-                        var inner = fd.body;
-                        while (true) {
-                            switch (inner.*) {
-                                .block => |b| {
-                                    if (b.items.len > 0) {
-                                        inner = b.items[b.items.len - 1];
-                                        continue;
-                                    }
-                                },
-                                else => {},
-                            }
-                            break;
-                        }
-                        result_type = inferer.expr_types.get(inner);
-                    },
-                    else => {},
-                }
-            }
-            if (result_type) |ty| {
-                const formatted = try prettyprint.inspectValue(self.allocator, result, ty, &inferer.ctor_tag_names);
-                defer self.allocator.free(formatted);
-                try printStr(stdout_fd, "= {s}\n", .{formatted});
-            } else {
-                try printStr(stdout_fd, "= {d}\n", .{result});
-            }
+            try printStr(stdout_fd, "= {d}\n", .{result});
         }
     }
 
@@ -297,7 +266,7 @@ pub const Repl = struct {
             };
 
             if (inferer.global.getScheme(type_fn_name)) |scheme| {
-                const type_str = try typecheck.typeToString(self.allocator, scheme.body.*, scheme.quantified);
+                const type_str = try typecheck.typeToString(self.allocator, scheme.body.*);
                 defer self.allocator.free(type_str);
                 try printStr(stdout_fd, "{s} : {s}\n", .{ expr, type_str });
             } else {

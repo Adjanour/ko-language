@@ -36,19 +36,24 @@ fn tree_map f tree =
 
 fn main =
   let tree = Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5)
-
-  println (tree_sum tree)        # 9
-  println (tree_count tree)      # 3
-  println (tree_height tree)     # 3
-  println (tree_max tree)        # 5
-
+  let s = tree_sum tree
+  let c = tree_count tree
+  let h = tree_height tree
+  let m = tree_max tree
+  println s
+  println c
+  println h
+  println m
   let doubled = tree_map (\x -> x * 2) tree
-  println (tree_sum doubled)     # 18
-
+  let ds = tree_sum doubled
+  println ds
   let big = Branch (Branch (Branch (Leaf 10) (Leaf 20)) (Leaf 30)) (Branch (Leaf 40) (Branch (Leaf 50) (Leaf 60)))
-
-  println (tree_sum big)         # 210
-  println (tree_count big)       # 6
-  println (tree_height big)      # 4
-  println (tree_max big)         # 60
-
+  let bs = tree_sum big
+  let bc = tree_count big
+  let bh = tree_height big
+  let bm = tree_max big
+  println bs
+  println bc
+  println bh
+  println bm
+  0

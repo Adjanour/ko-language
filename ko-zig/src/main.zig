@@ -1,11 +1,70 @@
 const std = @import("std");
 const Io = std.Io;
+const linux = std.os.linux;
 const llvm = @import("llvm");
 const core = llvm.core;
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
+const repl_mod = @import("repl.zig");
+
+const VERSION = "0.1.0-alpha";
+
+fn nowNs() u64 {
+    var ts: linux.timespec = undefined;
+    _ = linux.clock_gettime(linux.CLOCK.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+fn printHelp(io: Io) void {
+    const stderr = Io.File.stderr();
+    var buffer: [4096]u8 = undefined;
+    var w = stderr.writer(io, &buffer);
+    w.interface.print(
+        \\
+        \\Kō v{s}
+        \\
+        \\Usage:
+        \\  ko <file.ko>                Run program
+        \\  ko --repl                   Start interactive REPL
+        \\  ko --dump-ir <file.ko>      Show generated LLVM IR
+        \\  ko --emit-ir <out> <file>   Write LLVM IR to file
+        \\  ko --emit-obj <out> <file>  Compile to object file
+        \\  ko --emit-exe <out> <file>  Compile to executable
+        \\
+        \\Options:
+        \\  -h, --help       Show this help
+        \\  -v, --version    Show version
+        \\
+    , .{VERSION}) catch {};
+    w.interface.flush() catch {};
+}
+
+fn printVersion(io: Io) void {
+    const stderr = Io.File.stderr();
+    var buffer: [4096]u8 = undefined;
+    var w = stderr.writer(io, &buffer);
+    w.interface.print("ko {s}\n", .{VERSION}) catch {};
+    w.interface.flush() catch {};
+}
+
+fn reportError(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []const u8, args: anytype) void {
+    const stderr = Io.File.stderr();
+    var buffer: [4096]u8 = undefined;
+    var w = stderr.writer(io, &buffer);
+
+    if (loc) |l| {
+        w.interface.print("error", .{}) catch {};
+        w.interface.print(" at {s}:{d}:{d}", .{ filename, l.line, l.col }) catch {};
+        w.interface.print(": ", .{}) catch {};
+    } else {
+        w.interface.print("error: ", .{}) catch {};
+    }
+    w.interface.print(fmt, args) catch {};
+    w.interface.print("\n", .{}) catch {};
+    w.interface.flush() catch {};
+}
 
 pub fn main(init: std.process.Init) !void {
     var threaded: Io.Threaded = .init(init.gpa, .{});
@@ -15,13 +74,21 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next(); // skip program name
 
-    var mode: enum { ir, run, obj, exe, emit_ir } = .ir;
+    var mode: enum { run, ir, obj, exe, emit_ir, repl } = .run;
     var filename: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
     while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--run")) {
-            mode = .run;
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            printHelp(io);
+            return;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            printVersion(io);
+            return;
+        } else if (std.mem.eql(u8, arg, "--repl")) {
+            mode = .repl;
+        } else if (std.mem.eql(u8, arg, "--dump-ir")) {
+            mode = .ir;
         } else if (std.mem.eql(u8, arg, "--emit-obj")) {
             mode = .obj;
             output = args.next();
@@ -36,76 +103,91 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    if (mode == .repl) {
+        var r = repl_mod.Repl.init(init.arena.allocator());
+        defer r.deinit();
+        try r.run();
+        return;
+    }
+
     const fname = filename orelse {
-        const stderr = Io.File.stderr();
-        var buffer: [4096]u8 = undefined;
-        var writer = stderr.writer(io, &buffer);
-        try writer.interface.print("Usage: ko [--run | --emit-obj <out.o> | --emit-exe <out> | --emit-ir <out.ll>] <file.ko>\n", .{});
-        try writer.interface.flush();
+        printHelp(io);
         std.process.exit(1);
     };
 
     const cwd = Io.Dir.cwd();
-    const file = try cwd.openFile(io, fname, .{});
+    const file = cwd.openFile(io, fname, .{}) catch {
+        reportError(io, fname, null, "cannot open file '{s}'", .{fname});
+        std.process.exit(1);
+    };
     defer file.close(io);
 
     var file_buffer: [4096]u8 = undefined;
     var reader = file.reader(io, &file_buffer);
-    const source = try reader.interface.allocRemainingAlignedSentinel(
+    const source = reader.interface.allocRemainingAlignedSentinel(
         init.arena.allocator(),
         .unlimited,
         @enumFromInt(0),
         0,
-    );
+    ) catch {
+        reportError(io, fname, null, "cannot read file '{s}'", .{fname});
+        std.process.exit(1);
+    };
 
     const stdout = Io.File.stdout();
     var out_buffer: [4096]u8 = undefined;
     var writer = stdout.writer(io, &out_buffer);
 
+    const timer = nowNs();
+
     // Parse
     var p = try parser.Parser.init(init.arena.allocator(), source);
     defer p.deinit();
-    const prog = try p.parse_program();
-    try writer.interface.print("Parsed: {d} definitions\n", .{prog.definitions.len});
-    try writer.interface.flush();
+    const prog = p.parse_program() catch |err| {
+        if (p.last_error) |ec| {
+            reportError(io, fname, ec.loc, "{s}", .{ec.message});
+        } else {
+            reportError(io, fname, null, "parse error: {s}", .{@errorName(err)});
+        }
+        std.process.exit(1);
+    };
+    const parse_time = nowNs() - timer;
 
     // Typecheck
     var inferer = typecheck.Inferer.init(init.arena.allocator());
     defer inferer.deinit();
     inferer.inferProgram(&prog) catch |err| {
-        const stderr = Io.File.stderr();
-        var err_buf: [4096]u8 = undefined;
-        var err_writer = stderr.writer(io, &err_buf);
         if (inferer.last_error) |ec| {
-            if (ec.loc) |loc| {
-                if (ec.message) |msg| {
-                    try err_writer.interface.print("type error at line {d}, col {d}: {s}\n", .{ loc.line, loc.col, msg });
-                } else {
-                    try err_writer.interface.print("type error at line {d}, col {d}: {s}\n", .{ loc.line, loc.col, @errorName(err) });
-                }
-            } else if (ec.message) |msg| {
-                try err_writer.interface.print("type error: {s}\n", .{msg});
-            } else {
-                try err_writer.interface.print("type error: {s}\n", .{@errorName(err)});
-            }
+            reportError(io, fname, ec.loc, "{s}", .{ec.message orelse @errorName(err)});
         } else {
-            try err_writer.interface.print("type error: {s}\n", .{@errorName(err)});
+            reportError(io, fname, null, "type error: {s}", .{@errorName(err)});
         }
-        try err_writer.interface.flush();
         std.process.exit(1);
     };
-    try writer.interface.print("Typechecked OK\n", .{});
-    try writer.interface.flush();
+    const typecheck_time = nowNs() - timer - parse_time;
 
     // Codegen
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
-    try cg.codegenProgram(prog);
+    cg.codegenProgram(prog) catch |err| {
+        reportError(io, fname, null, "codegen error: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
+    const codegen_time = nowNs() - timer - parse_time - typecheck_time;
+
+    if (mode != .run) {
+        const total_ms = @as(f64, @floatFromInt(parse_time + typecheck_time + codegen_time)) / std.time.ns_per_ms;
+        const parse_ms = @as(f64, @floatFromInt(parse_time)) / std.time.ns_per_ms;
+        const tc_ms = @as(f64, @floatFromInt(typecheck_time)) / std.time.ns_per_ms;
+        const cg_ms = @as(f64, @floatFromInt(codegen_time)) / std.time.ns_per_ms;
+        try writer.interface.print("compiled {d} defs in {d:.1}ms  parse {d:.1}ms | typecheck {d:.1}ms | codegen {d:.1}ms\n", .{
+            prog.definitions.len, total_ms, parse_ms, tc_ms, cg_ms,
+        });
+        try writer.interface.flush();
+    }
 
     switch (mode) {
         .ir => {
-            try writer.interface.print("Generated LLVM IR:\n", .{});
-            try writer.interface.flush();
             cg.dumpModule();
         },
         .emit_ir => {
@@ -120,7 +202,7 @@ pub fn main(init: std.process.Init) !void {
                 try out_writer.interface.writeAll(std.mem.sliceTo(r, 0));
                 try out_writer.interface.flush();
             }
-            try writer.interface.print("Emitted LLVM IR to: {s}\n", .{out_name});
+            try writer.interface.print("wrote {s}\n", .{out_name});
             try writer.interface.flush();
         },
         .run => {
@@ -128,16 +210,14 @@ pub fn main(init: std.process.Init) !void {
             var jit = try codegen_mod.Jit.init(cg.module, 0);
             defer jit.deinit();
             cg.mapBuiltinsToNative(jit.engine);
-            const result = try jit.runMain();
-            try writer.interface.print("{d}\n", .{result});
-            try writer.interface.flush();
+            _ = try jit.runMain();
         },
         .obj => {
             const out_name_z = try init.arena.allocator().dupeZ(u8, output orelse "output.o");
             var aot = try codegen_mod.Aot.init();
             defer aot.deinit();
             try aot.emitObjectFile(cg.module, out_name_z);
-            try writer.interface.print("Emitted object file: {s}\n", .{out_name_z});
+            try writer.interface.print("wrote {s}\n", .{out_name_z});
             try writer.interface.flush();
         },
         .exe => {
@@ -150,11 +230,8 @@ pub fn main(init: std.process.Init) !void {
             var aot = try codegen_mod.Aot.init();
             defer aot.deinit();
             try aot.emitObjectFile(cg.module, obj_name);
-            try writer.interface.print("Emitted object file: {s}\n", .{obj_name});
-            try writer.interface.flush();
 
-            // Link with cc
-            // Compile C runtime using gcc with PATH set
+            // Link with gcc
             const runtime_obj = init.arena.allocator().dupeZ(u8, "ko_runtime.o") catch unreachable;
             const cc_argv = [_][]const u8{ "/usr/bin/gcc", "-c", "/home/bernard/Learning/weird/ko-zig/src/ko_runtime.c", "-o", runtime_obj };
             const cc_result = std.process.run(init.arena.allocator(), io, .{
@@ -162,8 +239,7 @@ pub fn main(init: std.process.Init) !void {
                 .stderr_limit = .unlimited,
                 .stdout_limit = .unlimited,
             }) catch |err| {
-                try writer.interface.print("Failed to compile runtime: {}\n", .{err});
-                try writer.interface.flush();
+                reportError(io, fname, null, "failed to compile runtime: {}", .{err});
                 std.process.exit(1);
             };
             defer {
@@ -172,12 +248,18 @@ pub fn main(init: std.process.Init) !void {
             }
             if (cc_result.term != .exited or cc_result.term.exited != 0) {
                 const code: u8 = if (cc_result.term == .exited) cc_result.term.exited else 1;
-                try writer.interface.print("Runtime compilation failed (exit code {d}):\n{s}\n{s}\n", .{ code, cc_result.stdout, cc_result.stderr });
-                try writer.interface.flush();
+                reportError(io, fname, null, "runtime compilation failed (exit {d})", .{code});
+                if (cc_result.stderr.len > 0) {
+                    const errw = Io.File.stderr();
+                    var ebuf: [4096]u8 = undefined;
+                    var ew = errw.writer(io, &ebuf);
+                    try ew.interface.writeAll(cc_result.stderr);
+                    try ew.interface.flush();
+                }
                 std.process.exit(1);
             }
 
-            // Link with ld (using crt files for proper startup)
+            // Link with ld
             const ld_argv = [_][]const u8{
                 "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
                 obj_name,         runtime_obj, "-o", out_name,
@@ -189,8 +271,7 @@ pub fn main(init: std.process.Init) !void {
                 .stderr_limit = .unlimited,
                 .stdout_limit = .unlimited,
             }) catch |err| {
-                try writer.interface.print("Failed to run linker: {}\n", .{err});
-                try writer.interface.flush();
+                reportError(io, fname, null, "failed to link: {}", .{err});
                 std.process.exit(1);
             };
             defer {
@@ -199,14 +280,21 @@ pub fn main(init: std.process.Init) !void {
             }
             if (result.term != .exited or result.term.exited != 0) {
                 const code: u8 = if (result.term == .exited) result.term.exited else 1;
-                try writer.interface.print("Linker failed (exit code {d}):\n{s}\n", .{ code, result.stderr });
-                try writer.interface.flush();
+                reportError(io, fname, null, "linker failed (exit {d})", .{code});
+                if (result.stderr.len > 0) {
+                    const errw = Io.File.stderr();
+                    var ebuf: [4096]u8 = undefined;
+                    var ew = errw.writer(io, &ebuf);
+                    try ew.interface.writeAll(result.stderr);
+                    try ew.interface.flush();
+                }
                 std.process.exit(1);
             }
 
-            try writer.interface.print("Emitted executable: {s}\n", .{out_name});
+            try writer.interface.print("wrote {s}\n", .{out_name});
             try writer.interface.flush();
         },
+        .repl => unreachable, // handled earlier
     }
 }
 

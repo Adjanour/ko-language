@@ -1,4 +1,4 @@
-# Kō (kō)
+# Kō (kō) — v0.1.0-alpha
 
 A minimal, functional-first programming language that compiles to native binaries via LLVM.
 
@@ -6,11 +6,13 @@ A minimal, functional-first programming language that compiles to native binarie
 
 No parens for function calls (`add 1 2`), indentation-based blocks, uppercase constructors, ADTs, pattern matching, immutable by default, with Hindley-Milner type inference.
 
+**Status: Alpha.** Expect bugs, missing features, and rough edges. Feedback and contributions welcome.
+
 ## Quick start
 
 ```bash
-git clone <repo-url>
-cd <repo-name>
+git clone https://github.com/Adjanour/ko-language.git
+cd ko-language
 ./build.sh
 echo 'fn main = println "Hello, Kō!"' > hello.ko
 ./ko-dist/ko hello.ko
@@ -20,7 +22,7 @@ echo 'fn main = println "Hello, Kō!"' > hello.ko
 
 ## Installation
 
-### Distribution (beta)
+### Pre-built (recommended)
 
 Build a self-contained folder you can move anywhere — one binary, the full standard library, and example programs. No install, no system-wide dependencies at runtime.
 
@@ -42,75 +44,56 @@ Drop it anywhere and run:
 
 ```bash
 cp -r ko-dist ~/ko
-~/ko/ko file.ko
+~/ko/ko hello.ko
 ```
 
 No `npm install`. No `brew`. No virtualenv. One folder.
 
-### Build from source (for contributors)
+### Build from source
 
 Requires Zig 0.17 and LLVM 22:
 
 ```bash
-git clone <repo-url>
-cd <repo-name>/ko-zig
+git clone https://github.com/Adjanour/ko-language.git
+cd ko-language/ko-zig
 zig build
 ```
 
 The compiler binary is at `zig-out/bin/ko`. Run tests with:
 
 ```bash
-zig build test
+zig build test --summary all
 ```
 
 ## What works
 
-### Zig compiler (current)
-
 - **Lexer**: hex (`0xFF`), underscores, comments, operators, string literals
 - **Parser**: ADTs, pattern matching, functions, let bindings, if/then/else, lambdas, tuples, records, modules, imports, pipe operator, named args, type annotations
 - **Typechecker**: Hindley-Milner type inference, let-polymorphism, ref types, type annotations
-- **Codegen**: LLVM IR via kassane/llvm-zig bindings; JIT execution (`--run`) and AOT compilation (`--emit-obj`, `--emit-exe`)
+- **Codegen**: LLVM IR via kassane/llvm-zig bindings; JIT execution and AOT compilation (`--emit-obj`, `--emit-exe`)
 - **Memory management**: Reference counting for heap-allocated objects (tuples, records, constructors, closures)
 - **Currying**: Multi-param functions support partial application
 - **Modules**: `module Name` definitions with `pub` visibility
-- **Stdlib**: shipped as source in `ko-zig/std/` (Bool, Int, Float, String, List, Math); copied into `ko-dist/std/` by `build.sh`, or resolved from `KO_STDLIB_PATH` or a sibling `std/` directory near the `ko` binary
-- **76 of 78 tests passing** (lexer, parser, typechecker, codegen, integration, 51 `.ko` test programs)
-- **LSP**: `ko-lsp` is built alongside the compiler
+- **Stdlib**: Bool, Int, Float, String, List, Math — built-in, no import needed
+- **LSP**: `ko-lsp` built alongside the compiler
+- **REPL**: `ko --repl` for interactive evaluation
+- **78 of 78 tests passing**
 
-### Python compiler (archived)
-
-The original Python-based compiler is archived in `archive/python-compiler/`. It compiled to C99 and included closures via lambda lifting, string interpolation, and a standard library.
-
-## Project structure
+## CLI
 
 ```bash
-ko-zig/                  # Zig compiler (main)
-├── src/
-│   ├── main.zig         # CLI entry point
-│   ├── lexer.zig        # Tokenizer
-│   ├── parser.zig       # Recursive descent parser
-│   ├── ast.zig          # AST node types
-│   ├── typecheck.zig    # HM type inference
-│   ├── codegen.zig      # LLVM IR generation
-│   ├── comptime.zig     # Compile-time evaluator
-│   ├── module_loader.zig # File and stdlib import resolution
-│   ├── repl.zig         # Interactive REPL
-│   ├── stdlib_codegen.zig # Built-in/stdlib codegen helpers
-│   ├── ko_runtime.c     # C runtime (println, print, inspect, RC)
-│   └── tests_ko/        # 51 .ko test programs
-├── std/                 # Standard library modules (Bool, Int, Float, String, List, Math)
-├── build.zig            # Zig build definition
-└── AGENTS.md            # Zig 0.17 API patterns, LLVM codegen patterns
+ko <file.ko>                Run program (default)
+ko --repl                   Start interactive REPL
+ko --dump-ir <file.ko>      Show generated LLVM IR
+ko --emit-ir <out> <file>   Write LLVM IR to file
+ko --emit-obj <out> <file>  Compile to object file
+ko --emit-exe <out> <file>  Compile to executable
+```
 
-build.sh                 # One-command build that produces ko-dist/
-ko-dist/                 # Portable distribution folder (created by build.sh)
-archive/python-compiler/ # Original Python compiler (archived)
-examples/                # .ko example programs
-social/                  # Social media assets
-docs/                    # Guides and reference
-tree-sitter-ko/          # Tree-sitter grammar
-vscode-ko/               # VS Code extension
+No args shows help. Errors include file and location:
+
+```
+error at hello.ko:1:11: undefined name 'x'
 ```
 
 ## Language features
@@ -150,6 +133,10 @@ add1 2  # 3
 let r = ref 42
 r := 100
 !r  # 100
+
+# Compile-time evaluation
+comptime fn factorial n =
+  if n == 0 then 1 else n * factorial (n - 1)
 ```
 
 ## Docs
@@ -162,18 +149,6 @@ r := 100
 - [Ko by Example](docs/ko-by-example.md) — step-by-step guide
 - [Core Concepts](docs/concepts.md) — language concepts
 - [Quick Reference](docs/quick-reference.md) — syntax cheat sheet
-
-## CLI
-
-```bash
-ko --run file.ko         # JIT-execute main() and print result
-ko file.ko               # Dump LLVM IR
-ko --dump-ir file.ko     # Dump LLVM IR
-ko --emit-ir out.ll file.ko   # Emit LLVM IR to file
-ko --emit-obj out.o file.ko   # Emit object file
-ko --emit-exe out file.ko     # Emit linked executable
-ko --repl                 # Start interactive REPL
-```
 
 ## Design decisions
 
@@ -188,22 +163,31 @@ ko --repl                 # Start interactive REPL
 - **Reference counting** — automatic memory management for heap objects
 - **`comptime` expressions** — evaluate code at compile time
 
-## Known Issues (v0.3.x)
+## Known Issues (v0.1.0-alpha)
 
-- Comptime expressions with parentheses can trigger parser errors in some contexts
-- Tuple destructuring in `let` bindings is not yet fully supported
-- Recursive ADTs (e.g., binary trees) can trigger LLVM backend errors
-- Multi-closure captures may segfault in certain patterns
-- The `::` operator has type inference issues with string lists
-- Error messages do not yet include precise source locations
+- **Inline comments after `let` bindings break the parser.** The comment consumes the newline, so the next line doesn't see the binding. Workaround: put comments on their own line.
+- **`println (fn_call)` prints `<fn>` instead of the actual value.** Workaround: extract to a `let` binding first: `let n = f x; println n`
+- **Imported module type info doesn't propagate** to the main typechecker (shows type variables instead of concrete types)
+- **No circular import detection**
+- **No package/module system** — just flat file imports
+- **Generics not implemented** — can't write polymorphic functions over type parameters yet
+- **Result type resolution** — built-in Result operations (`Result.is_ok`, `Result.map`, etc.) can't find locally-defined `Result` types in all cases
+- **Multi-line match bodies** — a multi-line `match` followed by another expression can confuse the parser. Workaround: extract match into a helper function.
 
-## TODO
+## Roadmap
 
-- [x] File-based imports
-- [ ] General recursion safety (stack overflow prevention)
-- [ ] Closure codegen for multi-param lambdas
-- [ ] Full decref for intermediate variables
-- [ ] Better error messages with source locations
-- [ ] Standard library expansion (String.split, String.replace, List.sort, Map/Dict)
+- [x] Lexer, parser, typechecker, codegen
+- [x] Reference counting (heap-allocated objects)
+- [x] Recursive ADTs (binary trees, lists)
+- [x] Stack overflow detection
+- [x] Partial application / currying
+- [x] LSP server
+- [x] REPL with pretty-printing
+- [x] Better error messages with source locations
 - [ ] Generics (monomorphization)
+- [ ] Standard library expansion (String.split, List.sort, Map/Dict)
 - [ ] Trait/typeclass system
+
+## License
+
+[MIT](LICENSE)

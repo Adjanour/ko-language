@@ -445,6 +445,13 @@ main.zig → parser.zig → lexer.zig
 - Constructor type tags from imported modules may show raw values in `println`
 - No circular import detection
 - No package/module system — just flat file imports
+- **TODO: Inline comments after `let` bindings break the parser.** The comment consumes the newline, breaking indentation tracking so subsequent lines don't see the binding. Example:
+  ```
+  let a = 42
+  let b = a + 1 # comment   ← comment eats the newline
+  println b                  ← parser doesn't see 'a' or 'b'
+  ```
+  Workaround: put comments on their own line, or after `println`/expression lines (not after `let`).
 
 ## Standard Library
 
@@ -758,12 +765,52 @@ raw malloc ptr
 
 #### Codegen integration
 - All heap allocations use `ko_alloc` instead of raw `malloc`
-- `scope_heap_values` tracks all heap-allocated ptrs per function
+- `scope_heap_values` tracks all heap-allocated **i64 (ptrtoint)** values per function
 - **Ownership-based decref**: Track "consumed" heap values; at exit only decref unconsumed values
 - `heap_allocas` map: conditional allocations get allocas in the entry block (initialized to 0)
 - `consumed_heap_values` set: heap values stored in parents (constructor/tuple/record/closure)
-- `emitDecrefAll`: loads from alloca, null-checks via `select`, calls `ko_decref`
-- `markConsumed`: called when heap values are stored in parents
+- `emitIncref`: called when heap values are stored in parents (shared ownership)
+- `markConsumed`: called alongside emitIncref to skip the parent's reference at function exit
+
+#### Critical: scope_heap_values stores ptrtoint, NOT raw ptr
+
+`trackHeapAlloc` MUST store the `ptrtoint` result (i64), NOT the raw pointer from `ko_alloc` (ptr type). This is because:
+1. `codegenExpr` for constructors/tuples/records returns `ptrtoint(raw_ptr)` (i64)
+2. The consumption check compares `scope_heap_values` items against these i64 values
+3. If scope_heap_values stores raw ptr, the comparison fails (different LLVM SSA types) → markConsumed never matches → double-free
+
+```zig
+// CORRECT:
+const raw_ptr = call ko_alloc(...);
+const result = LLVMBuildPtrToInt(raw_ptr);
+self.trackHeapAlloc(result);  // stores i64
+return result;
+
+// WRONG — causes markConsumed to never match:
+self.trackHeapAlloc(raw_ptr);  // stores ptr
+return LLVMBuildPtrToInt(raw_ptr);
+```
+
+#### Critical: emitIncref at all consumption sites
+
+When a heap value is stored in a parent structure (constructor, tuple, record, closure), the parent takes shared ownership. The function still owns its reference. So:
+1. Call `emitIncref(heap_val)` to increment rc (parent takes its reference)
+2. Call `markConsumed(heap_val)` to skip the function's reference at exit
+
+Without emitIncref, the parent only has a borrowed reference → use-after-free when the function exits.
+
+Sites requiring emitIncref + markConsumed:
+- Constructor args (single-arg and multi-arg)
+- Tuple elements
+- Record fields
+- Closure captures (partial app and lambda)
+
+#### Critical: exclude return value from decref
+
+The decref loop at function exit MUST skip the return value. The caller takes ownership of the return value — decrefing it causes use-after-free.
+
+For unconditional allocations: Zig-level comparison `heap_val == body_val`.
+For conditional allocations (alloca-tracked): LLVM-level runtime check `loaded != body_val` via select pattern.
 
 #### Gotcha: Allocas must be before the entry block terminator
 When creating allocas for conditional allocations, you MUST position the builder BEFORE the first instruction in the entry block, not at the end. After `codegenIf` emits a branch, positioning at the end places allocas AFTER the terminator (unreachable code). Use `LLVMPositionBuilder(builder, entry, first_inst)` to insert before the first instruction.

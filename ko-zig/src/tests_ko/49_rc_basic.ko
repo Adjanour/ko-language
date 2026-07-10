@@ -1,0 +1,33 @@
+# Memory management (reference counting) tests
+
+type Tree = Branch Tree Tree | Leaf Int
+
+fn tree_sum tree =
+  match tree
+    | Branch left right => tree_sum left + tree_sum right
+    | Leaf n => n
+
+fn tree_map f tree =
+  match tree
+    | Leaf n => Leaf (f n)
+    | Branch left right => Branch (tree_map f left) (tree_map f right)
+
+fn mk_leaf n = Leaf n
+
+fn main =
+  let t1 = Branch (Branch (Leaf 1) (Leaf 2)) (Leaf 3)
+  let s1 = tree_sum t1
+  println s1
+  let doubled = tree_map (\x -> x * 2) t1
+  let s2 = tree_sum doubled
+  println s2
+  let big = Branch (Branch (Branch (Leaf 10) (Leaf 20)) (Leaf 30)) (Branch (Leaf 40) (Branch (Leaf 50) (Leaf 60)))
+  let s3 = tree_sum big
+  println s3
+  let t4 = Branch (Leaf 100) (Leaf 200)
+  let s4 = tree_sum t4
+  println s4
+  let t5 = mk_leaf 999
+  let s5 = tree_sum t5
+  println s5
+  0

@@ -1,3 +1,5 @@
+type Result a b = Ok a | Err b
+
 fn divide a b =
   if b == 0 then Err "div by zero"
   else Ok (a / b)

@@ -333,7 +333,14 @@ pub const Inferer = struct {
     fn cloneType(self: *Inferer, ty: *Type, map: *std.AutoHashMap(usize, *Type)) Error!*Type {
         const resolved = self.resolve(ty);
         return switch (resolved.*) {
-            .variable => |v| if (map.get(v.id)) |rep| rep else resolved,
+            .variable => |v| blk: {
+                if (map.get(v.id)) |rep| break :blk rep;
+                // Non-quantified variable: create a fresh clone on first encounter
+                // so that unification in one instantiation doesn't leak to the next
+                const fresh = try self.newVarType(try self.freshName(v.name));
+                try map.put(v.id, fresh);
+                break :blk fresh;
+            },
             .int => try self.newType(.int),
             .float => try self.newType(.float),
             .bool => try self.newType(.bool),
@@ -697,7 +704,16 @@ pub const Inferer = struct {
             const ann_ty = try self.typeExprToType(ann);
             try self.unify(cur, ann_ty);
         }
-        try self.global.set(f.name, try self.generalize(&self.global, fn_type));
+        // Remove the function's own predeclared binding before generalizing,
+        // otherwise collectEnvFree picks up free vars from the function's own type
+        // (which has empty quantified), preventing them from being quantified.
+        const removed = self.global.bindings.fetchRemove(f.name);
+        const generalized = try self.generalize(&self.global, fn_type);
+        if (removed) |old| {
+            // Restore nothing — we're about to overwrite with the proper scheme
+            _ = old;
+        }
+        try self.global.set(f.name, generalized);
     }
 
     fn inferExpr(self: *Inferer, env: *Env, expr: *const parser.Expr) Error!*Type {
@@ -710,12 +726,20 @@ pub const Inferer = struct {
             .bool_literal => try self.newType(.bool),
             .identifier => |id| blk: {
                 const scheme = self.resolveName(env, id.name) orelse {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "undefined name '{s}'", .{id.name}) catch null,
+                        .loc = self.current_loc,
+                    };
                     return error.UndefinedName;
                 };
                 break :blk try self.instantiate(scheme);
             },
             .constructor => |c| blk: {
                 const scheme = self.resolveName(env, c.name) orelse {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "undefined constructor '{s}'", .{c.name}) catch null,
+                        .loc = self.current_loc,
+                    };
                     return error.UndefinedName;
                 };
                 break :blk try self.instantiate(scheme);
@@ -731,7 +755,7 @@ pub const Inferer = struct {
             .lambda => |lam| try self.inferLambda(env, lam.params, lam.body),
             .unary_op => |u| try self.inferUnary(env, u.op, u.expr),
             .binary_op => |b| try self.inferBinary(env, b.op, b.left, b.right),
-            .let_expr => |l| try self.inferLetExpr(env, l.name, l.value, l.body, l.type_ann),
+            .let_expr => |l| try self.inferLetExpr(env, l.name, l.value, l.body, l.type_ann, l.pattern),
             .if_expr => |i| try self.inferIf(env, i.condition, i.then_branch, i.else_branch),
             .block => |b| try self.inferBlock(env, b.items),
             .match_expr => |m| try self.inferMatch(env, m.value, m.arms),
@@ -752,7 +776,7 @@ pub const Inferer = struct {
         return last;
     }
 
-    fn inferLetExpr(self: *Inferer, env: *Env, name: []const u8, value: *parser.Expr, body: *parser.Expr, type_ann: ?parser.TypeExpr) Error!*Type {
+    fn inferLetExpr(self: *Inferer, env: *Env, name: []const u8, value: *parser.Expr, body: *parser.Expr, type_ann: ?parser.TypeExpr, pattern: ?parser.Pattern) Error!*Type {
         const val_ty = try self.inferExpr(env, value);
         if (type_ann) |ann| {
             const ann_ty = try self.typeExprToType(ann);
@@ -760,8 +784,12 @@ pub const Inferer = struct {
         }
         var local = Env.init(self.allocator, env);
         defer local.deinit();
-        const scheme = try self.generalize(env, val_ty);
-        try local.set(name, scheme);
+        if (pattern) |pat| {
+            try self.inferPattern(&local, pat, val_ty);
+        } else {
+            const scheme = try self.generalize(env, val_ty);
+            try local.set(name, scheme);
+        }
         return self.inferExpr(&local, body);
     }
 
@@ -915,12 +943,20 @@ pub const Inferer = struct {
         switch (resolved.*) {
             .string => {
                 if (std.mem.eql(u8, field, "length")) return try self.newType(.int);
+                self.last_error = .{
+                    .message = std.fmt.allocPrint(self.allocator, "type String has no field '{s}'", .{field}) catch null,
+                    .loc = self.current_loc,
+                };
                 return error.UnknownType;
             },
             .record => |rec| {
                 for (rec.fields) |f| {
                     if (std.mem.eql(u8, f.name, field)) return f.ty;
                 }
+                self.last_error = .{
+                    .message = std.fmt.allocPrint(self.allocator, "record '{s}' has no field '{s}'", .{ rec.name, field }) catch null,
+                    .loc = self.current_loc,
+                };
                 return error.UnknownType;
             },
             .variable => {
@@ -930,7 +966,13 @@ pub const Inferer = struct {
                 }
                 return try self.newVarType(try self.freshName("field"));
             },
-            else => return error.UnknownType,
+            else => {
+                self.last_error = .{
+                    .message = "cannot access fields on this type",
+                    .loc = self.current_loc,
+                };
+                return error.UnknownType;
+            },
         }
     }
 
@@ -958,7 +1000,13 @@ pub const Inferer = struct {
                         break;
                     }
                 }
-                const expr = found orelse return error.UnknownType;
+                const expr = found orelse {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "missing field '{s}' in record", .{wanted}) catch null,
+                        .loc = self.current_loc,
+                    };
+                    return error.UnknownType;
+                };
                 try field_types.append(self.allocator, .{ .name = wanted, .ty = try self.inferExpr(env, expr) });
             }
         } else {
@@ -1026,7 +1074,13 @@ pub const Inferer = struct {
                         ctor_info = self.ctors.get(qualified);
                     }
                 }
-                const info = ctor_info orelse return error.UnknownConstructor;
+                const info = ctor_info orelse {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "unknown constructor '{s}'", .{ctor.name}) catch null,
+                        .loc = self.current_loc,
+                    };
+                    return error.UnknownConstructor;
+                };
                 const num_type_params = self.type_names.get(info.type_name) orelse 0;
                 const type_args = try self.allocator.alloc(*Type, num_type_params);
                 for (type_args) |*slot| {

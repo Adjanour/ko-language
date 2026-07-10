@@ -1,7 +1,7 @@
 .{
     .name = .ko,
     .fingerprint = 0x1adddc5a17d1046b,
-    .version = "0.3.0",
+    .version = "0.1.0",
     .dependencies = .{
         .llvm = .{
             .url = "git+https://github.com/kassane/llvm-zig#f56b9f09c4a100de61eeb7afe39d633b7adb183a",
