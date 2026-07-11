@@ -57,8 +57,9 @@ add             = mul { ( "+" | "-" ) mul } ;
 mul             = unary { ( "*" | "/" | "%" ) unary } ;
 
 unary           = ( "-" | "!" | "ref" ) unary
-                | application ;
+                | postfix ;
 
+postfix         = application [ "?" ] ;
 application     = primary { argument } ;
 argument        = named_arg | primary ;
 named_arg       = "~" LOWER_IDENT ":" expr ;
@@ -148,3 +149,4 @@ NEWLINE         = "\n" ;
 - `|>` is the pipe operator.
 - Record patterns use `..` for intentional partial matches.
 - `or` and `and` are keyword alternatives to `||` and `&&`.
+- `?` is postfix try operator for Result error propagation.

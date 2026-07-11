@@ -16,7 +16,11 @@ const Document = struct {
     prog: ?ast.Program,
     inferer: ?typecheck_mod.Inferer,
     parse_error: ?[]const u8,
+    parse_error_loc: ?ast.Loc,
     type_error: ?[]const u8,
+    type_error_loc: ?ast.Loc,
+    type_error_expected: ?[]const u8,
+    type_error_actual: ?[]const u8,
 };
 
 const DocumentStore = struct {
@@ -43,6 +47,8 @@ const DocumentStore = struct {
         if (doc.prog) |*p| typecheck_mod.deallocProg(self.allocator, p);
         if (doc.parse_error) |e| self.allocator.free(e);
         if (doc.type_error) |e| self.allocator.free(e);
+        if (doc.type_error_expected) |e| self.allocator.free(e);
+        if (doc.type_error_actual) |e| self.allocator.free(e);
         if (doc.source_z) |sz| self.allocator.free(sz.ptr[0..sz.len + 1]);
         self.allocator.free(doc.text);
     }
@@ -60,7 +66,11 @@ const DocumentStore = struct {
             .prog = null,
             .inferer = null,
             .parse_error = null,
+            .parse_error_loc = null,
             .type_error = null,
+            .type_error_loc = null,
+            .type_error_expected = null,
+            .type_error_actual = null,
         };
         self.analyze(result.value_ptr);
         return result.value_ptr;
@@ -78,7 +88,11 @@ const DocumentStore = struct {
             .prog = null,
             .inferer = null,
             .parse_error = null,
+            .parse_error_loc = null,
             .type_error = null,
+            .type_error_loc = null,
+            .type_error_expected = null,
+            .type_error_actual = null,
         };
         self.analyze(entry.value_ptr);
     }
@@ -105,6 +119,9 @@ const DocumentStore = struct {
         defer p.deinit();
         const prog = p.parse_program() catch |err| {
             doc.parse_error = std.fmt.allocPrint(self.allocator, "Parse error: {}", .{err}) catch null;
+            if (p.last_error) |ec| {
+                doc.parse_error_loc = ec.loc;
+            }
             self.allocator.free(source_z);
             return;
         };
@@ -114,8 +131,9 @@ const DocumentStore = struct {
         inferer.inferProgram(&prog) catch |err| {
             if (inferer.last_error) |ec| {
                 doc.type_error = ec.message;
-                if (ec.expected) |e| self.allocator.free(e);
-                if (ec.actual) |a| self.allocator.free(a);
+                doc.type_error_loc = ec.loc;
+                doc.type_error_expected = ec.expected;
+                doc.type_error_actual = ec.actual;
             } else {
                 doc.type_error = std.fmt.allocPrint(self.allocator, "Type error: {}", .{err}) catch null;
             }
@@ -469,25 +487,52 @@ fn escapeJsonString(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return result.toOwnedSlice(alloc);
 }
 
+fn appendRange(gpa: std.mem.Allocator, body: *std.ArrayList(u8), sl: usize, sc: usize, el: usize, ec_pos: usize, escaped: []const u8) !void {
+    try body.appendSlice(gpa, "{\"range\":{\"start\":{\"line\":");
+    var num_buf: [20]u8 = undefined;
+    try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{sl}));
+    try body.appendSlice(gpa, ",\"character\":");
+    try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{sc}));
+    try body.appendSlice(gpa, "},\"end\":{\"line\":");
+    try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{el}));
+    try body.appendSlice(gpa, ",\"character\":");
+    try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{ec_pos}));
+    try body.appendSlice(gpa, "}},\"severity\":1,\"message\":\"");
+    try body.appendSlice(gpa, escaped);
+    try body.appendSlice(gpa, "\"}");
+}
+
 fn publishDiagnostics(store: *DocumentStore, uri: []const u8, gpa: std.mem.Allocator) !void {
     const doc = store.get(uri) orelse return;
 
     var body = try std.ArrayList(u8).initCapacity(gpa, 256);
     defer body.deinit(gpa);
-    try body.print(gpa, "{{\"uri\":\"{s}\",\"diagnostics\":[", .{uri});
+    try body.appendSlice(gpa, "{\"uri\":\"");
+    try body.appendSlice(gpa, uri);
+    try body.appendSlice(gpa, "\",\"diagnostics\":[");
 
     var first = true;
     if (doc.parse_error) |err| {
         const escaped = try escapeJsonString(gpa, err);
         defer gpa.free(escaped);
-        try body.print(gpa, "{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"severity\":1,\"message\":\"{s}\"}}", .{escaped});
+        const loc = doc.parse_error_loc orelse ast.Loc{};
+        const sl: usize = if (loc.line > 0) loc.line - 1 else 0;
+        const sc: usize = if (loc.col > 0) loc.col - 1 else 0;
+        const el: usize = if (loc.end_line > 0) loc.end_line - 1 else sl;
+        const ec_pos: usize = if (loc.end_col > 0) loc.end_col - 1 else sc;
+        try appendRange(gpa, &body, sl, sc, el, ec_pos, escaped);
         first = false;
     }
     if (doc.type_error) |err| {
         if (!first) try body.append(gpa, ',');
         const escaped = try escapeJsonString(gpa, err);
         defer gpa.free(escaped);
-        try body.print(gpa, "{{\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"severity\":1,\"message\":\"{s}\"}}", .{escaped});
+        const loc = doc.type_error_loc orelse ast.Loc{};
+        const sl: usize = if (loc.line > 0) loc.line - 1 else 0;
+        const sc: usize = if (loc.col > 0) loc.col - 1 else 0;
+        const el: usize = if (loc.end_line > 0) loc.end_line - 1 else sl;
+        const ec_pos: usize = if (loc.end_col > 0) loc.end_col - 1 else sc;
+        try appendRange(gpa, &body, sl, sc, el, ec_pos, escaped);
     }
 
     try body.appendSlice(gpa, "]}");

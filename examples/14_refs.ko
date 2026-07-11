@@ -1,9 +1,0 @@
-# References — Mutable state.
-
-fn main =
-  let r = ref 0
-  r := 10
-  let v = !r
-  r := !r + 5
-  let v2 = !r
-  v2

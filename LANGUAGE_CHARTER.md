@@ -148,7 +148,7 @@ The parser port should treat these as stable:
 
 ## 10. Near-Term Roadmap
 
-### v0.3.x (current)
+### v0.2.0-alpha (current)
 
 - Parser, typechecker, and codegen complete (Zig)
 - Hindley-Milner type inference with let-polymorphism
@@ -157,19 +157,30 @@ The parser port should treat these as stable:
 - Reference counting for heap-allocated objects
 - Partial application (currying)
 - Module definitions with pub visibility
+- File-based imports (`import std.Math`)
+- Selective imports (`import std.Math.{abs, max}`)
+- `?` operator for Result error propagation
+- Result built-in operations (map, unwrap, fold, is_ok, is_err, and_then)
+- Stack overflow detection
+
+### v0.3.0
+
+- Record type syntax with field access
+- Generics (monomorphization)
+- Traits/typeclasses
+- Module system v2 (hierarchical imports, first-class modules)
 
 ### v0.4.0
 
-- File-based imports
-- General recursion safety (stack overflow prevention)
-- Closure codegen for multi-param lambdas
-- Full decref for intermediate variables
+- Comprehensive standard library
+- Package manager
+- Build system integration
 
 ### v0.5.0
 
-- Standard library
-- Better compiler diagnostics
-- Codegen and runtime hardening
+- Documentation
+- Performance optimization
+- v1.0.0 release
 
 ## 11. Decision Rule
 

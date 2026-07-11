@@ -1,5 +1,0 @@
-# Hello World — The simplest Kō program.
-
-fn main =
-  let x = 42
-  x

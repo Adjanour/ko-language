@@ -2,7 +2,7 @@
 
 Research findings for type system, comptime, reference counting, and codegen.
 
-> **Current status**: Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, and reference counting.
+> **Current status**: v0.2.0-alpha — Zig compiler complete with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, file-based module imports, `?` operator, and Result operations.
 
 ---
 
@@ -223,160 +223,45 @@ For mutable ref cells: cycles are possible but rare.
 
 ---
 
-## 4. C Codegen Rewriting
+## 4. Implementation Priority
 
-### Current Issues
+Based on dependencies and impact (updated for v0.2.0-alpha):
 
-1. **Memory leaks**: Only RefCell has refcounting; constructors, closures, strings leak
-2. **String interpolation**: Parse-time desugaring creates multiple temporary allocations
-3. **No RC for closures**: Captured variables leak when closure is dropped
-4. **Pattern matching**: Uses ternary chains which have side-effect issues
-
-### Recommended C Data Layout
-
-```c
-// Value representation
-typedef enum {
-    VAL_INT, VAL_FLOAT, VAL_BOOL, VAL_CHAR,
-    VAL_STRING, VAL_CONSTRUCTOR, VAL_CLOSURE, VAL_REF, VAL_UNIT
-} ValueType;
-
-typedef struct Value {
-    ValueType type;
-    union {
-        int64_t int_val;
-        double float_val;
-        bool bool_val;
-        char char_val;
-        char* string_val;
-        struct { int tag; int arity; struct Value* args; } constructor;
-        struct { void* env; void* func; } closure;
-        struct RefCell* ref;
-    } as;
-} Value;
-```
-
-### Pattern Matching → C
-
-```c
-// Use switch for ≥4 constructors (jump table optimization)
-switch (_match_val.as.constructor.tag) {
-    case TAG_JUST: {
-        Value v = _match_val.as.constructor.args[0];
-        result = v;
-        break;
-    }
-    case TAG_NOTHING: {
-        result = make_int(0);
-        break;
-    }
-}
-
-// Use if/else if for <4 constructors
-if (_match_val.type == VAL_CONSTRUCTOR && _match_val.as.constructor.tag == TAG_JUST) {
-    Value v = _match_val.as.constructor.args[0];
-    result = v;
-} else if (...) { ... }
-```
-
-### String Interpolation → snprintf
-
-Instead of desugaring at parse time, generate a single `snprintf`:
-
-```c
-// "hello ${name}!" →
-char _buf[1024];
-snprintf(_buf, sizeof(_buf), "hello %s!", name.as.string_val);
-Value result = make_string(_buf);
-```
-
-### Tail Calls
-
-Trust GCC `-O2` for sibling tail call optimization. Document that users should write tail-recursive functions with accumulators:
-
-```kō
-# This is tail-recursive (GCC optimizes to loop):
-fn factorial n acc =
-  if n == 0 then acc
-  else factorial (n - 1) (n * acc)
-```
-
-### Reference Counting in Generated C
-
-```c
-// When a let binding goes out of scope:
-dec_ref_value(old_x);
-
-// When a function returns:
-// Parameters and locals are decremented automatically
-
-// When overwriting a variable:
-Value old_x = x;
-x = new_value;
-dec_ref_value(old_x);
-```
-
-### Testing Strategy
-
-1. **Golden tests**: Run .ko files, compare stdout to expected output
-2. **Sanitizer testing**: Compile with `-fsanitize=address,undefined`
-3. **Valgrind**: Run under Valgrind for memory leak detection
-4. **Codegen unit tests**: Verify generated C contains expected patterns
-5. **Differential testing**: Compare Kō output against Python/OCaml reference
-
-### Implementation Order
-
-1. Add refcount header to all heap objects
-2. Generate inc/dec_ref calls systematically
-3. Fix string interpolation (snprintf)
-4. Fix pattern matching (switch for many constructors)
-5. Add golden test infrastructure
-6. Add sanitizer/valgrind testing
-
----
-
-## 5. Implementation Priority
-
-Based on dependencies and impact:
-
-| Priority | Feature | Reason |
+| Priority | Feature | Status |
 |----------|---------|--------|
-| 1 | Reference counting | Everything else depends on correct memory management |
-| 2 | Codegen rewriting | Fix existing issues, add proper RC |
-| 3 | Type system (HM) | Enables better error messages and generic types |
-| 4 | Comptime | Depends on type system for type-level computation |
-| 5 | Testing infrastructure | Verify everything works correctly |
+| 1 | Reference counting | Done |
+| 2 | LLVM codegen | Done |
+| 3 | Type system (HM) | Done |
+| 4 | Comptime | Done |
+| 5 | File-based imports | Done |
+| 6 | `?` operator | Done |
+| 7 | Result operations | Done |
+| 8 | Record type syntax | Planned |
+| 9 | Generics | Planned |
+| 10 | Traits/typeclasses | Planned |
 
-### Suggested Sprint Plan
+### What's Done
 
-**Sprint 1: RC + Codegen Foundation**
+- All core compiler infrastructure (lexer, parser, typechecker, codegen)
+- HM type inference with let-polymorphism
+- LLVM IR codegen with JIT and AOT modes
+- Reference counting for heap-allocated objects
+- Partial application (currying)
+- File-based module imports with selective imports
+- `?` operator for Result error propagation
+- Result built-in operations (map, unwrap, fold, is_ok, is_err, and_then)
+- Stack overflow detection
+- Compile-time evaluation for literals and arithmetic
+- LSP server with hover, completion, diagnostics
+- REPL with pretty-printing
 
-- Add refcount header to Value
-- Generate inc/dec_ref calls
-- Fix string interpolation
-- Add golden test infrastructure
-- Run all tests through sanitizers
+### What's Next
 
-**Sprint 2: Type System**
-
-- Implement union-find
-- Implement unification
-- Implement core HM inference
-- Add ADT type registration
-- Add pattern matching inference
-
-**Sprint 3: Comptime**
-
-- Implement comptime evaluator
-- Add comptime check to type checker
-- Implement monomorphization
-
-**Sprint 4: Polish**
-
-- Better error messages
-- Borrow inference optimization
-- Reuse analysis optimization
-- Comprehensive test suite
+- Record type syntax with field access
+- Generics (monomorphization)
+- Traits/typeclasses
+- Module system v2 (hierarchical imports, first-class modules)
+- Package manager
 
 ---
 

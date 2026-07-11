@@ -1,9 +1,0 @@
-# Number Literals — Decimal, hex, binary, octal.
-
-fn main =
-  let decimal = 42
-  let hex = 0xFF
-  let binary = 0b1010
-  let octal = 0o77
-  let big = 1_000_000
-  decimal

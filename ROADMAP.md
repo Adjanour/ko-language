@@ -1,7 +1,7 @@
 # Kō Language Roadmap
 
-> **Version:** 0.1.0-alpha  
-> **Date:** 2026-07-10  
+> **Version:** 0.2.0-alpha  
+> **Date:** 2026-07-11  
 > **Status:** Alpha Release
 
 ---
@@ -10,20 +10,20 @@
 
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Current state:** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, LSP server, REPL with pretty-printing, and 78 passing tests.
+**Current state (v0.2.0-alpha):** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with pretty-printing, Result operations, and 78 passing tests.
 
 ---
 
 ## Part 1: Language Feature Roadmap
 
-### 1.1 Current State (v0.4.0)
+### 1.1 Current State (v0.2.0-alpha)
 
 **Zig Compiler (complete):**
 
-- Lexer (~727 lines) — all token types, indentation tracking, comment tokens, `::` for cons
-- Parser (~1275 lines) — full grammar implementation, multi-line lambdas, block doc comments, `comptime fn`/`comptime expr`
-- Typechecker (~1179 lines) — Hindley-Milner inference, let-polymorphism, polymorphic println/print
-- Codegen (~2145 lines) — LLVM IR via kassane/llvm-zig bindings
+- Lexer (~872 lines) — all token types, indentation tracking, comment tokens, `::` for cons
+- Parser (~1316 lines) — full grammar implementation, multi-line lambdas, block doc comments, `comptime fn`/`comptime expr`, `?` operator
+- Typechecker (~1495 lines) — Hindley-Milner inference, let-polymorphism, polymorphic println/print, `?` operator type checking, Result type propagation
+- Codegen (~3039 lines) — LLVM IR via kassane/llvm-zig bindings
   - JIT execution (MCJIT) and AOT compilation
   - Sum types, records, tuples, lambdas, pattern matching
   - Built-in polymorphic functions (println, print, inspect)
@@ -32,96 +32,28 @@ This document outlines the development of Kō from a Python prototype to a produ
   - Module definitions with pub visibility
   - `::` infix operator for list construction
   - Compile-time evaluation (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else
+  - `?` operator codegen (unwraps Ok values, propagates Err)
+  - Result operations as built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
+  - File-based module imports with selective import support
 - Pretty-printer (`prettyprint.zig`) — type-directed value display for REPL/results
 - LSP server (`lsp.zig`) — hover, completion, diagnostics, documentSymbol, go-to-definition
 - REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands
 - VS Code extension (v0.5.0) with LSP client
 - Tree-sitter grammar (~450 lines) with nvim integration
-- 77 tests passing, 45 .ko test programs, 12 examples
+- 78 tests passing, 49 .ko test programs, 14 examples
 
-**Python Compiler (archived):**
+### 1.2 Next Milestones
 
-- Original prototype in `archive/python-compiler/`
-- Compiled to C99, had closures and string interpolation
+#### v0.3.0 — Language Maturity
 
-### 1.2 Required Features for v0.3.0
+**A. Type System Enhancements**
 
-#### Must-Have (Blocks Everything)
+- Record type syntax: `type Point = { x: Int, y: Int }` with field access on values
+- Pattern matching on records in match arms
+- Named/struct parameters for constructors
+- Better error messages with source locations
 
-**A. Error Handling Type**
-
-```ko
-# Result type for error handling
-type Result[T, E] = Ok(T) | Err(E)
-
-# Usage
-fn parse_int s =
-  match to_int s
-    Just n -> Ok n
-    Nothing -> Err "invalid integer"
-
-# Error propagation with ?
-let n = parse_int "42"?  # propagates error
-```
-
-**B. Module System v2** (See Part 2 for full design)
-
-```ko
-# Hierarchical imports
-import std.collections.list
-import std.math.{sin, cos, PI}
-import local.my_module as m
-
-# Visibility
-pub fn public_api = ...
-fn private_helper = ...
-
-# Module-level scoping
-module MyModule {
-  type Internal = ...
-  pub fn public_api = ...
-}
-```
-
-**C. Named/Struct Parameters**
-
-```ko
-type Point = Point(x: Int, y: Int)
-
-# Named arguments
-let p = Point(x: 1, y: 2)
-println p.x  # 1
-
-# Pattern matching with names
-match p
-  Point(x: 0, y: 0) -> "origin"
-  Point(x: x, y: 0) -> to_string x
-```
-
-**D. Trait/Typeclass System**
-
-```ko
-# Trait definition
-trait Printable {
-  fn to_string: Self -> String
-}
-
-# Auto-derive
-type User = User(name: String, age: Int) with Printable
-
-# Manual implementation
-impl Printable for User {
-  fn to_string user = concat user.name " user"
-}
-
-# Trait bounds
-fn print[T: Printable] item =
-  println (T.to_string item)
-```
-
-#### Should-Have (Makes Language Competitive)
-
-**E. Generics v1 (Monomorphization)**
+**B. Generics v1 (Monomorphization)**
 
 ```ko
 type List[T] = Cons(T, List[T]) | Nil
@@ -134,100 +66,57 @@ fn map[T, U] xs f =
 let doubled = map [1, 2, 3] (\x -> x * 2)
 ```
 
-**F. Compile-Time Execution**
+**C. Module System v2**
+
+- Hierarchical imports: `import std.collections.list`
+- First-class modules (modules as values)
+- Compile-time module instantiation
+- Import hooks (programmable resolution)
+
+**D. Trait/Typeclass System**
 
 ```ko
-# comptime blocks
-comptime {
-  let config = load_config "config.toml"
+trait Printable {
+  fn to_string: Self -> String
 }
 
-# comptime function parameters
-fn matrix[N: comptime, T] data: Matrix[N, T] = ...
-
-# Zig-style comptime
-comptime {
-  const x = 2 + 2;  # evaluated at compile time
-}
-```
-
-**G. Bit Sets and Distinct Types**
-
-```ko
-# Bit sets (Odin-style)
-type Color = Red | Green | Blue
-let flags: bit_set[Color] = {Red, Blue}
-
-# Distinct types
-type UserID = distinct Int
-type OrderID = distinct Int
-
-# Can't mix them
-let user: UserID = UserID(42)
-let order: OrderID = OrderID(42)
-# user == order  # ERROR: type mismatch
-```
-
-#### Nice-to-Have (Polish)
-
-**H. Method Syntax**
-
-```ko
-type List[T] = Cons(T, List[T]) | Nil
-
-# Method syntax
-impl[T] List[T] {
-  fn map self f =
-    match self
-      Cons h t -> Cons (f h) (t.map f)
-      Nil -> Nil
+impl Printable for User {
+  fn to_string user = concat user.name " user"
 }
 
-# Usage
-let doubled = [1, 2, 3].map (\x -> x * 2)
+fn print[T: Printable] item =
+  println (T.to_string item)
 ```
 
-**I. Regex/Pattern Literals**
+#### v0.4.0 — Standard Library & Tooling
 
-```ko
-# Ruby-style regex
-let email_pattern = /\w+@\w+\.\w+/
-if email_pattern.matches input then ...
+- Comprehensive standard library (collections, I/O, math, string)
+- Package manager
+- Build system integration
+- Debugger support
 
-# Pattern literals
-let date_pattern = /\d{4}-\d{2}-\d{2}/
-```
+#### v0.5.0 — Polish & Release
 
-**J. Exception Handling**
-
-```ko
-# Exception type
-type Error = ParseError(String) | IOError(String)
-
-# try/catch
-try {
-  let data = read_file "data.txt"?
-  parse_data data
-} catch {
-  ParseError msg -> println msg
-  IOError msg -> eprintln msg
-}
-```
+- Performance optimization
+- Documentation
+- Examples and tutorials
+- Security audit
+- v1.0.0 release
 
 ### 1.3 Feature Priority Matrix
 
-| Feature | Impact | Effort | Priority |
-|---------|--------|--------|----------|
-| Error handling | High | Medium | P0 |
-| Module system v2 | High | High | P0 |
-| Named parameters | Medium | Low | P0 |
-| Traits/typeclasses | High | High | P1 |
-| Generics | High | High | P1 |
-| Compile-time execution | Medium | Medium | P2 |
-| Bit sets/distinct types | Low | Low | P2 |
-| Method syntax | Medium | Low | P2 |
-| Regex literals | Low | Medium | P3 |
-| Exceptions | Medium | Medium | P3 |
+| Feature | Impact | Effort | Status |
+|---------|--------|--------|--------|
+| Result type + `?` operator | High | Medium | Done |
+| File-based module imports | High | High | Done |
+| Stack overflow detection | High | Medium | Done |
+| Comptime evaluation | Medium | Medium | Done |
+| Result built-in operations | Medium | Low | Done |
+| Record type syntax | High | Medium | Planned |
+| Generics | High | High | Planned |
+| Traits/typeclasses | High | High | Planned |
+| Module system v2 | High | High | Planned |
+| Named parameters | Medium | Low | Planned |
 
 ---
 
@@ -267,7 +156,23 @@ From recent research and production systems:
 - Explicit allow-list for external interactions
 - Security by default
 
-### 2.2 Kō Module System Design
+### 2.2 Current Implementation (v0.2.0-alpha)
+
+File-based imports are working:
+
+```ko
+import std.Math.{abs, max, min}   # selective import
+import std.Math                     # full module import
+import std.List                     # import entire module
+```
+
+- `module_loader.zig` resolves paths relative to the source file and stdlib
+- Typechecker creates fresh `Inferer` per imported module, registers functions/constructors with both qualified and unqualified names
+- Codegen generates LLVM IR for imported functions in the same module
+- No circular import detection yet
+- No package system or hierarchical namespaces yet
+
+### 2.3 Future Design (v0.3.0+)
 
 #### Core Principles
 
@@ -504,22 +409,14 @@ import std.math  # resolved to BLAKE3 hash
 
 ### 3.1 Why Zig?
 
-**Advantages over Python implementation:**
+**Advantages:**
 
-- **Performance:** 100-1000x faster compilation
+- **Performance:** 100-1000x faster compilation than Python prototype
 - **Memory safety:** No GC, explicit allocation
 - **C interop:** Perfect for LLVM bindings
 - **Self-hosting potential:** Compile Kō to Zig eventually
 - **Cross-compilation:** Built-in support
 - **Compile-time execution:** `comptime` for metaprogramming
-
-**Advantages over C implementation:**
-
-- **Error handling:** `error!T` unions
-- **No hidden allocations:** Every alloc is explicit
-- **Better ergonomics:** Defer, optional types
-- **Built-in testing:** `zig test`
-- **Package manager:** `zig build`
 
 ### 3.2 Architecture Overview
 
@@ -1099,7 +996,7 @@ pub fn build(b: *std.Build) void {
 - [x] Reference counting
 - [x] Partial application
 
-### Phase 2: Language Features (In Progress)
+### Phase 2: Language Features (Completed)
 
 - [x] `::` infix constructor syntax (desugars to `Cons a b`)
 - [x] Polymorphic println/print (type-directed runtime dispatch)
@@ -1108,27 +1005,30 @@ pub fn build(b: *std.Build) void {
 - [x] REPL pretty-printing (int, float, bool, char, string, unit, tuple, constructors)
 - [x] LSP server (hover, completion, diagnostics)
 - [x] **General recursion safety** — stack overflow detection with clear error message
-- [ ] **File-based imports** — `import foo` reads and compiles `foo.ko`
+- [x] **File-based imports** — `import foo` reads and compiles `foo.ko`, selective imports
+- [x] **`?` operator** — postfix try for Result error propagation
+- [x] **Result operations** — built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
+- [x] **expr_type_tags** — per-expression type tags for correct println output
 - [ ] Closure codegen for multi-param lambdas (partial fix)
 - [ ] Full decref for intermediate variables
 - [ ] Fix multi-arg constructor pretty-printing in REPL
 
-### Phase 3: Standard Library (Planned)
+### Phase 3: Language Maturity (v0.3.0, In Progress)
 
-- [ ] Core types and operations
-- [ ] String operations
-- [ ] Collections (List, Map, Set)
-- [ ] I/O operations
-- [ ] Math library
+- [ ] Record type syntax with field access
+- [ ] Generics (monomorphization)
+- [ ] Traits/typeclasses
+- [ ] Module system v2 (hierarchical imports, first-class modules)
+- [ ] Named/struct parameters
 
-### Phase 4: Tooling (Planned)
+### Phase 4: Standard Library & Tooling (v0.4.0)
 
+- [ ] Comprehensive standard library
 - [ ] Package manager
-- [ ] Build system
-- [ ] LSP server
+- [ ] Build system integration
 - [ ] Debugger support
 
-### Phase 5: Polish and Release (Planned)
+### Phase 5: Polish and Release (v0.5.0)
 
 - [ ] Documentation
 - [ ] Examples and tutorials
@@ -1189,5 +1089,5 @@ pub fn build(b: *std.Build) void {
 ---
 
 *Document generated: 2026-06-20*  
-*Last updated: 2026-07-03*  
-*Status: Planning Phase*
+*Last updated: 2026-07-11*  
+*Status: v0.2.0-alpha Released*

@@ -1074,7 +1074,8 @@ pub const Inferer = struct {
             .try_op => blk: {
                 const result_ty = try self.newVarType(try self.freshName("result"));
                 const ok_ty = try self.newVarType(try self.freshName("ok"));
-                try self.unify(ty, try self.newType(.{ .con = .{ .name = "Result", .args = &.{ ok_ty, result_ty } } }));
+                const args = try self.allocator.dupe(*Type, &.{ ok_ty, result_ty });
+                try self.unify(ty, try self.newType(.{ .con = .{ .name = "Result", .args = args } }));
                 break :blk ok_ty;
             },
         };
