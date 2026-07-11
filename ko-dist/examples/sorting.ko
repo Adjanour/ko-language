@@ -31,10 +31,10 @@ fn is_sorted xs =
 
 fn main =
   let sorted1 = insertion_sort (Cons 5 (Cons 3 (Cons 8 (Cons 1 (Cons 4 Nil)))))
-  println (is_sorted sorted1)    # 1
-  println (sum sorted1)          # 21
+  println (is_sorted sorted1)
+  println (sum sorted1)
 
   let sorted2 = insertion_sort (Cons 5 (Cons 4 (Cons 3 (Cons 2 (Cons 1 Nil)))))
-  println (is_sorted sorted2)    # 1
-  println (sum sorted2)          # 15
+  println (is_sorted sorted2)
+  println (sum sorted2)
 

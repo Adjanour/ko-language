@@ -248,7 +248,8 @@ pub fn main(init: std.process.Init) !void {
 
             // Link with gcc
             const runtime_obj = init.arena.allocator().dupeZ(u8, "ko_runtime.o") catch unreachable;
-            const cc_argv = [_][]const u8{ "/usr/bin/gcc", "-c", "/home/bernard/Learning/weird/ko-zig/src/ko_runtime.c", "-o", runtime_obj };
+            const runtime_c_path = try std.fmt.allocPrint(init.arena.allocator(), "{s}/ko_runtime.c", .{exe_dir});
+            const cc_argv = [_][]const u8{ "/usr/bin/gcc", "-c", runtime_c_path, "-o", runtime_obj };
             const cc_result = std.process.run(init.arena.allocator(), io, .{
                 .argv = &cc_argv,
                 .stderr_limit = .unlimited,

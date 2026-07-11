@@ -197,13 +197,41 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 
 ## Known Issues (v0.2.0-alpha)
 
-- **Inline comments after `let` bindings break the parser.** The comment consumes the newline, so the next line doesn't see the binding. Workaround: put comments on their own line.
-- **`println (fn_call)` prints `<fn>` instead of the actual value.** Workaround: extract to a `let` binding first: `let n = f x; println n`
-- **Imported module type info doesn't propagate** to the main typechecker (shows type variables instead of concrete types)
-- **No circular import detection**
-- **No package/module system** — just flat file imports
-- **Generics not implemented** — can't write polymorphic functions over type parameters yet
-- **Multi-line match bodies** — a multi-line `match` followed by another expression can confuse the parser. Workaround: extract match into a helper function.
+### Language
+
+- **Inline comments after `let` bindings have a scoping bug.** The parser no longer crashes, but a comment between a let value and its body silently produces incorrect scoping. Workaround: put comments on their own line.
+- **`println (fn_call)` prints `<fn>` for function-typed values.** This is correct behavior — functions aren't printable. Extract to a `let` binding first: `let n = f x; println n`
+- **Multi-line match bodies confuse the parser.** A multi-line `match` followed by another expression can cause the next expression to be swallowed. Workaround: extract the match into a helper function.
+- **Multi-line closures with captured variables cause codegen errors.** Workaround: use single-line lambdas or extract to a `let` binding.
+- **Partial application only works for global `fn` definitions.** Multi-param lambdas (`\x y -> ...`) do not get partial application.
+
+### Modules & Imports
+
+- **Imported module type info doesn't propagate** to the main typechecker — shows type variables instead of concrete types. This is an architectural limitation of the current import system.
+- **No circular import detection.** Recursive imports silently produce incorrect results.
+- **No package/module system** — just flat file imports with `std` library support.
+
+### Tooling
+
+- **LSP is single-file only.** No cross-file go-to-definition or import navigation.
+- **LSP document symbols always report line 0.** Source location for symbols is not yet implemented.
+- **REPL doesn't support multi-line input.** Each line is processed independently.
+- **REPL can't evaluate top-level `let` bindings.** Use `fn` definitions instead.
+
+## Platform Support
+
+| Platform | JIT | REPL | LSP | `--emit-obj` | `--emit-exe` |
+|----------|-----|------|-----|-------------|-------------|
+| **Linux x86_64** | Yes | Yes | Yes | Yes | Yes |
+| **Linux aarch64** | Partial | Yes | Yes | Partial | No |
+| **macOS** | No | No | No | No | No |
+| **Windows** | No | No | No | No | No |
+
+**Linux x86_64** is the primary development platform. All features work.
+
+**Linux aarch64** needs: dynamic CPU detection, aarch64 linker paths, and aarch64 data layout.
+
+**macOS/Windows** need: replacing raw Linux syscalls with portable `std.fs`/`std.Io` APIs, platform-specific linker toolchains, and different CRT object paths. See `docs/editor-setup.md` for contribution guidance.
 
 ## Roadmap
 
