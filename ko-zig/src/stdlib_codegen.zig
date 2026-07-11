@@ -887,9 +887,9 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &f_args, 2, "");
         self.buildBranch(merge_bb);
 
-        // ---- case 2: bool — val == 0 ? "True" : "False" (True=tag0, False=tag1) ----
+        // ---- case 2: bool — val != 0 ? "True" : "False" ----
         core.LLVMPositionBuilderAtEnd(self.builder, case_bbs[2]);
-        const is_true = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, val, core.LLVMConstInt(self.i64Type(), 0, 0), "is_true");
+        const is_true = core.LLVMBuildICmp(self.builder, .LLVMIntNE, val, core.LLVMConstInt(self.i64Type(), 0, 0), "is_true");
         const true_str = self.globalStringConstant("True");
         const false_str = self.globalStringConstant("False");
         const bool_str = core.LLVMBuildSelect(self.builder, is_true, true_str, false_str, "bool_str");

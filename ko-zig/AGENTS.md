@@ -445,13 +445,6 @@ main.zig → parser.zig → lexer.zig
 - Constructor type tags from imported modules may show raw values in `println`
 - No circular import detection
 - No package/module system — just flat file imports
-- **TODO: Inline comments after `let` bindings break the parser.** The comment consumes the newline, breaking indentation tracking so subsequent lines don't see the binding. Example:
-  ```
-  let a = 42
-  let b = a + 1 # comment   ← comment eats the newline
-  println b                  ← parser doesn't see 'a' or 'b'
-  ```
-  Workaround: put comments on their own line, or after `println`/expression lines (not after `let`).
 
 ## Standard Library
 

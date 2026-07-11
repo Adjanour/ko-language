@@ -43,7 +43,7 @@ pub const Codegen = struct {
     constructor_tags: std.StringHashMap(CtorInfo),
     constructor_fns: std.StringHashMap(types.LLVMValueRef), // constructor name → wrapper fn
     record_types: std.StringHashMap(RecordInfo),
-    expr_type_tags: ?std.AutoHashMap(*const parser.Expr, i64) = null,
+    expr_type_tags: ?*std.AutoHashMap(*const parser.Expr, i64) = null,
     module_owned_by_jit: bool = false,
     quiet: bool = false, // suppress IR dump (for REPL)
     current_fn_name: ?[]const u8 = null,
@@ -2486,6 +2486,24 @@ pub const Codegen = struct {
                         _ = try self.codegenFn(def.fn_def);
                     }
                 }
+
+                // Register unqualified names for selective imports
+                if (imp.selective) |sel| {
+                    for (sel) |s| {
+                        const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, s });
+                        // Register function name mapping: unqualified -> qualified
+                        if (self.fn_types.get(qualified)) |fn_ty| {
+                            try self.fn_types.put(s, fn_ty);
+                        }
+                        if (self.fn_arity.get(qualified)) |arity| {
+                            try self.fn_arity.put(s, arity);
+                        }
+                        // Register in named_values so identifier resolution finds it
+                        if (self.named_values.get(qualified)) |val| {
+                            try self.named_values.put(s, val);
+                        }
+                    }
+                }
             }
         }
 
@@ -2884,7 +2902,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
             std.debug.print("{d}", .{f});
         },
         2 => {
-            if (val == 0) {
+            if (val != 0) {
                 std.debug.print("True", .{});
             } else {
                 std.debug.print("False", .{});

@@ -190,6 +190,7 @@ pub const Repl = struct {
             defer cg.deinit();
             cg.module_owned_by_jit = true;
             cg.quiet = true;
+            cg.expr_type_tags = &inferer.expr_type_tags;
             try cg.codegenProgram(prog);
 
             var jit = try codegen_mod.Jit.init(cg.module, 0);

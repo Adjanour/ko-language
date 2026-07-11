@@ -298,13 +298,11 @@ fn setResultValue(ptr: i64, val: i64) void {
 }
 
 pub fn ko_result_is_ok(result: i64) callconv(.c) i64 {
-    // True = tag 0, False = tag 1
-    return if (resultTag(result) == .ok) 0 else 1;
+    return if (resultTag(result) == .ok) 1 else 0;
 }
 
 pub fn ko_result_is_err(result: i64) callconv(.c) i64 {
-    // True = tag 0, False = tag 1
-    return if (resultTag(result) == .err) 0 else 1;
+    return if (resultTag(result) == .err) 1 else 0;
 }
 
 pub fn ko_result_unwrap(default: i64, result: i64) callconv(.c) i64 {

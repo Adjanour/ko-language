@@ -8,8 +8,9 @@ const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
 const repl_mod = @import("repl.zig");
+const module_loader_mod = @import("module_loader.zig");
 
-const VERSION = "0.1.0-alpha";
+const VERSION = "0.2.0-alpha";
 
 fn nowNs() u64 {
     var ts: linux.timespec = undefined;
@@ -154,8 +155,20 @@ pub fn main(init: std.process.Init) !void {
     const parse_time = nowNs() - timer;
 
     // Typecheck
+    // Extract base directory from filename for module resolution
+    const base_dir = std.fs.path.dirname(fname) orelse ".";
+    // Resolve executable directory for stdlib lookup from argv[0]
+    const exe_path: []const u8 = if (init.minimal.args.vector.len > 0)
+        std.mem.span(init.minimal.args.vector[0])
+    else
+        "";
+    const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+    var loader = module_loader_mod.ModuleLoader.init(init.arena.allocator(), base_dir, null, exe_dir);
+    defer loader.deinit();
+
     var inferer = typecheck.Inferer.init(init.arena.allocator());
     defer inferer.deinit();
+    inferer.module_loader = &loader;
     inferer.inferProgram(&prog) catch |err| {
         if (inferer.last_error) |ec| {
             reportError(io, fname, ec.loc, "{s}", .{ec.message orelse @errorName(err)});
@@ -169,6 +182,8 @@ pub fn main(init: std.process.Init) !void {
     // Codegen
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
+    cg.expr_type_tags = &inferer.expr_type_tags;
+    cg.module_loader = &loader;
     cg.codegenProgram(prog) catch |err| {
         reportError(io, fname, null, "codegen error: {s}", .{@errorName(err)});
         std.process.exit(1);

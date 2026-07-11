@@ -1,6 +1,7 @@
 const std = @import("std");
 const parser = @import("parser.zig");
 const lexer = @import("lexer.zig");
+const module_loader_mod = @import("module_loader.zig");
 
 pub const Type = union(enum) {
     variable: *TypeVar,
@@ -90,6 +91,9 @@ pub const Inferer = struct {
     last_error: ?ErrorContext,
     current_loc: ?parser.Loc = null,
     doc_comments: std.StringHashMap([]const []const u8),
+    expr_type_tags: std.AutoHashMap(*const parser.Expr, i64),
+    module_loader: ?*module_loader_mod.ModuleLoader = null,
+    imported_inferers: std.ArrayList(*Inferer),
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
         return .{
@@ -102,6 +106,9 @@ pub const Inferer = struct {
             .current_module = null,
             .last_error = null,
             .doc_comments = std.StringHashMap([]const []const u8).init(allocator),
+            .expr_type_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
+            .module_loader = null,
+            .imported_inferers = .empty,
         };
     }
 
@@ -111,6 +118,9 @@ pub const Inferer = struct {
         self.types.deinit();
         self.type_names.deinit();
         self.doc_comments.deinit();
+        self.expr_type_tags.deinit();
+        for (self.imported_inferers.items) |imp| imp.deinit();
+        self.imported_inferers.deinit(self.allocator);
     }
 
     /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
@@ -152,6 +162,27 @@ pub const Inferer = struct {
             },
             else => ty,
         };
+    }
+
+    pub fn typeToTag(self: *Inferer, ty: *Type) i64 {
+        const resolved = self.resolve(ty);
+        return switch (resolved.*) {
+            .int => 0,
+            .float => 1,
+            .bool => 2,
+            .char => 3,
+            .string => 4,
+            .unit => 5,
+            .con => 6,
+            .record => 7,
+            .arrow => 8,
+            .tuple => 9,
+            .variable, .@"ref" => 100,
+        };
+    }
+
+    fn recordExprType(self: *Inferer, expr: *const parser.Expr, ty: *Type) void {
+        self.expr_type_tags.put(expr, self.typeToTag(ty)) catch {};
     }
 
     fn occurs(self: *Inferer, tv: *TypeVar, ty: *Type) bool {
@@ -430,6 +461,84 @@ pub const Inferer = struct {
     }
 
     pub fn inferProgram(self: *Inferer, program: *const parser.Program) Error!void {
+        // Process imports: load, typecheck, and register imported definitions
+        if (self.module_loader) |loader| {
+            for (program.imports) |imp| {
+                const mod = loader.loadModule(imp.path) catch |err| {
+                    std.log.err("Failed to load module: {}", .{err});
+                    continue;
+                } orelse {
+                    std.log.err("Module not found: {s}", .{std.mem.join(self.allocator, "/", imp.path) catch "unknown"});
+                    continue;
+                };
+                const module_name = imp.alias orelse imp.path[imp.path.len - 1];
+
+                // Create a fresh inferer for the imported module
+                var imp_inferer = try self.allocator.create(Inferer);
+                imp_inferer.* = Inferer.init(self.allocator);
+                imp_inferer.module_loader = loader;
+                try self.imported_inferers.append(self.allocator, imp_inferer);
+
+                // Typecheck the imported module
+                imp_inferer.inferProgram(&mod.program) catch |err| {
+                    std.log.err("Failed to typecheck imported module '{s}': {}", .{ module_name, err });
+                    continue;
+                };
+
+                // Register imported type definitions with qualified names
+                for (mod.program.definitions) |def| {
+                    if (def == .type_def) {
+                        const prefixed = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name });
+                        var td = def.type_def;
+                        td.name = prefixed;
+                        try self.registerTypeDef(td);
+                    }
+                }
+
+                // Register imported function signatures with qualified names
+                for (mod.program.definitions) |def| {
+                    if (def == .fn_def) {
+                        const fn_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.fn_def.name });
+                        // Look up the function's type from the imported inferer
+                        if (imp_inferer.global.getScheme(def.fn_def.name)) |scheme| {
+                            try self.global.set(fn_name, scheme);
+                            // Also register unqualified name for selective imports
+                            if (imp.selective) |sel| {
+                                for (sel) |s| {
+                                    if (std.mem.eql(u8, s, def.fn_def.name)) {
+                                        try self.global.set(def.fn_def.name, scheme);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Register imported constructors with qualified names
+                for (mod.program.definitions) |def| {
+                    if (def == .type_def) {
+                        switch (def.type_def.body) {
+                            .sum => |ctors| {
+                                for (ctors) |ctor| {
+                                    const prefixed = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, ctor.name });
+                                    try self.ctors.put(prefixed, .{
+                                        .type_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name }),
+                                        .arity = ctor.params.len,
+                                    });
+                                    // Also register unqualified constructor name
+                                    try self.ctors.put(ctor.name, .{
+                                        .type_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name }),
+                                        .arity = ctor.params.len,
+                                    });
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                }
+            }
+        }
+
         // Register type definitions and constructor types first.
         for (program.definitions) |def| {
             switch (def) {
@@ -529,6 +638,144 @@ pub const Inferer = struct {
         inner_arrow5.* = .{ .arrow = .{ .from = string_param7, .to = inner_arrow4 } };
         string_string_string_to_string.* = .{ .arrow = .{ .from = string_param6, .to = inner_arrow5 } };
         try self.global.set("String.replace", .{ .quantified = &.{}, .body = string_string_string_to_string });
+
+        // Result operations (built-in)
+        // Result.is_ok : forall a b. Result a b -> Int
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const result_a_b = try self.allocator.create(Type);
+            const args_a_b = try self.allocator.alloc(*Type, 2);
+            args_a_b[0] = ra;
+            args_a_b[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_a_b } };
+            const result_to_int = try self.allocator.create(Type);
+            result_to_int.* = .{ .arrow = .{ .from = result_a_b, .to = try self.newType(.int) } };
+            const qa = ra.variable.id;
+            const qb = rb.variable.id;
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = qa;
+            q[1] = qb;
+            try self.global.set("Result.is_ok", .{ .quantified = q, .body = result_to_int });
+        }
+        // Result.is_err : forall a b. Result a b -> Int
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const result_a_b = try self.allocator.create(Type);
+            const args_a_b = try self.allocator.alloc(*Type, 2);
+            args_a_b[0] = ra;
+            args_a_b[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_a_b } };
+            const result_to_int = try self.allocator.create(Type);
+            result_to_int.* = .{ .arrow = .{ .from = result_a_b, .to = try self.newType(.int) } };
+            const qa = ra.variable.id;
+            const qb = rb.variable.id;
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = qa;
+            q[1] = qb;
+            try self.global.set("Result.is_err", .{ .quantified = q, .body = result_to_int });
+        }
+        // Result.unwrap : forall a b. a -> Result a b -> a
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const result_a_b = try self.allocator.create(Type);
+            const args_a_b = try self.allocator.alloc(*Type, 2);
+            args_a_b[0] = ra;
+            args_a_b[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_a_b } };
+            const result_to_a = try self.allocator.create(Type);
+            result_to_a.* = .{ .arrow = .{ .from = result_a_b, .to = ra } };
+            const a_to_result_to_a = try self.allocator.create(Type);
+            a_to_result_to_a.* = .{ .arrow = .{ .from = ra, .to = result_to_a } };
+            const qa = ra.variable.id;
+            const qb = rb.variable.id;
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = qa;
+            q[1] = qb;
+            try self.global.set("Result.unwrap", .{ .quantified = q, .body = a_to_result_to_a });
+        }
+        // Result.map : forall a b c. (a -> b) -> Result a c -> Result b c
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const rc = try self.newVarType("c");
+            const a_to_b = try self.allocator.create(Type);
+            a_to_b.* = .{ .arrow = .{ .from = ra, .to = rb } };
+            const result_a_c = try self.allocator.create(Type);
+            const args_ac = try self.allocator.alloc(*Type, 2);
+            args_ac[0] = ra;
+            args_ac[1] = rc;
+            result_a_c.* = .{ .con = .{ .name = "Result", .args = args_ac } };
+            const result_b_c = try self.allocator.create(Type);
+            const args_bc = try self.allocator.alloc(*Type, 2);
+            args_bc[0] = rb;
+            args_bc[1] = rc;
+            result_b_c.* = .{ .con = .{ .name = "Result", .args = args_bc } };
+            const result_b_c_ret = try self.allocator.create(Type);
+            result_b_c_ret.* = .{ .arrow = .{ .from = result_a_c, .to = result_b_c } };
+            const fn_to_result = try self.allocator.create(Type);
+            fn_to_result.* = .{ .arrow = .{ .from = a_to_b, .to = result_b_c_ret } };
+            const q = try self.allocator.alloc(usize, 3);
+            q[0] = ra.variable.id;
+            q[1] = rb.variable.id;
+            q[2] = rc.variable.id;
+            try self.global.set("Result.map", .{ .quantified = q, .body = fn_to_result });
+        }
+        // Result.fold : forall a b c. (a -> c) -> (b -> c) -> Result a b -> c
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const rc = try self.newVarType("c");
+            const a_to_c = try self.allocator.create(Type);
+            a_to_c.* = .{ .arrow = .{ .from = ra, .to = rc } };
+            const b_to_c = try self.allocator.create(Type);
+            b_to_c.* = .{ .arrow = .{ .from = rb, .to = rc } };
+            const result_a_b = try self.allocator.create(Type);
+            const args_ab = try self.allocator.alloc(*Type, 2);
+            args_ab[0] = ra;
+            args_ab[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_ab } };
+            const result_to_c = try self.allocator.create(Type);
+            result_to_c.* = .{ .arrow = .{ .from = result_a_b, .to = rc } };
+            const b_to_c_to_result = try self.allocator.create(Type);
+            b_to_c_to_result.* = .{ .arrow = .{ .from = b_to_c, .to = result_to_c } };
+            const full = try self.allocator.create(Type);
+            full.* = .{ .arrow = .{ .from = a_to_c, .to = b_to_c_to_result } };
+            const q = try self.allocator.alloc(usize, 3);
+            q[0] = ra.variable.id;
+            q[1] = rb.variable.id;
+            q[2] = rc.variable.id;
+            try self.global.set("Result.fold", .{ .quantified = q, .body = full });
+        }
+        // Result.and_then : forall a b c. (a -> Result b c) -> Result a c -> Result b c
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const rc = try self.newVarType("c");
+            const result_b_c = try self.allocator.create(Type);
+            const args_bc = try self.allocator.alloc(*Type, 2);
+            args_bc[0] = rb;
+            args_bc[1] = rc;
+            result_b_c.* = .{ .con = .{ .name = "Result", .args = args_bc } };
+            const a_to_result_b_c = try self.allocator.create(Type);
+            a_to_result_b_c.* = .{ .arrow = .{ .from = ra, .to = result_b_c } };
+            const result_a_c = try self.allocator.create(Type);
+            const args_ac = try self.allocator.alloc(*Type, 2);
+            args_ac[0] = ra;
+            args_ac[1] = rc;
+            result_a_c.* = .{ .con = .{ .name = "Result", .args = args_ac } };
+            const result_a_c_to_result_b_c = try self.allocator.create(Type);
+            result_a_c_to_result_b_c.* = .{ .arrow = .{ .from = result_a_c, .to = result_b_c } };
+            const full = try self.allocator.create(Type);
+            full.* = .{ .arrow = .{ .from = a_to_result_b_c, .to = result_a_c_to_result_b_c } };
+            const q = try self.allocator.alloc(usize, 3);
+            q[0] = ra.variable.id;
+            q[1] = rb.variable.id;
+            q[2] = rc.variable.id;
+            try self.global.set("Result.and_then", .{ .quantified = q, .body = full });
+        }
 
         // Predeclare functions for recursion.
         for (program.definitions) |def| {
@@ -718,12 +965,12 @@ pub const Inferer = struct {
 
     fn inferExpr(self: *Inferer, env: *Env, expr: *const parser.Expr) Error!*Type {
         self.current_loc = expr.getLoc();
-        return switch (expr.*) {
-            .int_literal => try self.newType(.int),
-            .float_literal => try self.newType(.float),
-            .string_literal => try self.newType(.string),
-            .char_literal => try self.newType(.char),
-            .bool_literal => try self.newType(.bool),
+        const ty = try switch (expr.*) {
+            .int_literal => self.newType(.int),
+            .float_literal => self.newType(.float),
+            .string_literal => self.newType(.string),
+            .char_literal => self.newType(.char),
+            .bool_literal => self.newType(.bool),
             .identifier => |id| blk: {
                 const scheme = self.resolveName(env, id.name) orelse {
                     self.last_error = .{
@@ -744,10 +991,10 @@ pub const Inferer = struct {
                 };
                 break :blk try self.instantiate(scheme);
             },
-            .tuple => |t| {
+            .tuple => |t| blk: {
                 const tys = try self.allocator.alloc(*Type, t.items.len);
                 for (t.items, 0..) |item, i| tys[i] = try self.inferExpr(env, item);
-                return try self.newType(.{ .tuple = tys });
+                break :blk try self.newType(.{ .tuple = tys });
             },
             .record_literal => |rec| try self.inferRecordLiteral(env, rec.name, rec.fields),
             .field_access => |fa| try self.inferFieldAccess(env, fa.object, fa.field),
@@ -762,12 +1009,14 @@ pub const Inferer = struct {
             .comptime_expr => |inner| try self.inferExpr(env, inner),
             .pat_record => try self.newType(.unit),
             .ref_expr => |inner| try self.inferUnary(env, .ref, inner),
-            .assign_expr => |a| {
+            .assign_expr => |a| blk: {
                 _ = try self.inferExpr(env, a.target);
                 _ = try self.inferExpr(env, a.value);
-                return try self.newType(.unit);
+                break :blk try self.newType(.unit);
             },
         };
+        self.recordExprType(expr, ty);
+        return ty;
     }
 
     fn inferBlock(self: *Inferer, env: *Env, items: []const *parser.Expr) Error!*Type {
