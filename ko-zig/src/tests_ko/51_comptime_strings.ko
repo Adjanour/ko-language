@@ -1,0 +1,18 @@
+# Test: comptime string operations
+comptime fn comptime_string_length s = String.length s
+comptime fn comptime_string_append a b = String.append a b
+comptime fn comptime_string_char_at s i = String.charAt s i
+comptime fn comptime_string_upper s = String.toUpperCase s
+comptime fn comptime_string_lower s = String.toLowerCase s
+
+fn main =
+  let len = comptime comptime_string_length "hello"
+  println len
+  let combined = comptime comptime_string_append "hello" " world"
+  println combined
+  let ch = comptime comptime_string_char_at "hello" 1
+  println ch
+  let upper = comptime comptime_string_upper "hello"
+  println upper
+  let lower = comptime comptime_string_lower "HELLO"
+  println lower

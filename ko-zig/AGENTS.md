@@ -1149,17 +1149,32 @@ Lambda functions also get stack checks at entry, since they can be called recurs
 ## Compile-Time Evaluation (`src/comptime.zig`)
 
 ### Architecture
-- `ComptimeValue` union: `int`, `float`, `bool`, `char`, `string`, `unit`
+- `ComptimeValue` union: `int`, `float`, `bool`, `char`, `string`, `unit`, `list`, `tuple`, `constructor`
 - `CompileTimeWorld` struct with hash maps for functions, constructors, values
-- `evalExpr()` recursive evaluator supporting literals, binary/unary ops, if-then-else, let bindings, function calls, blocks, recursion (max depth 1000)
-- `evalFnCall()` handles comptime functions with literal args; falls back to `error.CannotEvalAtCompileTime` for non-literal args
+- `evalExpr()` recursive evaluator supporting:
+  - Literals: int, float, bool, char, string
+  - Binary/unary ops (all arithmetic, comparisons, logical, cons `::`)
+  - If-then-else expressions
+  - Let bindings (with value save/restore)
+  - Function calls (comptime fns + constructor-as-function + builtins)
+  - Blocks, recursion (max depth 10,000)
+  - **Match expressions** with constructor and identifier patterns
+  - **Constructor expressions** (zero-arg constructors)
+  - **Tuple expressions**
+- `matchPattern()` pattern matching: wildcard, identifier binding, literal comparison, constructor matching with recursive arg matching
+- `evalBuiltinFn()` built-in comptime operations:
+  - String: `String.length`, `String.append`, `String.charAt`, `String.substring`, `String.startsWith`, `String.endsWith`
+  - List: `List.cons`, `List.head`, `List.tail`, `List.length`, `List.reverse`, `List.append`
+  - Int: `Int.toString`
+  - Constructor-as-function: any registered constructor with correct arity
 
 ### Integration in codegen
 - `comptime_world` field on `Codegen` struct
 - Pass 1: populate comptime world with comptime functions + constructor info
-- `codegenExpr` for `.comptime_expr`: try comptime eval, fall back to runtime
-- `codegenFnCall`: intercept calls to comptime functions with all-literal args
-- `comptimeValueToLlvm`: convert `ComptimeValue` to LLVM constants
+- `codegenExpr` for `.comptime_expr`: try comptime eval, **only splice scalar results** (int/float/bool/char/string/unit). Complex values (list/tuple/constructor) fall back to runtime
+- `codegenFnCall`: intercept calls to comptime functions with all-literal args; same splicing rules
+- `comptimeValueToLlvm`: convert `ComptimeValue` to LLVM constants (constructors return tag only)
+- **Field-access calls** (e.g., `String.length s`) resolved as `"String.length"` for comptime lookup
 
 ### Parser: `comptime` keyword
 - `comptime fn name ...` — defines a comptime function (sets `FnDef.is_comptime = true`)
@@ -1174,3 +1189,12 @@ During JIT, `println` output goes to stdout. If a comptime expression calls `pri
 
 ### Gotcha: Multi-line `if`/`else` in comptime fn bodies
 The `if` expression's `else` branch must be on the same line or indented. A bare `else` on a new line after `then ...` may cause the block parser to split the definition. Test with single-line bodies first.
+
+### Gotcha: Complex comptime results can't be spliced to LLVM
+Comptime expressions that return lists, tuples, or constructors produce `ComptimeValue` types that have no direct LLVM representation. The codegen falls back to runtime evaluation for these. To chain comptime computations that produce complex values, compose them in a single comptime function (e.g., `comptime fn rev_sum lst = comptime_sum (comptime_reverse lst)`), not through runtime `let` bindings.
+
+### Gotcha: Comptime expressions are independent
+Each `comptime expr` evaluates in its own `CompileTimeWorld`. Intermediate values from one comptime expression are NOT available to subsequent comptime expressions through runtime `let` bindings. The comptime evaluator only sees values stored in its own `values` map.
+
+### Gotcha: Field-access constructor names
+`String.length s` is parsed as `field_access(constructor("String"), "length")`. The comptime evaluator resolves this as `"String.length"` for builtin lookup. Capital-letter module names (e.g., `Int`, `String`) are parsed as constructors, not identifiers.

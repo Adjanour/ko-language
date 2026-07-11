@@ -1126,6 +1126,10 @@ test "parser: all .ko test files parse successfully" {
         .{ .name = "47_float_math.ko", .source = @embedFile("tests_ko/47_float_math.ko") },
         .{ .name = "48_result_ops.ko", .source = @embedFile("tests_ko/48_result_ops.ko") },
         .{ .name = "49_rc_basic.ko", .source = @embedFile("tests_ko/49_rc_basic.ko") },
+        .{ .name = "50_comptime_lists.ko", .source = @embedFile("tests_ko/50_comptime_lists.ko") },
+        .{ .name = "51_comptime_strings.ko", .source = @embedFile("tests_ko/51_comptime_strings.ko") },
+        .{ .name = "52_comptime_match.ko", .source = @embedFile("tests_ko/52_comptime_match.ko") },
+        .{ .name = "53_comptime_tuples.ko", .source = @embedFile("tests_ko/53_comptime_tuples.ko") },
     };
 
     for (files) |f| {

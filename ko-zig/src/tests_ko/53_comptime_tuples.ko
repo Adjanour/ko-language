@@ -1,0 +1,11 @@
+# Test: comptime tuples and complex expressions
+comptime fn comptime_make_point x y = (x, y)
+
+fn main =
+  let pt = comptime comptime_make_point 10 20
+  let x = comptime (match pt | (a, _) => a)
+  println x
+  let y = comptime (match pt | (_, b) => b)
+  println y
+  let total = comptime (match pt | (a, b) => a + b)
+  println total

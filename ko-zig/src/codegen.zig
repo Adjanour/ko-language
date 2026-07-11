@@ -638,7 +638,12 @@ pub const Codegen = struct {
             .comptime_expr => |inner| blk: {
                 // Try compile-time evaluation
                 if (self.comptime_world.evaluate(inner)) |val| {
-                    break :blk self.comptimeValueToLlvm(val);
+                    // Only splice simple values that have direct LLVM representations
+                    const can_splice = switch (val) {
+                        .int, .float, .bool_val, .char, .string, .unit => true,
+                        .list, .tuple, .constructor => false,
+                    };
+                    if (can_splice) break :blk self.comptimeValueToLlvm(val);
                 }
                 // Fallback: runtime evaluation
                 break :blk self.codegenExpr(inner);
@@ -1143,7 +1148,11 @@ pub const Codegen = struct {
                     }
                     if (all_comptime) {
                         if (self.comptime_world.callComptimeFn(fn_def, comptime_args[0..call.args.len])) |val| {
-                            return self.comptimeValueToLlvm(val);
+                            const can_splice = switch (val) {
+                                .int, .float, .bool_val, .char, .string, .unit => true,
+                                .list, .tuple, .constructor => false,
+                            };
+                            if (can_splice) return self.comptimeValueToLlvm(val);
                         }
                     }
                 }
@@ -1462,6 +1471,11 @@ pub const Codegen = struct {
                 break :blk core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), global, @ptrCast(&indices), 1, "str_ptr");
             },
             .unit => core.LLVMConstInt(i64_type, 0, 0),
+            // Comptime-only values: can't be directly represented in LLVM IR
+            // These should only appear during comptime evaluation, not at codegen time
+            .list => core.LLVMConstInt(i64_type, 0, 0),
+            .tuple => core.LLVMConstInt(i64_type, 0, 0),
+            .constructor => |c| core.LLVMConstInt(i64_type, c.tag, 0),
         };
     }
 
