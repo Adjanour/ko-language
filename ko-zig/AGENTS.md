@@ -304,6 +304,36 @@ Solution: `Parser.allow_let_in_body` flag. Set to `true` when entering a let bod
 
 `fn_body_stops` (without `keyword_let`) is correct for function bodies. Adding `keyword_let` to it would make the fn body consume subsequent top-level let bindings, breaking the program structure. The let body issue is solved separately via `allow_let_in_body`, not by changing stop tags.
 
+### Inline Comments and `isInlineComment`
+
+Kō's tokenizer produces `.comment` tokens for both inline comments (`x + y  # comment`) and standalone comment lines (`# comment`). The parser must distinguish them:
+
+- **Standalone comment lines** should break non-indented blocks (they're doc comments for the NEXT definition)
+- **Inline comments** should be skipped transparently (they're annotations on the current expression)
+
+`isInlineComment()` checks if there's a newline between the previous non-newline token and the comment. If no newline → inline. The check must skip past consumed `.newline` tokens to find the actual previous content token.
+
+In `parse_block` (non-indented):
+```zig
+if (self.current().tag == .comment and !is_indented and !self.isInlineComment()) break;
+```
+
+In the skip loop:
+```zig
+if (self.current().tag == .newline or (self.current().tag == .comment and (is_indented or self.isInlineComment()))) {
+    _ = self.advance();
+    continue;
+}
+```
+
+In `parse_let_expr_in_block`, skip comments after `skip_newlines()` so the body check sees the correct next token:
+```zig
+self.skip_newlines();
+while (self.current().tag == .comment) {
+    _ = self.advance();
+}
+```
+
 ### Test Pyramid for Compiler Stages
 
 When testing compiler features, write tests in this order:
@@ -885,11 +915,11 @@ ko --emit-exe out file.ko      # Emit object file + link to executable
 - Polymorphic type variables show friendly names (a, b, c) based on quantified list position
 - **Parenthesization fix**: Check resolved type (via `variable.instance`) not raw type tag for parenthesization decisions
 
-### I/O Pattern — Raw Linux Syscalls (NOT std.Io)
+### I/O Pattern — Raw Syscalls (NOT std.Io)
 
 **Critical: `std.Io` does NOT work with subprocess pipes.** The `Io.File.stdin().readerStreaming(io, &buffer)` approach fails because `Io.File.Reader` uses `sendFile` for streaming which returns 0 on pipes, and the `Io.Reader` interface doesn't properly delegate to the file for pipe reads.
 
-**Solution: Use raw `std.os.linux` syscalls directly.** This bypasses the entire `std.Io` layer.
+**Solution: Use raw syscalls directly.** For reads, use `std.posix.read()` (cross-platform). For writes, use a `comptime` conditional to switch between `linux.write` (Linux) and `std.c.write` (macOS/other).
 
 ```zig
 const linux = std.os.linux;
@@ -910,7 +940,10 @@ fn rawRead(fd: i32, buf: []u8) !usize {
 fn writeAll(fd: i32, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
-        const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
+        const rc = if (comptime @import("builtin").os.tag == .linux)
+            linux.write(fd, data[pos..].ptr, data.len - pos)
+        else
+            std.c.write(fd, data[pos..].ptr, data.len - pos);
         if (rc < 0) {
             const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
             switch (e) {

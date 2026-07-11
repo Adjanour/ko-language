@@ -768,7 +768,7 @@ pub const Tokenizer = struct {
             var col: u32 = 0;
 
             // Count spaces/tabs at start of line.
-            while (true) {
+        while (true) {
                 switch (self.source[self.index]) {
                     ' ' => {
                         col += 1;

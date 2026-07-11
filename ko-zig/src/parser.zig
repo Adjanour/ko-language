@@ -99,6 +99,16 @@ pub const Parser = struct {
         return true;
     }
 
+    fn isInlineComment(self: *Parser) bool {
+        if (self.pos == 0) return false;
+        var i = self.pos - 1;
+        while (i > 0 and self.tokens[i].tag == .newline) i -= 1;
+        const prev = self.tokens[i];
+        if (prev.tag == .newline or prev.tag == .indent or prev.tag == .dedent) return false;
+        const between = self.source[prev.loc.end..self.current().loc.start];
+        return std.mem.indexOfScalar(u8, between, '\n') == null;
+    }
+
     fn expect(self: *Parser, tag: lexer.Token.Tag) !lexer.Token {
         if (self.current().tag != tag) {
             const found = self.current();
@@ -633,7 +643,7 @@ pub const Parser = struct {
         defer exprs.deinit(self.allocator);
 
         while (self.current().tag != .eof) {
-            if (self.current().tag == .comment and !is_indented) break;
+            if (self.current().tag == .comment and !is_indented and !self.isInlineComment()) break;
             if (self.current().tag == .dedent) {
                 if (!is_indented) break;
                 _ = self.advance();
@@ -649,7 +659,7 @@ pub const Parser = struct {
             }
             if (Parser.is_stop(self.current().tag, stop_tags) and is_indented) break;
             if (!is_indented and Parser.is_stop(self.current().tag, stop_tags)) break;
-            if (self.current().tag == .newline or self.current().tag == .comment) {
+            if (self.current().tag == .newline or (self.current().tag == .comment and (is_indented or self.isInlineComment()))) {
                 _ = self.advance();
                 continue;
             }
@@ -690,6 +700,9 @@ pub const Parser = struct {
         const value = try self.parse_expr();
 
         self.skip_newlines();
+        while (self.current().tag == .comment) {
+            _ = self.advance();
+        }
         var body: *Expr = undefined;
         if (self.current().tag == .keyword_let) {
             body = try self.parse_let_expr_in_block(stop_tags);

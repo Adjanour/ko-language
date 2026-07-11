@@ -231,7 +231,7 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 
 **Linux aarch64** needs: dynamic CPU detection, aarch64 linker paths, and aarch64 data layout.
 
-**macOS/Windows** need: replacing raw Linux syscalls with portable `std.fs`/`std.Io` APIs, platform-specific linker toolchains, and different CRT object paths. See `docs/editor-setup.md` for contribution guidance.
+**macOS/Windows** need: replacing remaining raw Linux syscalls (`linux.read` in LSP/REPL) with portable APIs, platform-specific linker toolchains, and different CRT object paths. The `writeAll` wrapper in LSP and REPL now supports macOS via `std.c.write`. See `docs/editor-setup.md` for contribution guidance.
 
 ## Roadmap
 

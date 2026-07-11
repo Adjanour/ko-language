@@ -18,7 +18,10 @@ fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
 fn writeAll(fd: posix.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
-        const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
+        const rc = if (comptime @import("builtin").os.tag == .linux)
+            linux.write(fd, data[pos..].ptr, data.len - pos)
+        else
+            std.c.write(fd, data[pos..].ptr, data.len - pos);
         if (rc < 0) {
             const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
             switch (e) {
