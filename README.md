@@ -1,4 +1,4 @@
-# Kō (kō) — v0.1.0-alpha
+# Kō (kō) — v0.2.0-alpha
 
 A minimal, functional-first programming language that compiles to native binaries via LLVM.
 
@@ -34,10 +34,15 @@ This produces `ko-dist/`:
 
 ```
 ko-dist/
-├── bin/ko        # compiler binary
-├── std/          # standard library (Bool, Int, Float, String, List, Math)
-├── examples/     # example .ko programs
-└── ko -> bin/ko  # convenience symlink
+├── bin/
+│   ├── ko          # compiler binary
+│   └── ko-lsp      # language server
+├── std/            # standard library (Bool, Int, Float, String, List, Math)
+├── examples/       # example .ko programs
+├── editors/
+│   ├── vscode/     # VS Code extension
+│   └── tree-sitter/ # tree-sitter grammar + queries
+└── ko -> bin/ko    # convenience symlink
 ```
 
 Drop it anywhere and run:
@@ -75,8 +80,10 @@ zig build test --summary all
 - **Currying**: Multi-param functions support partial application
 - **Modules**: `module Name` definitions with `pub` visibility
 - **Stdlib**: Bool, Int, Float, String, List, Math — built-in, no import needed
-- **LSP**: `ko-lsp` built alongside the compiler
+- **LSP**: `ko-lsp` built alongside the compiler, with error locations
 - **REPL**: `ko --repl` for interactive evaluation
+- **Module imports**: `import std.Math.{abs, max}` — file-based, with selective imports
+- **Error propagation**: `?` operator unwraps `Ok` or propagates `Err`
 - **78 of 78 tests passing**
 
 ## CLI
@@ -137,7 +144,32 @@ r := 100
 # Compile-time evaluation
 comptime fn factorial n =
   if n == 0 then 1 else n * factorial (n - 1)
+
+# Module imports
+import std.Math.{abs, max}
+abs (-5)   # 5
+
+# Error propagation
+type Result a b = Ok a | Err b
+fn divide a b =
+  if b == 0 then Err "division by zero"
+  else Ok (a / b)
+
+fn compute x y =
+  let a = divide x y?    # unwraps Ok, propagates Err
+  Ok a
 ```
+
+## Editor setup
+
+Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the full [Editor Setup Guide](docs/editor-setup.md) for detailed instructions.
+
+**Quick start:**
+
+- **VS Code**: `code --install-extension vscode-ko/ko-language-0.5.0.vsix`
+- **Neovim**: use `nvim-lspconfig` with `ko-lsp` + `nvim-treesitter` for highlights
+- **Helix**: add `ko-lsp` to `~/.config/helix/languages.toml`
+- **Vim**: use `vim-lsp` or `CoC.nvim` — see [guide](docs/editor-setup.md)
 
 ## Docs
 
@@ -163,7 +195,7 @@ comptime fn factorial n =
 - **Reference counting** — automatic memory management for heap objects
 - **`comptime` expressions** — evaluate code at compile time
 
-## Known Issues (v0.1.0-alpha)
+## Known Issues (v0.2.0-alpha)
 
 - **Inline comments after `let` bindings break the parser.** The comment consumes the newline, so the next line doesn't see the binding. Workaround: put comments on their own line.
 - **`println (fn_call)` prints `<fn>` instead of the actual value.** Workaround: extract to a `let` binding first: `let n = f x; println n`
@@ -171,7 +203,6 @@ comptime fn factorial n =
 - **No circular import detection**
 - **No package/module system** — just flat file imports
 - **Generics not implemented** — can't write polymorphic functions over type parameters yet
-- **Result type resolution** — built-in Result operations (`Result.is_ok`, `Result.map`, etc.) can't find locally-defined `Result` types in all cases
 - **Multi-line match bodies** — a multi-line `match` followed by another expression can confuse the parser. Workaround: extract match into a helper function.
 
 ## Roadmap
@@ -181,12 +212,15 @@ comptime fn factorial n =
 - [x] Recursive ADTs (binary trees, lists)
 - [x] Stack overflow detection
 - [x] Partial application / currying
-- [x] LSP server
+- [x] LSP server with error locations
 - [x] REPL with pretty-printing
-- [x] Better error messages with source locations
+- [x] File-based module imports (`import std.Math`)
+- [x] `?` operator for Result error propagation
+- [x] Result built-in operations
 - [ ] Generics (monomorphization)
-- [ ] Standard library expansion (String.split, List.sort, Map/Dict)
+- [ ] Record type syntax with field access
 - [ ] Trait/typeclass system
+- [ ] Module system v2 (hierarchical imports, first-class modules)
 
 ## License
 

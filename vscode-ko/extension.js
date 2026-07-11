@@ -7,16 +7,27 @@ let client;
 function activate(context) {
     console.log('Kō language support is now active!');
 
-    // Path to ko-lsp binary — look in PATH first, then fallback to dev layout
+    // Path to ko-lsp binary — check multiple locations
     const { execSync } = require('child_process');
     let lspPath;
     try {
         lspPath = execSync('which ko-lsp', { encoding: 'utf-8' }).trim();
     } catch {
-        lspPath = path.join(
-            path.dirname(__dirname),
-            'ko-zig', 'zig-out', 'bin', 'ko-lsp'
+        // Try dist layout: editors/vscode/ → ../../bin/ko-lsp
+        const distLsp = path.join(
+            path.dirname(path.dirname(path.dirname(__dirname))),
+            'bin', 'ko-lsp'
         );
+        const fs = require('fs');
+        if (fs.existsSync(distLsp)) {
+            lspPath = distLsp;
+        } else {
+            // Try dev layout: vscode-ko/ → ../ko-zig/zig-out/bin/ko-lsp
+            lspPath = path.join(
+                path.dirname(__dirname),
+                'ko-zig', 'zig-out', 'bin', 'ko-lsp'
+            );
+        }
     }
 
     // Server options — run ko-lsp as a subprocess

@@ -1,0 +1,46 @@
+{
+  "name": "ko-language",
+  "displayName": "Kō Language Support",
+  "description": "Syntax highlighting, symbol navigation, and language support for the Kō programming language",
+  "version": "0.5.0",
+  "publisher": "ko-lang",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ko"
+  ],
+  "main": "./extension.js",
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "ko",
+        "aliases": [
+          "Kō",
+          "ko"
+        ],
+        "extensions": [
+          ".ko"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ko",
+        "scopeName": "source.ko",
+        "path": "./syntaxes/ko.tmLanguage.json"
+      }
+    ]
+  }
+}

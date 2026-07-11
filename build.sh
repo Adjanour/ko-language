@@ -30,8 +30,9 @@ rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR/bin"
 mkdir -p "$DIST_DIR/std"
 
-# Copy binary
+# Copy binaries
 cp "$KO_DIR/zig-out/bin/ko" "$DIST_DIR/bin/ko"
+cp "$KO_DIR/zig-out/bin/ko-lsp" "$DIST_DIR/bin/ko-lsp" 2>/dev/null || true
 
 # Copy stdlib
 cp "$KO_DIR/std/"*.ko "$DIST_DIR/std/"
@@ -39,6 +40,22 @@ cp "$KO_DIR/std/"*.ko "$DIST_DIR/std/"
 # Copy examples (optional, nice to have)
 mkdir -p "$DIST_DIR/examples"
 cp "$KO_DIR/examples/"*.ko "$DIST_DIR/examples/" 2>/dev/null || true
+
+# Copy VS Code extension
+mkdir -p "$DIST_DIR/editors/vscode"
+cp "$SCRIPT_DIR/vscode-ko/package.json" "$DIST_DIR/editors/vscode/"
+cp "$SCRIPT_DIR/vscode-ko/extension.js" "$DIST_DIR/editors/vscode/"
+cp "$SCRIPT_DIR/vscode-ko/language-configuration.json" "$DIST_DIR/editors/vscode/"
+cp "$SCRIPT_DIR/vscode-ko/syntaxes/"*.json "$DIST_DIR/editors/vscode/syntaxes/" 2>/dev/null || true
+mkdir -p "$DIST_DIR/editors/vscode/syntaxes"
+cp "$SCRIPT_DIR/vscode-ko/syntaxes/"*.json "$DIST_DIR/editors/vscode/syntaxes/" 2>/dev/null || true
+cp "$SCRIPT_DIR/vscode-ko/icon.png" "$DIST_DIR/editors/vscode/" 2>/dev/null || true
+
+# Copy tree-sitter grammar
+mkdir -p "$DIST_DIR/editors/tree-sitter"
+cp "$SCRIPT_DIR/tree-sitter-ko/grammar.js" "$DIST_DIR/editors/tree-sitter/"
+cp "$SCRIPT_DIR/tree-sitter-ko/package.json" "$DIST_DIR/editors/tree-sitter/"
+cp -r "$SCRIPT_DIR/tree-sitter-ko/queries" "$DIST_DIR/editors/tree-sitter/"
 
 # Create a symlink at top level for convenience
 ln -sf bin/ko "$DIST_DIR/ko"
@@ -687,13 +704,19 @@ echo "Built: $DIST_DIR/"
 echo ""
 echo "Contents:"
 echo "  bin/ko          - compiler binary"
+echo "  bin/ko-lsp      - language server"
 echo "  std/            - standard library"
 echo "  examples/       - example programs"
+echo "  editors/        - VS Code extension + tree-sitter grammar"
 echo "  ko -> bin/ko    - convenience symlink"
 echo ""
 echo "Try it:"
 echo "  echo 'fn main = println \"Hello, Kō!\"' > /tmp/hello.ko"
 echo "  $DIST_DIR/ko /tmp/hello.ko"
+echo ""
+echo "Editor setup:"
+echo "  code --install-extension $DIST_DIR/editors/vscode/ko-language-0.5.0.vsix  # VS Code"
+echo "  See docs/editor-setup.md for Neovim, Vim, Helix, and more"
 echo ""
 echo "Move it anywhere:"
 echo "  cp -r $DIST_DIR ~/ko"
