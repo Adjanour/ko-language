@@ -145,6 +145,14 @@ r := 100
 comptime fn factorial n =
   if n == 0 then 1 else n * factorial (n - 1)
 
+comptime fn sum lst =
+  match lst
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+let x = comptime factorial 5      # 120, evaluated at compile time
+let total = comptime sum xs       # list operations at compile time
+
 # Module imports
 import std.Math.{abs, max}
 abs (-5)   # 5
@@ -193,7 +201,7 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 - **`!` for deref, `not` for boolean negation**
 - **`|>` pipe operator** — left-to-right function application
 - **Reference counting** — automatic memory management for heap objects
-- **`comptime` expressions** — evaluate code at compile time
+- **`comptime` expressions** — evaluate code at compile time with pattern matching, constructors, and built-in string/list operations
 
 ## Known Issues (v0.2.0-alpha)
 

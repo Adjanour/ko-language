@@ -150,3 +150,93 @@ NEWLINE         = "\n" ;
 - Record patterns use `..` for intentional partial matches.
 - `or` and `and` are keyword alternatives to `||` and `&&`.
 - `?` is postfix try operator for Result error propagation.
+
+## Compile-Time Evaluation (`comptime`)
+
+`comptime` marks expressions and functions for compile-time evaluation. The evaluator is a tree-walking interpreter that runs during compilation.
+
+### Syntax
+
+```
+comptime fn name params = body    # comptime function definition
+comptime expr                     # mark expression for compile-time evaluation
+```
+
+### What can be evaluated at compile time
+
+**Literals and operations:**
+```kō
+comptime 1 + 2                    # => 3
+comptime "hello " ++ "world"      # => "hello world"
+comptime if x > 0 then x else 0  # conditional
+```
+
+**Recursive functions:**
+```kō
+comptime fn fact n = if n == 0 then 1 else n * fact (n - 1)
+comptime fact 5                   # => 120
+```
+
+**Pattern matching:**
+```kō
+type Color = Red | Green | Blue
+
+comptime fn name c =
+  match c
+    | Red => "red"
+    | Green => "green"
+    | Blue => "blue"
+
+comptime name Red                 # => "red"
+```
+
+**Constructor construction:**
+```kō
+type Nat = Succ Nat | Zero
+
+comptime fn from_int n = if n == 0 then Zero else Succ (from_int (n - 1))
+comptime from_int 3               # => Succ (Succ (Succ Zero))
+```
+
+**Tuple creation and access:**
+```kō
+comptime fn make_pair x y = (x, y)
+comptime fn fst p = match p | (a, _) => a
+comptime fst (make_pair 1 2)     # => 1
+```
+
+**List operations (via builtins):**
+```kō
+type List a = Cons a (List a) | Nil
+
+comptime fn sum lst =
+  match lst
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+comptime sum (Cons 1 (Cons 2 (Cons 3 Nil)))  # => 6
+```
+
+### Built-in comptime operations
+
+| Module | Function | Signature |
+|--------|----------|-----------|
+| String | `String.length` | `String -> Int` |
+| String | `String.append` | `String -> String -> String` |
+| String | `String.charAt` | `String -> Int -> Char` |
+| String | `String.substring` | `String -> Int -> Int -> String` |
+| String | `String.startsWith` | `String -> String -> Bool` |
+| String | `String.endsWith` | `String -> String -> Bool` |
+| List | `List.cons` | `a -> List a -> List a` |
+| List | `List.head` | `List a -> a` |
+| List | `List.tail` | `List a -> List a` |
+| List | `List.length` | `List a -> Int` |
+| List | `List.reverse` | `List a -> List a` |
+| List | `List.append` | `a -> List a -> List a` |
+| Int | `Int.toString` | `Int -> String` |
+
+### Limitations
+
+- **Scalar splicing only:** Comptime results that are int, float, bool, char, string, or unit are spliced directly into LLVM IR. Complex results (lists, tuples, constructors) fall back to runtime evaluation.
+- **Independent evaluations:** Each `comptime expr` evaluates independently. Intermediate values from one comptime expression are not available to subsequent comptime expressions through runtime `let` bindings.
+- **Max depth:** 10,000 evaluation steps per comptime expression.

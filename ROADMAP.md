@@ -31,7 +31,7 @@ This document outlines the development of Kō from a Python prototype to a produ
   - Partial application (currying)
   - Module definitions with pub visibility
   - `::` infix operator for list construction
-  - Compile-time evaluation (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else
+  - Compile-time evaluation (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else, pattern matching, constructors, tuples, string/list builtins
   - `?` operator codegen (unwraps Ok values, propagates Err)
   - Result operations as built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
   - File-based module imports with selective import support
@@ -40,7 +40,7 @@ This document outlines the development of Kō from a Python prototype to a produ
 - REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands
 - VS Code extension (v0.5.0) with LSP client
 - Tree-sitter grammar (~450 lines) with nvim integration
-- 78 tests passing, 49 .ko test programs, 14 examples
+- 78 tests passing, 53 .ko test programs, 12 examples
 
 ### 1.2 Next Milestones
 
