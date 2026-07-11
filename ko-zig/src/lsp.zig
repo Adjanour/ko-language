@@ -1,4 +1,5 @@
 const std = @import("std");
+const posix = std.posix;
 const linux = std.os.linux;
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
@@ -166,23 +167,18 @@ fn jsonGetObj(obj: JsonValue, key: []const u8) ?JsonValue {
 }
 
 //
-// LSP I/O — raw Linux syscalls (std.Io doesn't work with pipes)
+// LSP I/O — cross-platform via std.posix.read + platform write
 //
 
-fn rawRead(fd: i32, buf: []u8) !usize {
-    const rc = linux.read(fd, buf.ptr, buf.len);
-    if (rc < 0) {
-        const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
-        return switch (e) {
-            .INTR => rawRead(fd, buf),
-            else => error.ReadFailed,
-        };
-    }
-    if (rc == 0) return error.EndOfStream;
-    return @intCast(rc);
+fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
+    return posix.read(fd, buf) catch |err| switch (err) {
+        error.InputOutput => return error.ReadFailed,
+        error.SystemResources => return error.ReadFailed,
+        else => return error.ReadFailed,
+    };
 }
 
-fn rawReadExact(fd: i32, buf: []u8) !void {
+fn rawReadExact(fd: posix.fd_t, buf: []u8) !void {
     var pos: usize = 0;
     while (pos < buf.len) {
         const n = try rawRead(fd, buf[pos..]);
@@ -190,7 +186,7 @@ fn rawReadExact(fd: i32, buf: []u8) !void {
     }
 }
 
-fn readLine(fd: i32, line_buf: []u8) ![]const u8 {
+fn readLine(fd: posix.fd_t, line_buf: []u8) ![]const u8 {
     var line_len: usize = 0;
     while (line_len < line_buf.len) {
         const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
@@ -210,7 +206,7 @@ fn readContentLength() !usize {
     var line_buf: [256]u8 = undefined;
 
     while (true) {
-        const line = readLine(linux.STDIN_FILENO, &line_buf) catch {
+        const line = readLine(posix.STDIN_FILENO, &line_buf) catch {
             if (content_length) |_| return error.MissingContentLength;
             return error.ConnectionClosed;
         };
@@ -223,10 +219,10 @@ fn readContentLength() !usize {
 }
 
 fn readExact(buf: []u8) !void {
-    try rawReadExact(linux.STDIN_FILENO, buf);
+    try rawReadExact(posix.STDIN_FILENO, buf);
 }
 
-fn writeAll(fd: i32, data: []const u8) !void {
+fn writeAll(fd: posix.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
         const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
@@ -246,8 +242,8 @@ fn sendResponse(id: i64, json_body: []const u8, gpa: std.mem.Allocator) !void {
     defer gpa.free(msg);
     const header = try std.fmt.allocPrint(gpa, "Content-Length: {d}\r\n\r\n", .{msg.len});
     defer gpa.free(header);
-    try writeAll(linux.STDOUT_FILENO, header);
-    try writeAll(linux.STDOUT_FILENO, msg);
+    try writeAll(posix.STDOUT_FILENO, header);
+    try writeAll(posix.STDOUT_FILENO, msg);
 }
 
 fn sendNullResult(id: i64, gpa: std.mem.Allocator) !void {
@@ -259,8 +255,8 @@ fn sendNotification(method: []const u8, params_json: []const u8, gpa: std.mem.Al
     defer gpa.free(msg);
     const header = try std.fmt.allocPrint(gpa, "Content-Length: {d}\r\n\r\n", .{msg.len});
     defer gpa.free(header);
-    try writeAll(linux.STDOUT_FILENO, header);
-    try writeAll(linux.STDOUT_FILENO, msg);
+    try writeAll(posix.STDOUT_FILENO, header);
+    try writeAll(posix.STDOUT_FILENO, msg);
 }
 
 //

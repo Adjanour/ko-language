@@ -1,26 +1,21 @@
 const std = @import("std");
+const posix = std.posix;
+const linux = std.os.linux;
 const llvm = @import("llvm");
 const llvm_engine = llvm.engine;
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
 
-const linux = std.os.linux;
-
-fn rawRead(fd: i32, buf: []u8) !usize {
-    const rc = linux.read(fd, buf.ptr, buf.len);
-    if (rc < 0) {
-        const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
-        return switch (e) {
-            .INTR => rawRead(fd, buf),
-            else => error.ReadFailed,
-        };
-    }
-    if (rc == 0) return error.EndOfStream;
-    return @intCast(rc);
+fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
+    return posix.read(fd, buf) catch |err| switch (err) {
+        error.InputOutput => return error.ReadFailed,
+        error.SystemResources => return error.ReadFailed,
+        else => return error.ReadFailed,
+    };
 }
 
-fn writeAll(fd: i32, data: []const u8) !void {
+fn writeAll(fd: posix.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
         const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
@@ -35,13 +30,13 @@ fn writeAll(fd: i32, data: []const u8) !void {
     }
 }
 
-fn printStr(fd: i32, comptime fmt: []const u8, args: anytype) !void {
+fn printStr(fd: posix.fd_t, comptime fmt: []const u8, args: anytype) !void {
     const msg = try std.fmt.allocPrint(std.heap.page_allocator, fmt, args);
     defer std.heap.page_allocator.free(msg);
     try writeAll(fd, msg);
 }
 
-fn readLine(fd: i32, line_buf: []u8) ![]const u8 {
+fn readLine(fd: posix.fd_t, line_buf: []u8) ![]const u8 {
     var line_len: usize = 0;
     while (line_len < line_buf.len) {
         const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
@@ -91,8 +86,8 @@ pub const Repl = struct {
     }
 
     pub fn run(self: *Repl) !void {
-        const stdout_fd: i32 = 1;
-        const stdin_fd: i32 = 0;
+        const stdout_fd: posix.fd_t = posix.STDOUT_FILENO;
+        const stdin_fd: posix.fd_t = posix.STDIN_FILENO;
 
         try printStr(stdout_fd, "Kō REPL v0.3.0\n", .{});
         try printStr(stdout_fd, "Type expressions to evaluate, definitions to bind.\n", .{});
@@ -125,7 +120,7 @@ pub const Repl = struct {
         }
     }
 
-    fn evalInput(self: *Repl, input: []const u8, stdout_fd: i32) !void {
+    fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {
         const is_def = isDefinition(input);
 
         if (is_def) {
@@ -210,7 +205,7 @@ pub const Repl = struct {
         }
     }
 
-    fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: i32) !void {
+    fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: posix.fd_t) !void {
         if (std.mem.eql(u8, cmd, ":quit") or std.mem.eql(u8, cmd, ":q")) {
             try printStr(stdout_fd, "Bye!\n", .{});
             std.process.exit(0);

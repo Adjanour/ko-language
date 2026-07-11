@@ -33,7 +33,6 @@ mkdir -p "$DIST_DIR/std"
 # Copy binaries
 cp "$KO_DIR/zig-out/bin/ko" "$DIST_DIR/bin/ko"
 cp "$KO_DIR/zig-out/bin/ko-lsp" "$DIST_DIR/bin/ko-lsp" 2>/dev/null || true
-cp "$KO_DIR/src/ko_runtime.c" "$DIST_DIR/bin/ko_runtime.c" 2>/dev/null || true
 
 # Copy stdlib
 cp "$KO_DIR/std/"*.ko "$DIST_DIR/std/"

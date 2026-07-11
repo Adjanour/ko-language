@@ -13,8 +13,8 @@ const module_loader_mod = @import("module_loader.zig");
 const VERSION = "0.2.0-alpha";
 
 fn nowNs() u64 {
-    var ts: linux.timespec = undefined;
-    _ = linux.clock_gettime(linux.CLOCK.MONOTONIC, &ts);
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
@@ -246,39 +246,10 @@ pub fn main(init: std.process.Init) !void {
             defer aot.deinit();
             try aot.emitObjectFile(cg.module, obj_name);
 
-            // Link with gcc
-            const runtime_obj = init.arena.allocator().dupeZ(u8, "ko_runtime.o") catch unreachable;
-            const runtime_c_path = try std.fmt.allocPrint(init.arena.allocator(), "{s}/ko_runtime.c", .{exe_dir});
-            const cc_argv = [_][]const u8{ "/usr/bin/gcc", "-c", runtime_c_path, "-o", runtime_obj };
-            const cc_result = std.process.run(init.arena.allocator(), io, .{
-                .argv = &cc_argv,
-                .stderr_limit = .unlimited,
-                .stdout_limit = .unlimited,
-            }) catch |err| {
-                reportError(io, fname, null, "failed to compile runtime: {}", .{err});
-                std.process.exit(1);
-            };
-            defer {
-                init.arena.allocator().free(cc_result.stdout);
-                init.arena.allocator().free(cc_result.stderr);
-            }
-            if (cc_result.term != .exited or cc_result.term.exited != 0) {
-                const code: u8 = if (cc_result.term == .exited) cc_result.term.exited else 1;
-                reportError(io, fname, null, "runtime compilation failed (exit {d})", .{code});
-                if (cc_result.stderr.len > 0) {
-                    const errw = Io.File.stderr();
-                    var ebuf: [4096]u8 = undefined;
-                    var ew = errw.writer(io, &ebuf);
-                    try ew.interface.writeAll(cc_result.stderr);
-                    try ew.interface.flush();
-                }
-                std.process.exit(1);
-            }
-
-            // Link with ld
+            // Link with ld (all functions are now LLVM IR, no ko_runtime.c needed)
             const ld_argv = [_][]const u8{
                 "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
-                obj_name,         runtime_obj, "-o", out_name,
+                obj_name, "-o", out_name,
                 "-lc", "-lm", "/usr/lib/crtn.o",
                 "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
             };

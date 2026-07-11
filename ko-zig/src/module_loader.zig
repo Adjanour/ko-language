@@ -211,26 +211,17 @@ pub const ModuleLoader = struct {
     }
 };
 
-// Raw Linux syscall helpers for file I/O
-const linux = std.os.linux;
+// Cross-platform file I/O helpers
+const posix = std.posix;
 
-fn openFile(path: []const u8) !i32 {
-    // Ensure null-terminated path for syscall
-    const path_z = try std.heap.page_allocator.dupeZ(u8, path);
-    defer std.heap.page_allocator.free(path_z);
-    const rc_u = linux.open(path_z.ptr, .{}, 0);
-    // Interpret as signed for error checking
-    const rc: isize = @bitCast(rc_u);
-    if (rc < 0) return error.FileNotFound;
-    return @intCast(rc);
+fn openFile(path: []const u8) !posix.fd_t {
+    return try posix.openat(posix.AT.FDCWD, path, .{}, 0);
 }
 
-fn closeFd(fd: i32) void {
-    _ = linux.close(fd);
+fn closeFd(fd: posix.fd_t) void {
+    _ = std.os.linux.close(fd);
 }
 
-fn readFd(fd: i32, buf: []u8) !usize {
-    const rc = linux.read(fd, buf.ptr, buf.len);
-    if (rc < 0) return error.ReadFailed;
-    return @intCast(rc);
+fn readFd(fd: posix.fd_t, buf: []u8) !usize {
+    return try posix.read(fd, buf);
 }

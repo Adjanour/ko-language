@@ -2,7 +2,7 @@
 //
 // This is the canonical implementation for all stdlib builtins.
 // For JIT mode: codegen.zig maps LLVM declarations to these functions.
-// For AOT mode: ko_runtime.c has C copies (temporary, will be eliminated).
+// For JIT mode: LLVM codegen uses these directly via global mapping.
 
 const std = @import("std");
 

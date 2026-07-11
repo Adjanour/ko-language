@@ -475,26 +475,7 @@ pub const Codegen = struct {
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_and_then)));
         }
         // All other functions (RC, stack check, math, string, int) are now
-        // generated as LLVM IR in the module — no mapping needed
-        // Map C-backed string functions to native Zig implementations
-        if (self.named_values.get("String.contains")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_contains)));
-        }
-        if (self.named_values.get("String.charAt")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_char_at)));
-        }
-        if (self.named_values.get("String.toUpperCase")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_to_upper)));
-        }
-        if (self.named_values.get("String.toLowerCase")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_to_lower)));
-        }
-        if (self.named_values.get("String.trim")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_trim)));
-        }
-        if (self.named_values.get("String.replace")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_replace)));
-        }
+        // String functions are now generated as LLVM IR in the module — no mapping needed
     }
 
     // =========================================================================
@@ -2996,7 +2977,7 @@ fn ko_decref_wrapper(ptr: ?[*]u8) callconv(.c) void {
 }
 
 // Stack overflow detection — reimplemented in Zig for JIT mapping.
-// The C version in ko_runtime.c is used for AOT compilation.
+// All runtime functions are now generated as LLVM IR in stdlib_codegen.zig.
 const DEFAULT_STACK_LIMIT = 8 * 1024 * 1024; // 8MB
 
 threadlocal var ko_stack_base: ?*anyopaque = null;
@@ -3026,7 +3007,12 @@ fn ko_check_stack_impl() callconv(.c) void {
             // In JIT mode, we can't easily call fprintf/exit from here.
             // Write directly to stderr and abort.
             const msg = "ko: stack overflow (depth > 8MB)\nhint: rewrite recursion as iteration\n";
-            _ = std.os.linux.write(2, msg.ptr, msg.len);
+            const stderr_fd = 2;
+            if (comptime @import("builtin").os.tag == .linux) {
+                _ = std.os.linux.write(stderr_fd, msg.ptr, msg.len);
+            } else {
+                _ = std.c.write(stderr_fd, msg.ptr, msg.len);
+            }
             std.c.abort();
         }
     }
