@@ -32,6 +32,8 @@ Functions are values.
 Values are functions.
 Everything returns something.
 Even nothing.
+Compute what you can at compile time.
+The rest runs itself.
 ```
 
 ---
@@ -108,7 +110,20 @@ let apply = \f x -> f x
 apply double 5  # 10
 ```
 
-### 6. Compile to native code
+### 6. Compile-time when you can
+
+If you know the answer at compile time, compute it then. No wasted cycles at runtime.
+
+```kō
+comptime fn factorial n =
+  if n == 0 then 1
+  else n * factorial (n - 1)
+
+# This is computed at compile time — zero runtime cost
+let result = comptime factorial 10
+```
+
+### 7. Compile to native code
 
 Kō compiles to LLVM IR, then to native code via LLVM. This means:
 
@@ -117,7 +132,7 @@ Kō compiles to LLVM IR, then to native code via LLVM. This means:
 - AOT compilation for production (`ko --emit-exe`)
 - Easy to interface with C libraries
 
-### 7. Errors are values
+### 8. Errors are values
 
 No exceptions. No null. No undefined behavior.
 
@@ -133,18 +148,20 @@ match divide 10 2
   | Err _ => 0
 ```
 
-### 8. The language is small
+### 9. The language is small
 
 Kō has:
 
-- 17 keywords
-- 12 operators
-- 7 expression types
+- 19 keywords
+- 20 operators
+- ~22 expression types
 - 1 type system (ADTs + records)
+- Compile-time evaluation (`comptime`)
+- Named parameters (`~name:expr`)
 
 That's it. You can learn it in an afternoon. You can master it in a week.
 
-### 9. The library is big
+### 10. The library is big
 
 The standard library provides:
 
@@ -156,7 +173,7 @@ The standard library provides:
 
 All functions return values. No side effects in expressions.
 
-### 10. Code is for humans
+### 11. Code is for humans
 
 The compiler is smart. The programmer is smarter. Write code that humans can read.
 
@@ -188,6 +205,8 @@ fn f l =
 8. **Immutability by default.** Use `ref` for mutation.
 9. **Functions are values.** Pass them around.
 10. **Compile to native code.** Run fast everywhere.
+11. **Name your arguments.** `~name:value` when clarity helps.
+12. **Compute at compile time.** `comptime` when you can.
 
 ---
 
@@ -205,6 +224,9 @@ fold (\acc x -> acc + x) 0 xs
 # When in doubt, use a type
 type Thing = This Int | That String
 
+# When in doubt, compute it now
+comptime factorial 10
+
 # When in doubt, keep it simple
 fn f x = x
 ```
@@ -221,6 +243,7 @@ Kō promises to be:
 - **Functional**: immutable by default
 - **Expressive**: ADTs + pattern matching
 - **Fast**: compiles to native code via LLVM
+- **Clever**: computes what it can at compile time
 
 Kō promises NOT to be:
 
