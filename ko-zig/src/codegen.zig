@@ -2703,7 +2703,7 @@ pub const Aot = struct {
         const tm = target_machine.LLVMCreateTargetMachine(
             t,
             triple_raw,
-            "x86-64",
+            "generic",
             "",
             .LLVMCodeGenLevelDefault,
             .LLVMRelocPIC,

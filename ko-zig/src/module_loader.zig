@@ -219,7 +219,11 @@ fn openFile(path: []const u8) !posix.fd_t {
 }
 
 fn closeFd(fd: posix.fd_t) void {
-    _ = std.os.linux.close(fd);
+    if (comptime @import("builtin").os.tag == .linux) {
+        _ = std.os.linux.close(fd);
+    } else {
+        _ = std.c.close(fd);
+    }
 }
 
 fn readFd(fd: posix.fd_t, buf: []u8) !usize {

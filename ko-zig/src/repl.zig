@@ -23,10 +23,18 @@ fn writeAll(fd: posix.fd_t, data: []const u8) !void {
         else
             std.c.write(fd, data[pos..].ptr, data.len - pos);
         if (rc < 0) {
-            const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
-            switch (e) {
-                .INTR => continue,
-                else => return error.WriteFailed,
+            if (comptime @import("builtin").os.tag == .linux) {
+                const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
+                switch (e) {
+                    .INTR => continue,
+                    else => return error.WriteFailed,
+                }
+            } else {
+                const e = std.c.getErrno(-% @as(isize, @intCast(rc)));
+                switch (e) {
+                    .INTR => continue,
+                    else => return error.WriteFailed,
+                }
             }
         }
         pos += @intCast(rc);

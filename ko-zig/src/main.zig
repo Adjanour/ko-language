@@ -246,12 +246,21 @@ pub fn main(init: std.process.Init) !void {
             defer aot.deinit();
             try aot.emitObjectFile(cg.module, obj_name);
 
-            // Link with ld (all functions are now LLVM IR, no ko_runtime.c needed)
-            const ld_argv = [_][]const u8{
+            // Link with platform-appropriate linker
+            const os_tag = @import("builtin").os.tag;
+            const ld_argv = if (os_tag == .macos) [_][]const u8{
+                "ld", "-o", out_name,
+                obj_name,
+                "-lc", "-lm", "-L/usr/lib", "-L/opt/homebrew/lib",
+                "-syslibroot", "`xcrun --show-sdk-path`",
+            } else if (os_tag == .linux) [_][]const u8{
                 "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
                 obj_name, "-o", out_name,
                 "-lc", "-lm", "/usr/lib/crtn.o",
                 "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
+            } else [_][]const u8{
+                "cc", obj_name, "-o", out_name,
+                "-lc", "-lm",
             };
             const result = std.process.run(init.arena.allocator(), io, .{
                 .argv = &ld_argv,

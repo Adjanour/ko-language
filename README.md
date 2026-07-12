@@ -56,13 +56,36 @@ No `npm install`. No `brew`. No virtualenv. One folder.
 
 ### Build from source
 
-Requires Zig 0.17 and LLVM 22:
+Requires Zig 0.17 and LLVM 22.
+
+#### Linux
 
 ```bash
+# Ubuntu/Debian
+sudo apt install llvm-22-dev zlib1g-dev
+
+# Arch
+sudo pacman -S llvm zlib
+
 git clone https://github.com/Adjanour/ko-language.git
 cd ko-language/ko-zig
 zig build
 ```
+
+#### macOS
+
+```bash
+brew install llvm@22
+export PATH="/opt/homebrew/opt/llvm@22/bin:$PATH"
+
+git clone https://github.com/Adjanour/ko-language.git
+cd ko-language/ko-zig
+zig build
+```
+
+#### Windows
+
+Not yet supported. LLVM-22 has no prebuilt Windows packages and the JIT (MCJIT) doesn't support Windows. AOT-only support is planned for a future release.
 
 The compiler binary is at `zig-out/bin/ko`. Run tests with:
 
@@ -232,14 +255,17 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 |----------|-----|------|-----|-------------|-------------|
 | **Linux x86_64** | Yes | Yes | Yes | Yes | Yes |
 | **Linux aarch64** | Partial | Yes | Yes | Partial | No |
-| **macOS** | No | No | No | No | No |
+| **macOS (Apple Silicon)** | Yes | Yes | Yes | Yes | Yes |
+| **macOS (Intel)** | Yes | Yes | Yes | Yes | Yes |
 | **Windows** | No | No | No | No | No |
 
 **Linux x86_64** is the primary development platform. All features work.
 
+**macOS** requires `brew install llvm@22` and adding LLVM to PATH. JIT, LSP, and AOT all work. See [Installation](#build-from-source) for details.
+
 **Linux aarch64** needs: dynamic CPU detection, aarch64 linker paths, and aarch64 data layout.
 
-**macOS/Windows** need: replacing remaining raw Linux syscalls (`linux.read` in LSP/REPL) with portable APIs, platform-specific linker toolchains, and different CRT object paths. The `writeAll` wrapper in LSP and REPL now supports macOS via `std.c.write`. See `docs/editor-setup.md` for contribution guidance.
+**Windows** is not yet supported. LLVM-22 has no prebuilt Windows packages and MCJIT doesn't support Windows. AOT-only support is planned.
 
 ## Roadmap
 
