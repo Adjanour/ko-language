@@ -404,7 +404,6 @@ ko-zig/
 │   ├── codegen.zig    # LLVM IR generation
 │   ├── stdlib.zig     # Zig stdlib implementations (math, string, int ops)
 │   ├── stdlib_codegen.zig # LLVM IR generation for ALL stdlib functions
-│   ├── ko_runtime.c   # Minimal C stub for AOT libc linkage
 │   ├── comptime.zig   # Compile-time evaluator
 │   ├── module_loader.zig # File-based module imports
 │   ├── prettyprint.zig # Type-directed value pretty-printing
@@ -486,7 +485,7 @@ main.zig → parser.zig → lexer.zig
 
 ### How It Works
 - **JIT mode**: All functions are generated as LLVM IR in the module; only libc externals (printf, malloc, etc.) and LLVM intrinsics are linked at JIT time
-- **AOT mode**: Same LLVM IR is emitted as object file; minimal `ko_runtime.c` stub provides libc linkage
+- **AOT mode**: Same LLVM IR is emitted as object file; all runtime functions are LLVM IR
 - The canonical implementation is in stdlib_codegen.zig — no C copies needed
 
 ### Built-in Functions (auto-available)
@@ -518,14 +517,10 @@ main.zig → parser.zig → lexer.zig
 2. Register type in `typecheck.zig` (in `inferProgram`)
 3. Register in `codegen.zig` `declareBuiltins` (look up with `LLVMGetNamedFunction`)
 
-### Gotcha: JIT vs AOT
-- **JIT**: All functions are LLVM IR in the module; only libc/LLVM intrinsics linked at JIT time
-- **AOT**: Same LLVM IR emitted as object file; minimal `ko_runtime.c` stub provides libc linkage
-- No C copies needed — `stdlib_codegen.zig` is the single source of truth
-
-### Future: Eliminate ko_runtime.c entirely
-- The C stub only exists to provide libc headers for AOT linking
-- Could be replaced by linking against libc directly from LLVM's target machine
+ ### Gotcha: JIT vs AOT
+ - **JIT**: All functions are LLVM IR in the module; only libc/LLVM intrinsics linked at JIT time
+ - **AOT**: Same LLVM IR emitted as object file; all runtime functions are LLVM IR — no C code needed
+ - `stdlib_codegen.zig` is the single source of truth
 
 ### Known Limitations
 - Multi-line closures capturing free variables cause LLVM codegen errors
@@ -1142,7 +1137,7 @@ Kō detects stack overflow at runtime and aborts with a clear error message inst
 
 **JIT vs AOT:**
 - JIT: Stack check functions are mapped to Zig wrapper functions via `LLVMAddGlobalMapping`
-- AOT: Stack check functions are in `ko_runtime.c` (compiled by gcc at link time)
+- AOT: Stack check functions are generated as LLVM IR in `stdlib_codegen.zig`
 
 **Gotcha: `@frameAddress()` in JIT mode**
 In Zig's JIT context, `@frameAddress()` returns the frame pointer. The stack check works because each recursive call adds a frame, increasing the distance from the base.
