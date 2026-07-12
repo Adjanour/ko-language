@@ -87,6 +87,23 @@ zig build
 
 Not yet supported. LLVM-22 has no prebuilt Windows packages and the JIT (MCJIT) doesn't support Windows. AOT-only support is planned for a future release.
 
+### AI coding assistants
+
+Kō ships with skills for AI assistants. Install one so your AI can write Kō:
+
+```bash
+# OpenCode
+cp -r ko-zig/skills/ko-language ~/.config/opencode/skills/ko-language
+
+# Claude Code / Copilot — copy to project root
+cp ko-zig/skills/ko-language/CLAUDE.md /path/to/your/project/CLAUDE.md
+
+# Cursor — copy to project root
+cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
+```
+
+See `ko-zig/skills/README.md` for details.
+
 The compiler binary is at `zig-out/bin/ko`. Run tests with:
 
 ```bash
