@@ -1,7 +1,7 @@
 # Kō Language Roadmap
 
 > **Version:** 0.2.0-alpha  
-> **Date:** 2026-07-11  
+> **Date:** 2026-07-12  
 > **Status:** Alpha Release
 
 ---
@@ -11,6 +11,16 @@
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
 **Current state (v0.2.0-alpha):** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with pretty-printing, Result operations, and 78 passing tests.
+
+---
+
+### Known Limitations (v0.2.0-alpha)
+
+- **LLVM 22 optimization broken:** AOT compilation uses `LLVMCodeGenLevelNone`. `LLVMTargetMachineEmitToMemoryBuffer` hangs and `LLVMRunPasses` crashes with any optimization pass. Root cause: `CodeGenPrepare` infinite loop with bitcast+phi patterns. Fix expected in LLVM 23 ([PR #186468](https://github.com/llvm/llvm-project/pull/186468)).
+- **2 examples fail:** `expr_eval.ko` and `higher_order.ko` fail due to blank-line scoping in tokenizer `scan_indent`.
+- **1 example hangs:** `list_ops.ko` hangs due to pre-existing `reverse_aux` codegen bug.
+- **Windows not supported:** LLVM 22 has no prebuilt Windows packages; MCJIT doesn't support Windows.
+- **Multi-line closures with free variables** cause LLVM codegen errors.
 
 ---
 
@@ -46,7 +56,13 @@ This document outlines the development of Kō from a Python prototype to a produ
 
 #### v0.3.0 — Language Maturity
 
-**A. Type System Enhancements**
+**A. Staged Compilation & AST Construction**
+
+Design documents written:
+- `DESIGN-staged-compilation.md` — `stage expr` for compile-time code generation
+- `DESIGN-ast-construction.md` — `code expr` for AST construction helpers
+
+**B. Type System Enhancements**
 
 - Record type syntax: `type Point = { x: Int, y: Int }` with field access on values
 - Pattern matching on records in match arms
@@ -112,6 +128,9 @@ fn print[T: Printable] item =
 | Stack overflow detection | High | Medium | Done |
 | Comptime evaluation | Medium | Medium | Done |
 | Result built-in operations | Medium | Low | Done |
+| LLVM optimization (AOT -O2) | Medium | Low | Blocked (LLVM 22 bug) |
+| Staged compilation (`stage expr`) | High | High | Design |
+| AST construction helpers (`code expr`) | High | High | Design |
 | Record type syntax | High | Medium | Planned |
 | Generics | High | High | Planned |
 | Traits/typeclasses | High | High | Planned |
@@ -1015,6 +1034,8 @@ pub fn build(b: *std.Build) void {
 
 ### Phase 3: Language Maturity (v0.3.0, In Progress)
 
+- [ ] Staged compilation (`stage expr`)
+- [ ] AST construction helpers (`code expr`)
 - [ ] Record type syntax with field access
 - [ ] Generics (monomorphization)
 - [ ] Traits/typeclasses
@@ -1089,5 +1110,5 @@ pub fn build(b: *std.Build) void {
 ---
 
 *Document generated: 2026-06-20*  
-*Last updated: 2026-07-11*  
+*Last updated: 2026-07-12*  
 *Status: v0.2.0-alpha Released*

@@ -228,11 +228,17 @@ pub fn main(init: std.process.Init) !void {
             _ = try jit.runMain();
         },
         .obj => {
-            const out_name_z = try init.arena.allocator().dupeZ(u8, output orelse "output.o");
+            const out_name = output orelse "output.o";
             var aot = try codegen_mod.Aot.init();
             defer aot.deinit();
-            try aot.emitObjectFile(cg.module, out_name_z);
-            try writer.interface.print("wrote {s}\n", .{out_name_z});
+            const emit_result = try aot.emitObjectFile(cg.module, init.arena.allocator());
+            const out_file = try cwd.createFile(io, out_name, .{});
+            defer out_file.close(io);
+            var out_buf: [4096]u8 = undefined;
+            var out_writer = out_file.writer(io, &out_buf);
+            try out_writer.interface.writeAll(emit_result.data);
+            try out_writer.interface.flush();
+            try writer.interface.print("wrote {s}\n", .{out_name});
             try writer.interface.flush();
         },
         .exe => {
@@ -240,11 +246,19 @@ pub fn main(init: std.process.Init) !void {
             const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name});
             const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
 
-            // Emit object file
+            // Emit object file to memory buffer, then write to disk
             cg.module_owned_by_jit = true; // prevent double-free
             var aot = try codegen_mod.Aot.init();
             defer aot.deinit();
-            try aot.emitObjectFile(cg.module, obj_name);
+            const emit_result = try aot.emitObjectFile(cg.module, init.arena.allocator());
+            {
+                const obj_file = try cwd.createFile(io, obj_name_slice, .{});
+                defer obj_file.close(io);
+                var obj_buf: [4096]u8 = undefined;
+                var obj_writer = obj_file.writer(io, &obj_buf);
+                try obj_writer.interface.writeAll(emit_result.data);
+                try obj_writer.interface.flush();
+            }
 
             // Link with platform-appropriate linker
             const os_tag = @import("builtin").os.tag;

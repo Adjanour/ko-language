@@ -891,7 +891,19 @@ ko --emit-exe out file.ko      # Emit object file + link to executable
 - `LLVMCodeGenFileType`: `.LLVMObjectFile` (`.o`) or `.LLVMAssemblyFile` (`.s`)
 - `LLVMRelocMode`: `.LLVMRelocPIC` for Linux userspace
 - `LLVMCodeModel`: `.LLVMCodeModelDefault` or `.LLVMCodeModelSmall`
-- `LLVMCodeGenOptLevel`: `.LLVMCodeGenLevelDefault`
+- `LLVMCodeGenOptLevel`: `.LLVMCodeGenLevelNone`
+
+#### Known limitation: LLVM 22 optimization is broken
+
+LLVM 22 has two bugs that prevent AOT optimization:
+
+1. **`LLVMTargetMachineEmitToMemoryBuffer` hangs** with any non-None optimization level. Root cause: `CodeGenPrepare::runOnFunction` infinite loop with bitcast+phi patterns (see [LLVM #186403](https://github.com/llvm/llvm-project/issues/186403)).
+
+2. **`LLVMRunPasses` crashes** (segfault at 0x8) for any optimization pass (`instcombine`, `simplifycfg`, etc.). Only `"verify"` works.
+
+Both the legacy emit pipeline and the new pass builder are affected. **AOT compilation uses `LLVMCodeGenLevelNone`** — object files are unoptimized. This is a known LLVM 22 bug, not a Kō bug. Fixed in LLVM main via [PR #186468](https://github.com/llvm/llvm-project/pull/186468), expected in LLVM 23.
+
+**Workaround for users:** Compile with `ko --emit-obj` then optimize with `gcc -O2` or `clang -O2` on the generated object file. Or use JIT mode (also unoptimized but doesn't need linking).
 
 ## Learning Resources
 

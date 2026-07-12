@@ -61,6 +61,11 @@ pub const Codegen = struct {
         const mod = core.LLVMModuleCreateWithNameInContext(module_name, ctx);
         // Set data layout so we can compute type sizes
         core.LLVMSetDataLayout(mod, "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128");
+        // Set target triple for AOT compilation
+        _ = target.LLVMInitializeNativeTarget();
+        const triple = target_machine.LLVMGetDefaultTargetTriple();
+        defer core.LLVMDisposeMessage(@ptrCast(triple));
+        core.LLVMSetTarget(mod, triple);
         return .{
             .allocator = allocator,
             .context = ctx,
@@ -2705,7 +2710,7 @@ pub const Aot = struct {
             triple_raw,
             "generic",
             "",
-            .LLVMCodeGenLevelDefault,
+            .LLVMCodeGenLevelNone,
             .LLVMRelocPIC,
             .LLVMCodeModelDefault,
         );
@@ -2720,18 +2725,34 @@ pub const Aot = struct {
         target.LLVMDisposeTargetData(self.dl);
     }
 
-    pub fn emitObjectFile(self: *Aot, mod: types.LLVMModuleRef, filename: [*:0]const u8) !void {
+    pub fn emitObjectFile(self: *Aot, mod: types.LLVMModuleRef, allocator: std.mem.Allocator) !EmitResult {
+        // Set module data layout and target from target machine to ensure consistency
         target.LLVMSetModuleDataLayout(mod, self.dl);
+        const triple = target_machine.LLVMGetDefaultTargetTriple();
+        defer core.LLVMDisposeMessage(@ptrCast(triple));
+        core.LLVMSetTarget(mod, triple);
 
         var error_msg: [*c]u8 = null;
-        if (target_machine.LLVMTargetMachineEmitToFile(self.tm, mod, @ptrCast(filename), .LLVMObjectFile, &error_msg) != 0) {
+        var mem_buf: types.LLVMMemoryBufferRef = null;
+        if (target_machine.LLVMTargetMachineEmitToMemoryBuffer(self.tm, mod, .LLVMObjectFile, &error_msg, &mem_buf) != 0) {
             if (error_msg) |msg| {
                 std.debug.print("Emit error: {s}\n", .{std.mem.sliceTo(msg, 0)});
                 core.LLVMDisposeMessage(@ptrCast(msg));
             }
             return error.EmitError;
         }
+        defer core.LLVMDisposeMemoryBuffer(mem_buf);
+
+        const buf_start = core.LLVMGetBufferStart(mem_buf);
+        const buf_size = core.LLVMGetBufferSize(mem_buf);
+        const owned = try allocator.alloc(u8, buf_size);
+        @memcpy(owned, buf_start[0..buf_size]);
+        return .{ .data = owned };
     }
+
+    pub const EmitResult = struct {
+        data: []const u8,
+    };
 };
 
 // =============================================================================
