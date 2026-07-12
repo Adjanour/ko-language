@@ -1,0 +1,41 @@
+# Kō Language Rules for Cursor
+
+## Language
+Kō (光) — minimal functional language. No parens for calls, indentation blocks, ADTs, pattern matching, HM types, LLVM native compilation.
+
+## Syntax
+- `fn name param = body` (no parens, no braces)
+- `let x = expr`
+- `match expr | Pattern => result` (| not case, => not ->)
+- `type Name = Constructor1 Type | Constructor2 Type`
+- `ref` for mutation, `!` to deref, `:=` to assign
+- `++` string concat, `::` list cons
+- `comptime fn` for compile-time eval
+- `~name:value` for named args
+- `?` postfix try operator
+- `#` comments
+
+## Rules
+1. No parens: `add 1 2` not `add(1, 2)`
+2. Constructors uppercase: `Cons`, `Nil`, `Ok`, `Err`
+3. match arms: `| Pattern => result`
+4. main returns int, end with `0`
+5. Indentation = blocks (2+ spaces)
+6. No null, use Maybe/Result
+7. println is polymorphic
+8. String concat: `++`
+
+## Example
+```ko
+type List a = Cons a (List a) | Nil
+
+fn sum xs =
+  match xs
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  println (sum xs)
+  0
+```
