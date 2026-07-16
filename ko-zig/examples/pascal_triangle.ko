@@ -1,0 +1,43 @@
+# Pascal's Triangle -- computed and printed with centering
+
+fn intToString n =
+  if n < 10 then
+    if n == 0 then "0"
+    else if n == 1 then "1"
+    else if n == 2 then "2"
+    else if n == 3 then "3"
+    else if n == 4 then "4"
+    else if n == 5 then "5"
+    else if n == 6 then "6"
+    else if n == 7 then "7"
+    else if n == 8 then "8"
+    else "9"
+  else String.append (intToString (n / 10)) (intToString (n % 10))
+
+fn repeatChar n s =
+  if n <= 0 then ""
+  else String.append s (repeatChar (n - 1) s)
+
+fn comb n k =
+  if k == 0 then 1
+  else if k > n then 0
+  else (n * comb (n - 1) (k - 1)) / k
+
+fn printComb n k maxWidth =
+  if k > n then
+    println ""
+  else
+    let val = comb n k
+    let valStr = intToString val
+    let prefix = if k == 0 then repeatChar (maxWidth - n) " " else " "
+    print (String.append prefix valStr)
+    printComb n (k + 1) maxWidth
+
+fn printTriangle row maxRow =
+  if row > maxRow then 0
+  else
+    printComb row 0 maxRow
+    printTriangle (row + 1) maxRow
+
+fn main =
+  printTriangle 0 8

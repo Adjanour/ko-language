@@ -1,0 +1,16 @@
+# Fibonacci sequence -- demonstrating recursion and iteration
+# Demonstrates: basic recursion, if-then-else, println
+
+fn fib n =
+  if n <= 1 then n
+  else fib (n - 1) + fib (n - 2)
+
+fn fibSeq i n =
+  if i >= n then 0
+  else
+    println (fib i)
+    fibSeq (i + 1) n
+
+fn main =
+  println "Fibonacci sequence 0-15:"
+  fibSeq 0 16

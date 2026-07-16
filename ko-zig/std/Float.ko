@@ -7,6 +7,6 @@
 # Float constants and comparisons work, but binary operations on floats
 # require using the builtins directly.
 
-fn min a b = if a < b then a else b
+pub fn min a b = if a < b then a else b
 
-fn max a b = if a > b then a else b
+pub fn max a b = if a > b then a else b

@@ -56,4 +56,3 @@ fn main =
   println bc
   println bh
   println bm
-  0

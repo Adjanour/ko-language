@@ -1,5 +1,7 @@
 # Function composition and combinators
 
+type List a = Cons a (List a) | Nil
+
 fn compose f g x = f (g x)
 fn id x = x
 fn flip f x y = f y x
@@ -51,4 +53,3 @@ fn main =
   let evens = filter (\x -> x % 2 == 0) nums
   let doubled = map double evens
   println (sum doubled)          # 12
-

@@ -87,6 +87,8 @@ pub const Inferer = struct {
     ctors: std.StringHashMap(CtorInfo),
     types: std.StringHashMap(TypeDefInfo),
     type_names: std.StringHashMap(usize),
+    type_ids: std.StringHashMap(usize), // type_name → unique type ID (for constructor table indexing)
+    next_type_id: usize, // next type ID to assign
     current_module: ?[]const u8,
     last_error: ?ErrorContext,
     current_loc: ?parser.Loc = null,
@@ -96,13 +98,15 @@ pub const Inferer = struct {
     imported_inferers: std.ArrayList(*Inferer),
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
-        return .{
+        var inferer = Inferer{
             .allocator = allocator,
             .next_id = 0,
             .global = Env.init(allocator, null),
             .ctors = std.StringHashMap(CtorInfo).init(allocator),
             .types = std.StringHashMap(TypeDefInfo).init(allocator),
             .type_names = std.StringHashMap(usize).init(allocator),
+            .type_ids = std.StringHashMap(usize).init(allocator),
+            .next_type_id = 2, // Start at 2: Bool=0, Result=1 (matches codegen)
             .current_module = null,
             .last_error = null,
             .doc_comments = std.StringHashMap([]const []const u8).init(allocator),
@@ -110,6 +114,10 @@ pub const Inferer = struct {
             .module_loader = null,
             .imported_inferers = .empty,
         };
+        // Pre-register built-in type IDs to match codegen's type_ids
+        inferer.type_ids.put("Bool", 0) catch {};
+        inferer.type_ids.put("Result", 1) catch {};
+        return inferer;
     }
 
     pub fn deinit(self: *Inferer) void {
@@ -117,6 +125,7 @@ pub const Inferer = struct {
         self.ctors.deinit();
         self.types.deinit();
         self.type_names.deinit();
+        self.type_ids.deinit();
         self.doc_comments.deinit();
         self.expr_type_tags.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
@@ -492,6 +501,22 @@ pub const Inferer = struct {
                         var td = def.type_def;
                         td.name = prefixed;
                         try self.registerTypeDef(td);
+                        // Also register constructor types with both qualified and unqualified names
+                        // using the imported inferer's scheme (which has unqualified type names)
+                        switch (def.type_def.body) {
+                            .sum => |ctors| {
+                                for (ctors) |ctor| {
+                                    if (imp_inferer.global.getScheme(ctor.name)) |scheme| {
+                                        // Qualified constructor name (e.g., List.Cons)
+                                        const qualified_ctor = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, ctor.name });
+                                        try self.global.set(qualified_ctor, scheme);
+                                        // Unqualified constructor name (e.g., Cons)
+                                        try self.global.set(ctor.name, scheme);
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
                     }
                 }
 
@@ -502,32 +527,36 @@ pub const Inferer = struct {
                         // Look up the function's type from the imported inferer
                         if (imp_inferer.global.getScheme(def.fn_def.name)) |scheme| {
                             try self.global.set(fn_name, scheme);
-                            // Also register unqualified name for selective imports
-                            if (imp.selective) |sel| {
+                            // For full imports: also register unqualified name
+                            // For selective imports: only register selected names
+                            const should_register_unqualified = if (imp.selective) |sel| blk: {
                                 for (sel) |s| {
-                                    if (std.mem.eql(u8, s, def.fn_def.name)) {
-                                        try self.global.set(def.fn_def.name, scheme);
-                                    }
+                                    if (std.mem.eql(u8, s, def.fn_def.name)) break :blk true;
                                 }
+                                break :blk false;
+                            } else true;
+                            if (should_register_unqualified) {
+                                try self.global.set(def.fn_def.name, scheme);
                             }
                         }
                     }
                 }
 
-                // Register imported constructors with qualified names
+                // Register imported constructors with qualified and unqualified names
                 for (mod.program.definitions) |def| {
                     if (def == .type_def) {
                         switch (def.type_def.body) {
                             .sum => |ctors| {
                                 for (ctors) |ctor| {
+                                    // Qualified: List.Cons
                                     const prefixed = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, ctor.name });
                                     try self.ctors.put(prefixed, .{
                                         .type_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name }),
                                         .arity = ctor.params.len,
                                     });
-                                    // Also register unqualified constructor name
+                                    // Unqualified: Cons (with unqualified type name)
                                     try self.ctors.put(ctor.name, .{
-                                        .type_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name }),
+                                        .type_name = try std.fmt.allocPrint(self.allocator, "{s}", .{def.type_def.name}),
                                         .arity = ctor.params.len,
                                     });
                                 }
@@ -879,7 +908,13 @@ pub const Inferer = struct {
     }
 
     fn registerTypeDef(self: *Inferer, t: parser.TypeDef) Error!void {
-        try self.type_names.put(t.name, t.type_params.len);
+        // Only assign type_id on first registration (registerTypeDef is called from multiple passes)
+        if (!self.type_ids.contains(t.name)) {
+            try self.type_names.put(t.name, t.type_params.len);
+            const type_id = self.next_type_id;
+            self.next_type_id += 1;
+            try self.type_ids.put(t.name, type_id);
+        }
         switch (t.body) {
             .sum => |ctors| {
                 const type_param_vars = try self.allocator.alloc(*Type, t.type_params.len);
@@ -1116,10 +1151,10 @@ pub const Inferer = struct {
                 // desugar: left :: right  →  Cons left right
                 const ctor_scheme = self.resolveName(env, "Cons") orelse return error.UndefinedName;
                 const ctor_ty = try self.instantiate(ctor_scheme);
-                // Cons : a -> List a -> List a
-                // Apply to left and right, return List a
+                // Get the type name from the constructor's registered type
+                const ctor_info = self.ctors.get("Cons") orelse return error.UndefinedName;
                 const elem_ty = try self.newVarType(try self.freshName("elem"));
-                const list_ty = try self.newType(.{ .con = .{ .name = "List", .args = try self.allocator.dupe(*Type, &.{elem_ty}) } });
+                const list_ty = try self.newType(.{ .con = .{ .name = ctor_info.type_name, .args = try self.allocator.dupe(*Type, &.{elem_ty}) } });
                 const expected = try self.newType(.{ .arrow = .{ .from = elem_ty, .to = try self.newType(.{ .arrow = .{ .from = list_ty, .to = list_ty } }) } });
                 try self.unify(ctor_ty, expected);
                 try self.unify(lt, elem_ty);

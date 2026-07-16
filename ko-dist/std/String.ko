@@ -8,12 +8,12 @@
 #   String.substring, String.indexOf, String.startsWith, String.endsWith
 # These exist in the Python compiler and are planned for the Zig compiler.
 
-fn isEmpty s = String.length s == 0
+pub fn isEmpty s = String.length s == 0
 
-fn repeat s n = repeatAux s n ""
+pub fn repeat s n = repeatAux s n ""
 
-fn repeatAux s n acc =
+pub fn repeatAux s n acc =
   if n <= 0 then acc
   else repeatAux s (n - 1) (String.append acc s)
 
-fn replicate n s = repeat s n
+pub fn replicate n s = repeat s n

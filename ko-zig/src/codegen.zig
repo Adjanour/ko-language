@@ -1123,6 +1123,8 @@ pub const Codegen = struct {
                             name_ptr_val = self.globalStringConstant(arg_expr.identifier.name);
                         } else if (arg_expr.* == .record_literal) {
                             name_ptr_val = self.globalStringConstant(arg_expr.record_literal.name);
+                        } else if (arg_expr.* == .fn_call and arg_expr.fn_call.func.* == .constructor) {
+                            name_ptr_val = self.globalStringConstant(arg_expr.fn_call.func.constructor.name);
                         }
                         const tag_val = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(type_tag), 0);
                         const raw_zero = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);

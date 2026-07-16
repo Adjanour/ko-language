@@ -1,0 +1,36 @@
+# Pascal's Triangle -- build and print rows
+# Demonstrates: recursion, higher-order functions, list operations
+
+type List a = Cons a (List a) | Nil
+
+fn map f xs = match xs
+  | Cons x rest => Cons (f x) (map f rest)
+  | Nil => Nil
+
+fn zipAdd xs ys = match xs
+  | Cons x xrest => match ys
+    | Cons y yrest => Cons (x + y) (zipAdd xrest yrest)
+    | Nil => Nil
+  | Nil => Nil
+
+fn nextRow row = match row
+  | Cons _ rest => zipAdd row rest
+  | Nil => Nil
+
+fn triangle row n =
+  if n == 0 then Nil
+  else Cons row (triangle (nextRow row) (n - 1))
+
+fn sumList xs = match xs
+  | Cons x rest => x + sumList rest
+  | Nil => 0
+
+fn rowSum row = sumList row
+
+fn main =
+  let rows = triangle (Cons 1 Nil) 8
+  println (rowSum (Cons 1 Nil))
+  println (rowSum (Cons 1 (Cons 1 Nil)))
+  println (rowSum (Cons 1 (Cons 2 (Cons 1 Nil))))
+  println (rowSum (Cons 1 (Cons 3 (Cons 3 (Cons 1 Nil)))))
+  println (rowSum (Cons 1 (Cons 4 (Cons 6 (Cons 4 (Cons 1 Nil))))))

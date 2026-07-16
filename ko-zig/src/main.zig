@@ -157,12 +157,8 @@ pub fn main(init: std.process.Init) !void {
     // Typecheck
     // Extract base directory from filename for module resolution
     const base_dir = std.fs.path.dirname(fname) orelse ".";
-    // Resolve executable directory for stdlib lookup from argv[0]
-    const exe_path: []const u8 = if (init.minimal.args.vector.len > 0)
-        std.mem.span(init.minimal.args.vector[0])
-    else
-        "";
-    const exe_dir = std.fs.path.dirname(exe_path) orelse ".";
+    // Resolve real executable directory (follows symlinks) for stdlib lookup
+    const exe_dir = std.process.executableDirPathAlloc(io, init.arena.allocator()) catch ".";
     var loader = module_loader_mod.ModuleLoader.init(init.arena.allocator(), base_dir, null, exe_dir);
     defer loader.deinit();
 

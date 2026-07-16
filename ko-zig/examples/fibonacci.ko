@@ -1,12 +1,14 @@
-# Fibonacci — recursion with nested if
+# Fibonacci numbers -- classic recursive implementation
+# Demonstrates: basic recursion, pattern matching, if-then-else
 
 fn fib n =
-  if n == 0 then 0
-  else if n == 1 then 1
+  if n <= 1 then n
   else fib (n - 1) + fib (n - 2)
 
 fn main =
-  println (fib 1)     # 1
-  println (fib 2)     # 1
-  println (fib 5)     # 5
-  println (fib 7)     # 13
+  println "Fibonacci numbers:"
+  println (fib 0)
+  println (fib 1)
+  println (fib 5)
+  println (fib 10)
+  println (fib 20)

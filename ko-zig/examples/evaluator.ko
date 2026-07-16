@@ -1,0 +1,24 @@
+# Expression Evaluator -- demonstrating algebraic data types
+# Demonstrates: nested pattern matching, recursive types
+
+type Expr = Num Int | Add Expr Expr | Mul Expr Expr | Neg Expr
+
+fn eval expr =
+  match expr
+    | Num n => n
+    | Add a b => eval a + eval b
+    | Mul a b => eval a * eval b
+    | Neg a => -(eval a)
+
+fn main =
+  # 2 + 3 * 4
+  let expr1 = Add (Num 2) (Mul (Num 3) (Num 4))
+  println (eval expr1)
+
+  # -(2 + 3)
+  let expr2 = Neg (Add (Num 2) (Num 3))
+  println (eval expr2)
+
+  # (1 + 2) * (3 + 4)
+  let expr3 = Mul (Add (Num 1) (Num 2)) (Add (Num 3) (Num 4))
+  println (eval expr3)

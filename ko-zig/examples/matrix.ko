@@ -1,0 +1,25 @@
+# Matrix Operations -- basic matrix math
+# Demonstrates: nested lists, higher-order functions
+
+type List a = Cons a (List a) | Nil
+
+fn map f xs = match xs
+  | Cons x rest => Cons (f x) (map f rest)
+  | Nil => Nil
+
+fn zipWith f xs ys = match xs
+  | Cons x xrest => match ys
+                     | Cons y yrest => Cons (f x y) (zipWith f xrest yrest)
+                     | Nil => Nil
+  | Nil => Nil
+
+fn sumList xs = match xs
+  | Cons x rest => x + sumList rest
+  | Nil => 0
+
+fn dotProduct xs ys = sumList (zipWith (\a b -> a * b) xs ys)
+
+fn main =
+  let row1 = Cons 1 (Cons 2 (Cons 3 Nil))
+  let row2 = Cons 4 (Cons 5 (Cons 6 Nil))
+  println (dotProduct row1 row2)

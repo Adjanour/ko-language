@@ -1,0 +1,14 @@
+# Collatz Conjecture -- for each number, how many steps to reach 1?
+# Demonstrates: recursion, pattern matching with guards
+
+fn collatzSteps n =
+  if n == 1 then 0
+  else if n % 2 == 0 then 1 + collatzSteps (n / 2)
+  else 1 + collatzSteps (3 * n + 1)
+
+fn main =
+  println (collatzSteps 6)
+  println (collatzSteps 11)
+  println (collatzSteps 27)
+  println (collatzSteps 97)
+  println (collatzSteps 871)

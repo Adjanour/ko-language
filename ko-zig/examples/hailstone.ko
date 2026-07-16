@@ -1,0 +1,35 @@
+# Hailstone Sequence -- related to Collatz
+# Demonstrates: recursion, counting steps
+
+type List a = Cons a (List a) | Nil
+
+fn hailstoneLength n =
+  if n == 1 then 0
+  else if n % 2 == 0 then 1 + hailstoneLength (n / 2)
+  else 1 + hailstoneLength (3 * n + 1)
+
+fn hailstoneSeq n = match hailstoneLength n
+  | _ => hailstoneBuild n (hailstoneLength n)
+
+fn hailstoneBuild n remaining =
+  if remaining == 0 then Cons n Nil
+  else if n % 2 == 0 then Cons n (hailstoneBuild (n / 2) (remaining - 1))
+  else Cons n (hailstoneBuild (3 * n + 1) (remaining - 1))
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn sumList xs = match xs
+  | Cons x rest => x + sumList rest
+  | Nil => 0
+
+fn main =
+  let len1 = hailstoneLength 6
+  println len1
+
+  let len2 = hailstoneLength 27
+  println len2
+
+  let seq3 = hailstoneBuild 6 (hailstoneLength 6)
+  println (sumList seq3)
