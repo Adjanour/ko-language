@@ -381,3 +381,78 @@ fn call_ko_fn_1(fn_val: i64, arg: i64) i64 {
         return actual_fn_ptr(arg);
     }
 }
+
+// ko_string_split(str, delimiter) -> List String (heap-allocated Cons/Nil)
+// Returns a list of substrings split by the delimiter.
+pub fn ko_string_split(str: ?[*:0]const u8, delimiter: ?[*:0]const u8) callconv(.c) i64 {
+    const s = str orelse return 1; // Nil
+    const d = delimiter orelse return 1; // Nil
+
+    var delim_len: usize = 0;
+    while (d[delim_len] != 0) : (delim_len += 1) {}
+    if (delim_len == 0) return 1; // Nil
+
+    var str_len: usize = 0;
+    while (s[str_len] != 0) : (str_len += 1) {}
+
+    // Count segments
+    var count: usize = 1;
+    var i: usize = 0;
+    while (i <= str_len -| delim_len) : (i += 1) {
+        var j: usize = 0;
+        while (j < delim_len and s[i + j] == d[j]) : (j += 1) {}
+        if (j == delim_len) {
+            count += 1;
+            i += delim_len - 1;
+        }
+    }
+
+    // Build list from right to left (so order is correct after reversal)
+    var result: i64 = 1; // start with Nil
+    var start: usize = 0;
+    i = 0;
+    while (i <= str_len) : (i += 1) {
+        var matched = false;
+        if (i <= str_len - delim_len) {
+            var j: usize = 0;
+            while (j < delim_len and s[i + j] == d[j]) : (j += 1) {}
+            matched = (j == delim_len);
+        }
+        if (matched or i == str_len) {
+            const seg_len = i - start;
+            // Allocate and copy substring
+            const buf = std.heap.page_allocator.alloc(u8, seg_len + 1) catch return result;
+            var k: usize = 0;
+            while (k < seg_len) : (k += 1) {
+                buf[k] = s[start + k];
+            }
+            buf[seg_len] = 0;
+            const str_ptr: i64 = @bitCast(@as(usize, @intFromPtr(buf.ptr)));
+            // Cons(str_ptr, result) — allocate 3-i64 struct: [tag=0, head, tail]
+            const cons_struct: *[3]i64 = @ptrCast(std.heap.page_allocator.alloc(i64, 3) catch return result);
+            cons_struct[0] = 0; // Cons tag
+            cons_struct[1] = str_ptr;
+            cons_struct[2] = result;
+            result = @bitCast(@as(usize, @intFromPtr(cons_struct)));
+            start = i + delim_len;
+            i = start - 1; // will be incremented by loop
+        }
+    }
+
+    // Reverse the list
+    var reversed: i64 = 1; // Nil
+    var current = result;
+    while (current != 1) { // not Nil
+        const ptr: usize = @bitCast(current);
+        const node: *const [3]i64 = @ptrFromInt(ptr);
+        const head_val = node[1];
+        const tail_val = node[2];
+        const new_node: *[3]i64 = @ptrCast(std.heap.page_allocator.alloc(i64, 3) catch break);
+        new_node[0] = 0; // Cons tag
+        new_node[1] = head_val;
+        new_node[2] = reversed;
+        reversed = @bitCast(@as(usize, @intFromPtr(new_node)));
+        current = tail_val;
+    }
+    return reversed;
+}

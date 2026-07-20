@@ -117,6 +117,14 @@ pub const Inferer = struct {
         // Pre-register built-in type IDs to match codegen's type_ids
         inferer.type_ids.put("Bool", 0) catch {};
         inferer.type_ids.put("Result", 1) catch {};
+
+        // Pre-register True/False as built-in Bool constructors
+        inferer.ctors.put("True", .{ .type_name = "Bool", .arity = 0 }) catch {};
+        inferer.ctors.put("False", .{ .type_name = "Bool", .arity = 0 }) catch {};
+        const bool_ty = inferer.newType(.bool) catch unreachable;
+        inferer.global.set("True", .{ .quantified = &.{}, .body = bool_ty }) catch {};
+        inferer.global.set("False", .{ .quantified = &.{}, .body = bool_ty }) catch {};
+
         return inferer;
     }
 
@@ -668,6 +676,19 @@ pub const Inferer = struct {
         string_string_string_to_string.* = .{ .arrow = .{ .from = string_param6, .to = inner_arrow5 } };
         try self.global.set("String.replace", .{ .quantified = &.{}, .body = string_string_string_to_string });
 
+        // String.split : String -> String -> List String
+        const string_split_to = try self.allocator.create(Type);
+        {
+            const sa = try self.newType(.string);
+            const sb = try self.newType(.string);
+            const list_sb = try self.allocator.create(Type);
+            list_sb.* = .{ .con = .{ .name = "List", .args = try self.allocator.dupe(*Type, &.{sb}) } };
+            const inner = try self.allocator.create(Type);
+            inner.* = .{ .arrow = .{ .from = sb, .to = list_sb } };
+            string_split_to.* = .{ .arrow = .{ .from = sa, .to = inner } };
+        }
+        try self.global.set("String.split", .{ .quantified = &.{}, .body = string_split_to });
+
         // Result operations (built-in)
         // Result.is_ok : forall a b. Result a b -> Int
         {
@@ -1126,11 +1147,21 @@ pub const Inferer = struct {
                     try self.unify(rt, try self.newType(.string));
                     break :blk try self.newType(.string);
                 }
+                if (lt.* == .float or rt.* == .float) {
+                    try self.unify(lt, try self.newType(.float));
+                    try self.unify(rt, try self.newType(.float));
+                    break :blk try self.newType(.float);
+                }
                 try self.unify(lt, try self.newType(.int));
                 try self.unify(rt, try self.newType(.int));
                 break :blk try self.newType(.int);
             },
             .sub, .mul, .div, .mod => blk: {
+                if (lt.* == .float or rt.* == .float) {
+                    try self.unify(lt, try self.newType(.float));
+                    try self.unify(rt, try self.newType(.float));
+                    break :blk try self.newType(.float);
+                }
                 try self.unify(lt, try self.newType(.int));
                 try self.unify(rt, try self.newType(.int));
                 break :blk try self.newType(.int);

@@ -72,7 +72,8 @@ pub const StdlibCodegen = struct {
         // Determine return type based on function name
         const name_slice: []const u8 = std.mem.sliceTo(name, 0);
         const ret_type = if (std.mem.eql(u8, name_slice, "ko_string_contains") or
-            std.mem.eql(u8, name_slice, "ko_string_char_at"))
+            std.mem.eql(u8, name_slice, "ko_string_char_at") or
+            std.mem.eql(u8, name_slice, "ko_string_split"))
             i64_type
         else
             ptr_type;
@@ -966,6 +967,12 @@ pub const StdlibCodegen = struct {
         self.buildRet(result_buf_final);
     }
 
+    pub fn codegenStringSplit(self: *StdlibCodegen) void {
+        // ko_string_split(str: ptr, delimiter: ptr) -> i64 (list pointer)
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        _ = self.createFunction("ko_string_split", self.i64Type(), &params);
+    }
+
     // ============================================================
     // Float conversion functions
     // ============================================================
@@ -1687,6 +1694,7 @@ pub const StdlibCodegen = struct {
         self.codegenStringToLower();
         self.codegenStringTrim();
         self.codegenStringReplace();
+        self.codegenStringSplit();
         self.codegenIntToString();
         self.codegenStringToInt();
 

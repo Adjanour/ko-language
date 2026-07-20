@@ -336,6 +336,8 @@ pub const Codegen = struct {
             _ = self.named_values.put("String.trim", fn_val) catch {};
         if (core.LLVMGetNamedFunction(self.module, "ko_string_replace")) |fn_val|
             _ = self.named_values.put("String.replace", fn_val) catch {};
+        if (core.LLVMGetNamedFunction(self.module, "ko_string_split")) |fn_val|
+            _ = self.named_values.put("String.split", fn_val) catch {};
 
         // Math module (integer)
         if (core.LLVMGetNamedFunction(self.module, "ko_int_pow")) |fn_val|
@@ -380,8 +382,8 @@ pub const Codegen = struct {
             _ = self.named_values.put("Float.pow", fn_val) catch {};
 
         // Built-in constructors (True/False for Bool type)
-        _ = self.constructor_tags.put("True", .{ .type_name = "Bool", .tag = 0, .arity = 0 }) catch {};
-        _ = self.constructor_tags.put("False", .{ .type_name = "Bool", .tag = 1, .arity = 0 }) catch {};
+        _ = self.constructor_tags.put("True", .{ .type_name = "Bool", .tag = 1, .arity = 0 }) catch {};
+        _ = self.constructor_tags.put("False", .{ .type_name = "Bool", .tag = 0, .arity = 0 }) catch {};
         const bool_fn_type = core.LLVMFunctionType(i64_type, null, 0, 0);
         const true_fn = core.LLVMAddFunction(self.module, "True", bool_fn_type);
         _ = self.constructor_fns.put("True", true_fn) catch {};
@@ -478,6 +480,10 @@ pub const Codegen = struct {
         }
         if (self.named_values.get("Result.and_then")) |fn_val| {
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_and_then)));
+        }
+        // Map String.split to native Zig implementation
+        if (self.named_values.get("String.split")) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_split)));
         }
         // All other functions (RC, stack check, math, string, int) are now
         // String functions are now generated as LLVM IR in the module — no mapping needed
@@ -662,36 +668,49 @@ pub const Codegen = struct {
     fn codegenBinaryOp(self: *Codegen, op: parser.BinaryOp, left: *const parser.Expr, right: *const parser.Expr) Error!types.LLVMValueRef {
         const l = try self.codegenExpr(left);
         const r = try self.codegenExpr(right);
-        const name: [*:0]const u8 = switch (op) {
-            .add => "add",
-            .sub => "sub",
-            .mul => "mul",
-            .div => "sdiv",
-            .mod => "srem",
-            .eq => "eq",
-            .neq => "neq",
-            .lt => "slt",
-            .lte => "sle",
-            .gt => "sgt",
-            .gte => "sge",
-            .and_op => "and",
-            .or_op => "or",
-            .pipe => "pipe",
-            .cons => "cons",
-        };
+
+        const is_float = if (self.expr_type_tags) |tags|
+            tags.get(left) == 1 // tag 1 = Float
+        else
+            false;
+
+        if (is_float) {
+            const double_type = core.LLVMDoubleTypeInContext(self.context);
+            const i64_type = core.LLVMInt64TypeInContext(self.context);
+            const l_double = core.LLVMBuildBitCast(self.builder, l, double_type, "to_double");
+            const r_double = core.LLVMBuildBitCast(self.builder, r, double_type, "to_double");
+            switch (op) {
+                .add, .sub, .mul, .div, .mod => {
+                    const result = switch (op) {
+                        .add => core.LLVMBuildFAdd(self.builder, l_double, r_double, "fadd"),
+                        .sub => core.LLVMBuildFSub(self.builder, l_double, r_double, "fsub"),
+                        .mul => core.LLVMBuildFMul(self.builder, l_double, r_double, "fmul"),
+                        .div => core.LLVMBuildFDiv(self.builder, l_double, r_double, "fdiv"),
+                        .mod => core.LLVMBuildFRem(self.builder, l_double, r_double, "frem"),
+                        else => unreachable,
+                    };
+                    return core.LLVMBuildBitCast(self.builder, result, i64_type, "from_double");
+                },
+                .eq, .neq, .lt, .lte, .gt, .gte => {
+                    const cmp = core.LLVMBuildFCmp(self.builder, self.floatPredicate(op), l_double, r_double, "fcmp");
+                    return core.LLVMBuildZExt(self.builder, cmp, i64_type, "bool_ext");
+                },
+                else => unreachable,
+            }
+        }
 
         return switch (op) {
-            .add => core.LLVMBuildAdd(self.builder, l, r, name),
-            .sub => core.LLVMBuildSub(self.builder, l, r, name),
-            .mul => core.LLVMBuildMul(self.builder, l, r, name),
-            .div => core.LLVMBuildSDiv(self.builder, l, r, name),
-            .mod => core.LLVMBuildSRem(self.builder, l, r, name),
+            .add => core.LLVMBuildAdd(self.builder, l, r, "add"),
+            .sub => core.LLVMBuildSub(self.builder, l, r, "sub"),
+            .mul => core.LLVMBuildMul(self.builder, l, r, "mul"),
+            .div => core.LLVMBuildSDiv(self.builder, l, r, "sdiv"),
+            .mod => core.LLVMBuildSRem(self.builder, l, r, "srem"),
             .eq, .neq, .lt, .lte, .gt, .gte => blk: {
                 const cmp = core.LLVMBuildICmp(self.builder, self.intPredicate(op), l, r, "cmp");
                 break :blk core.LLVMBuildZExt(self.builder, cmp, core.LLVMInt64TypeInContext(self.context), "bool_ext");
             },
-            .and_op => core.LLVMBuildAnd(self.builder, l, r, name),
-            .or_op => core.LLVMBuildOr(self.builder, l, r, name),
+            .and_op => core.LLVMBuildAnd(self.builder, l, r, "and"),
+            .or_op => core.LLVMBuildOr(self.builder, l, r, "or"),
             .pipe => return error.NotYetImplemented,
             .cons => blk: {
                 // desugar: left :: right  →  Cons left right
@@ -713,6 +732,19 @@ pub const Codegen = struct {
             .lte => .LLVMIntSLE,
             .gt => .LLVMIntSGT,
             .gte => .LLVMIntSGE,
+            else => unreachable,
+        };
+    }
+
+    fn floatPredicate(self: *Codegen, op: parser.BinaryOp) types.LLVMRealPredicate {
+        _ = self;
+        return switch (op) {
+            .eq => .LLVMRealOEQ,
+            .neq => .LLVMRealONE,
+            .lt => .LLVMRealOLT,
+            .lte => .LLVMRealOLE,
+            .gt => .LLVMRealOGT,
+            .gte => .LLVMRealOGE,
             else => unreachable,
         };
     }
@@ -1672,6 +1704,7 @@ pub const Codegen = struct {
                 while (iter.next()) |e| inner_bound.put(e.key_ptr.*, {}) catch {};
                 for (b.items) |item| {
                     collectFreeVars(item, &inner_bound, free_vars);
+                    if (item.* == .let_expr) inner_bound.put(item.let_expr.name, {}) catch {};
                 }
             },
             .tuple => |t| {
@@ -1755,9 +1788,13 @@ pub const Codegen = struct {
         // Save and restore scope
         const old_values = self.named_values;
         const old_var_types = self.variable_types;
+        const old_heap_values = self.scope_heap_values;
         self.named_values = std.StringHashMap(types.LLVMValueRef).init(self.allocator);
         self.variable_types = std.StringHashMap([]const u8).init(self.allocator);
+        self.scope_heap_values = .empty;
         defer {
+            self.scope_heap_values.deinit(self.allocator);
+            self.scope_heap_values = old_heap_values;
             self.variable_types.deinit();
             self.variable_types = old_var_types;
             self.named_values.deinit();

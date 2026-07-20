@@ -607,7 +607,7 @@ pub const Parser = struct {
         }
 
         _ = try self.expect(.equal);
-        const body = try self.parse_block(top_level_stops);
+        const body = try self.parse_block(top_level_stops, true);
         return .{
             .name = name,
             .params = try self.allocSlice(FnParam, params.items),
@@ -634,7 +634,7 @@ pub const Parser = struct {
     // Blocks
     // =========================================================================
 
-    fn parse_block(self: *Parser, stop_tags: []const lexer.Token.Tag) Error!*Expr {
+    fn parse_block(self: *Parser, stop_tags: []const lexer.Token.Tag, consume_dedent: bool) Error!*Expr {
         self.skip_newlines();
         const is_indented = self.match(.indent);
         if (is_indented) self.skip_newlines();
@@ -646,7 +646,7 @@ pub const Parser = struct {
             if (self.current().tag == .comment and !is_indented and !self.isInlineComment()) break;
             if (self.current().tag == .dedent) {
                 if (!is_indented) break;
-                _ = self.advance();
+                if (consume_dedent) _ = self.advance();
                 break;
             }
             if (self.current().tag == .keyword_let) {
@@ -703,6 +703,11 @@ pub const Parser = struct {
         while (self.current().tag == .comment) {
             _ = self.advance();
         }
+        if (self.current().tag == .dedent) _ = self.advance();
+        self.skip_newlines();
+        while (self.current().tag == .comment) {
+            _ = self.advance();
+        }
         var body: *Expr = undefined;
         if (self.current().tag == .keyword_let) {
             body = try self.parse_let_expr_in_block(stop_tags);
@@ -711,7 +716,7 @@ pub const Parser = struct {
         } else {
             const prev = self.allow_let_in_body;
             self.allow_let_in_body = true;
-            body = try self.parse_block(fn_body_stops);
+            body = try self.parse_block(fn_body_stops, true);
             self.allow_let_in_body = prev;
         }
         return self.newExpr(.{ .let_expr = .{ .name = name, .type_ann = type_ann, .value = value, .body = body, .pattern = pattern } }, self.tokenLoc(self.current()));
@@ -1121,7 +1126,11 @@ pub const Parser = struct {
             try params.append(self.allocator, try self.parse_pattern());
         }
         _ = try self.expect(.arrow);
-        const body = try self.parse_expr();
+        self.skip_newlines();
+        const body = if (self.current().tag == .indent)
+            try self.parse_block(&.{}, false)
+        else
+            try self.parse_expr();
         return self.newExpr(.{ .lambda = .{ .params = try self.allocSlice(Pattern, params.items), .body = body } }, self.tokenLoc(self.current()));
     }
 
@@ -1132,7 +1141,7 @@ pub const Parser = struct {
         _ = self.match(.keyword_then);
         self.skip_newlines();
         const then_branch = if (self.current().tag == .indent)
-            try self.parse_block(&.{.keyword_else})
+            try self.parse_block(&.{.keyword_else}, true)
         else
             try self.parse_expr();
         self.skip_newlines();
@@ -1140,7 +1149,7 @@ pub const Parser = struct {
         if (self.match(.keyword_else)) {
             self.skip_newlines();
             else_branch = if (self.current().tag == .indent)
-                try self.parse_block(&.{.dedent})
+                try self.parse_block(&.{.dedent}, true)
             else
                 try self.parse_expr();
         }
@@ -1164,7 +1173,7 @@ pub const Parser = struct {
             _ = try self.expect(.fat_arrow);
             self.skip_newlines();
             const body = if (self.current().tag == .newline or self.current().tag == .indent)
-                try self.parse_block(&.{.pipe, .dedent})
+                try self.parse_block(&.{.pipe, .dedent}, true)
             else
                 try self.parse_expr();
             try arms.append(self.allocator, .{ .pattern = pat, .body = body });
