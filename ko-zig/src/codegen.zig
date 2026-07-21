@@ -1281,70 +1281,157 @@ pub const Codegen = struct {
             if (resolved_name) |name| {
                 if (self.fn_arity.get(name)) |arity| {
                     if (argc < arity) {
-                        // Create a partial application closure for let-bound lambda
                         return self.createPartialApp(name, fn_val, arity, args[0..argc]);
                     }
+                    if (argc > arity) {
+                        // Over-application: call with first arity args, then apply remaining one at a time
+                        var first_args: [32]types.LLVMValueRef = undefined;
+                        for (0..arity) |i| {
+                            first_args[i] = args[i];
+                        }
+                        var result = try self.codegenApplyIndirectWithArity(fn_val, &first_args, arity);
+                        // Apply remaining args one at a time (each intermediate result may have lower arity)
+                        for (arity..argc) |i| {
+                            result = try self.codegenApplyIndirect(result, args[i]);
+                        }
+                        return result;
+                    }
+                    // argc == arity: exact match
+                    return self.codegenApplyIndirectWithArity(fn_val, &args, argc);
                 }
             }
-            // Runtime check: bit 0 = partial application closure, bit 0 = 0 = raw function pointer
-            // Check if bit 0 is set (partial application closure)
-            // We need a runtime check: extract bit 0, branch accordingly
-            const fn_entry_bb = core.LLVMGetInsertBlock(self.builder);
-            const parent_fn = core.LLVMGetBasicBlockParent(fn_entry_bb);
-
-            const partial_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "partial_app");
-            const direct_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "direct_call");
-            const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "call_merge");
-
-            // Check bit 0
-            const bit0_val = core.LLVMBuildAnd(self.builder, fn_val, core.LLVMConstInt(i64_type, 1, 0), "bit0");
-            const is_partial_val = core.LLVMBuildICmp(self.builder, .LLVMIntNE, bit0_val, core.LLVMConstInt(i64_type, 0, 0), "is_partial");
-            _ = core.LLVMBuildCondBr(self.builder, is_partial_val, partial_bb, direct_bb);
-
-            // Partial application path
-            core.LLVMPositionBuilderAtEnd(self.builder, partial_bb);
-            // Clear bit 0 to get closure pointer
-            // Clear bit 0 to get closure pointer (AND with ~1 = 0xFFFFFFFFFFFFFFFE)
-            const mask = core.LLVMConstInt(i64_type, @bitCast(@as(i64, -2)), 0);
-            const closure_i64 = core.LLVMBuildAnd(self.builder, fn_val, mask, "closure_raw");
-            const closure_ptr = core.LLVMBuildIntToPtr(self.builder, closure_i64, core.LLVMPointerTypeInContext(self.context, 0), "closure_ptr");
-            // Load fn_ptr from closure (offset 0)
-            const fn_ptr_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 0, 0)}), 1, "fn_ptr_ptr");
-            const loaded_fn_ptr = core.LLVMBuildLoad2(self.builder, core.LLVMPointerTypeInContext(self.context, 0), fn_ptr_ptr, "loaded_fn_ptr");
-            // Build args: [closure_ptr, new_arg_0, ..., new_arg_N]
-            var partial_args: [33]types.LLVMValueRef = undefined;
-            partial_args[0] = closure_ptr;
-            for (0..argc) |i| {
-                partial_args[i + 1] = args[i];
+            // Runtime dispatch: apply one arg at a time via bit-0 check.
+            // Each call resolves to either a closure call or direct call.
+            // The intermediate result may itself be a closure or raw fn ptr.
+            {
+                var result = fn_val;
+                for (0..argc) |i| {
+                    result = try self.codegenApplyIndirect(result, args[i]);
+                }
+                return result;
             }
-            var partial_param_types: [33]types.LLVMTypeRef = undefined;
-            partial_param_types[0] = core.LLVMPointerTypeInContext(self.context, 0);
-            for (0..argc) |i| {
-                partial_param_types[i + 1] = i64_type;
-            }
-            const partial_fn_type = core.LLVMFunctionType(i64_type, &partial_param_types, @intCast(argc + 1), 0);
-            const partial_result = core.LLVMBuildCall2(self.builder, partial_fn_type, loaded_fn_ptr, &partial_args, @intCast(argc + 1), "partial_call");
-            _ = core.LLVMBuildBr(self.builder, merge_bb);
-
-            // Direct call path (lambda)
-            core.LLVMPositionBuilderAtEnd(self.builder, direct_bb);
-            var param_types: [32]types.LLVMTypeRef = undefined;
-            for (0..argc) |i| {
-                param_types[i] = i64_type;
-            }
-            const fn_type = core.LLVMFunctionType(i64_type, &param_types, argc, 0);
-            const fn_ptr = core.LLVMBuildIntToPtr(self.builder, fn_val, core.LLVMPointerTypeInContext(self.context, 0), "fn_ptr");
-            const direct_result = core.LLVMBuildCall2(self.builder, fn_type, fn_ptr, &args, argc, "indirect_call");
-            _ = core.LLVMBuildBr(self.builder, merge_bb);
-
-            // Merge
-            core.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
-            const phi = core.LLVMBuildPhi(self.builder, i64_type, "call_result");
-            var incoming_vals: [2]types.LLVMValueRef = .{ partial_result, direct_result };
-            var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ partial_bb, direct_bb };
-            core.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
-            return phi;
         }
+    }
+
+    /// Apply a runtime function value (i64) to exactly 1 arg via bit-0 dispatch.
+    /// bit 0 = 0 → raw function pointer (call directly)
+    /// bit 0 = 1 → closure pointer (call with closure_ptr + 1 arg)
+    /// For multiple args, the caller loops calling this function once per arg.
+    fn codegenApplyIndirect(self: *Codegen, fn_val: types.LLVMValueRef, arg: types.LLVMValueRef) Error!types.LLVMValueRef {
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+
+        const bit0_val = core.LLVMBuildAnd(self.builder, fn_val, core.LLVMConstInt(i64_type, 1, 0), "bit0");
+        const is_closure = core.LLVMBuildICmp(self.builder, .LLVMIntNE, bit0_val, core.LLVMConstInt(i64_type, 0, 0), "is_closure");
+
+        const fn_entry_bb = core.LLVMGetInsertBlock(self.builder);
+        const parent_fn = core.LLVMGetBasicBlockParent(fn_entry_bb);
+
+        const closure_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "closure_call");
+        const direct_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "direct_call");
+        const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "call_merge");
+
+        _ = core.LLVMBuildCondBr(self.builder, is_closure, closure_bb, direct_bb);
+
+        // Closure path: extract fn_ptr, call with (closure_ptr, arg)
+        core.LLVMPositionBuilderAtEnd(self.builder, closure_bb);
+        const mask = core.LLVMConstInt(i64_type, @bitCast(@as(i64, -2)), 0);
+        const closure_i64 = core.LLVMBuildAnd(self.builder, fn_val, mask, "closure_raw");
+        const closure_ptr = core.LLVMBuildIntToPtr(self.builder, closure_i64, core.LLVMPointerTypeInContext(self.context, 0), "closure_ptr");
+        const fn_ptr_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&[_]types.LLVMValueRef{core.LLVMConstInt(i64_type, 0, 0)}), 1, "fn_ptr_ptr");
+        const loaded_fn_ptr = core.LLVMBuildLoad2(self.builder, core.LLVMPointerTypeInContext(self.context, 0), fn_ptr_ptr, "loaded_fn_ptr");
+        const closure_args: [2]types.LLVMValueRef = .{ closure_ptr, arg };
+        const closure_param_types: [2]types.LLVMTypeRef = .{ core.LLVMPointerTypeInContext(self.context, 0), i64_type };
+        const closure_fn_type = core.LLVMFunctionType(i64_type, @constCast(&closure_param_types), 2, 0);
+        const closure_result = core.LLVMBuildCall2(self.builder, closure_fn_type, loaded_fn_ptr, @constCast(&closure_args), 2, "closure_call");
+        _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+        // Direct path: raw fn ptr, call with 1 arg
+        core.LLVMPositionBuilderAtEnd(self.builder, direct_bb);
+        const direct_single_types: [1]types.LLVMTypeRef = .{i64_type};
+        const direct_fn_type = core.LLVMFunctionType(i64_type, @constCast(&direct_single_types), 1, 0);
+        const direct_fn_ptr = core.LLVMBuildIntToPtr(self.builder, fn_val, core.LLVMPointerTypeInContext(self.context, 0), "fn_ptr_direct");
+        var direct_single_arg: [1]types.LLVMValueRef = .{arg};
+        const direct_result = core.LLVMBuildCall2(self.builder, direct_fn_type, direct_fn_ptr, &direct_single_arg, 1, "direct_call");
+        _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
+        const phi = core.LLVMBuildPhi(self.builder, i64_type, "call_result");
+        var incoming_vals: [2]types.LLVMValueRef = .{ closure_result, direct_result };
+        var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ closure_bb, direct_bb };
+        core.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+        return phi;
+    }
+
+    /// Apply a runtime function value (i64) to argc args, using known arity.
+    /// bit 0 = 0 → raw function pointer (call with all args at once)
+    /// bit 0 = 1 → closure pointer (each lambda takes 1 param, call one at a time)
+    /// This is needed because raw fn ptrs may take N params, while closures always take 1.
+    fn codegenApplyIndirectWithArity(self: *Codegen, fn_val: types.LLVMValueRef, args: [*c]types.LLVMValueRef, argc: c_uint) Error!types.LLVMValueRef {
+        if (argc == 0) return fn_val;
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+
+        const bit0_val = core.LLVMBuildAnd(self.builder, fn_val, core.LLVMConstInt(i64_type, 1, 0), "bit0");
+        const is_closure = core.LLVMBuildICmp(self.builder, .LLVMIntNE, bit0_val, core.LLVMConstInt(i64_type, 0, 0), "is_closure");
+
+        const fn_entry_bb = core.LLVMGetInsertBlock(self.builder);
+        const parent_fn = core.LLVMGetBasicBlockParent(fn_entry_bb);
+
+        const closure_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "closure_call");
+        const direct_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "direct_call");
+        const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, parent_fn, "call_merge");
+
+        _ = core.LLVMBuildCondBr(self.builder, is_closure, closure_bb, direct_bb);
+
+        // Closure path: call wrapper with all args at once
+        // Closure struct: { fn_ptr, total_arity, applied_count, applied_args[] }
+        // fn_ptr is at offset 0 (stored as i64, convert to ptr for call)
+        core.LLVMPositionBuilderAtEnd(self.builder, closure_bb);
+        const ptr_type = core.LLVMPointerTypeInContext(self.context, 0);
+
+        // Mask off bit 0 to get raw closure pointer (same as codegenApplyIndirect)
+        const mask = core.LLVMConstInt(i64_type, @bitCast(@as(i64, -2)), 0);
+        const closure_i64 = core.LLVMBuildAnd(self.builder, fn_val, mask, "closure_raw");
+        const closure_ptr = core.LLVMBuildIntToPtr(self.builder, closure_i64, ptr_type, "closure_ptr");
+
+        // Read fn_ptr from closure struct (offset 0, use i8 GEP like codegenApplyIndirect)
+        var fn_ptr_indices: [1]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0) };
+        const fn_ptr_slot = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), closure_ptr, @constCast(&fn_ptr_indices), 1, "fn_ptr_slot");
+        const fn_ptr_val = core.LLVMBuildLoad2(self.builder, ptr_type, fn_ptr_slot, "fn_ptr_val");
+
+        // Build wrapper type: wrapper(closure_ptr, arg1, arg2, ..., argN) -> i64
+        var wrapper_param_types: [33]types.LLVMTypeRef = undefined;
+        wrapper_param_types[0] = ptr_type;
+        for (0..argc) |i| {
+            wrapper_param_types[i + 1] = i64_type;
+        }
+        const wrapper_fn_type = core.LLVMFunctionType(i64_type, &wrapper_param_types, argc + 1, 0);
+
+        // Build call args: [closure_ptr, arg1, arg2, ...]
+        var call_args: [33]types.LLVMValueRef = undefined;
+        call_args[0] = closure_ptr;
+        for (0..argc) |i| {
+            call_args[i + 1] = args[i];
+        }
+        const closure_result = core.LLVMBuildCall2(self.builder, wrapper_fn_type, fn_ptr_val, &call_args, argc + 1, "closure_call");
+        _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+        // Direct path: raw fn ptr, call with all args at once
+        core.LLVMPositionBuilderAtEnd(self.builder, direct_bb);
+        var direct_param_types: [32]types.LLVMTypeRef = undefined;
+        for (0..argc) |i| {
+            direct_param_types[i] = i64_type;
+        }
+        const direct_fn_type = core.LLVMFunctionType(i64_type, &direct_param_types, argc, 0);
+        const direct_fn_ptr = core.LLVMBuildIntToPtr(self.builder, fn_val, core.LLVMPointerTypeInContext(self.context, 0), "fn_ptr_direct");
+        const direct_result = core.LLVMBuildCall2(self.builder, direct_fn_type, direct_fn_ptr, args, argc, "direct_call");
+        _ = core.LLVMBuildBr(self.builder, merge_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
+        const phi = core.LLVMBuildPhi(self.builder, i64_type, "call_result");
+        var incoming_vals: [2]types.LLVMValueRef = .{ closure_result, direct_result };
+        var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ closure_bb, direct_bb };
+        core.LLVMAddIncoming(phi, &incoming_vals, &incoming_bbs, 2);
+        return phi;
     }
 
     fn codegenIf(self: *Codegen, if_expr: parser.IfExpr) Error!types.LLVMValueRef {
@@ -1423,6 +1510,20 @@ pub const Codegen = struct {
             // Track lambda arity for partial application support
             if (let.value.* == .lambda) {
                 try self.fn_arity.put(let.name, @intCast(let.value.lambda.params.len));
+            }
+            // Track arity for let-bound function call results (partial application)
+            // e.g., let rev_sub = flip sub → flip has arity 3, 1 arg applied, remaining = 2
+            if (let.value.* == .fn_call) {
+                const call_expr = let.value.fn_call;
+                if (call_expr.func.* == .identifier) {
+                    const func_name = call_expr.func.identifier.name;
+                    if (self.fn_arity.get(func_name)) |total_arity| {
+                        if (call_expr.args.len < total_arity) {
+                            const remaining = total_arity - @as(u32, @intCast(call_expr.args.len));
+                            try self.fn_arity.put(let.name, remaining);
+                        }
+                    }
+                }
             }
         }
         return try self.codegenExpr(let.body);
