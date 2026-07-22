@@ -161,7 +161,7 @@ fn main =
 
 ## 9. Lists
 
-Kō has linked lists with `Cons` and `Nil`:
+Kō has linked lists with `Cons` and `Nil`. **You must define the List type before using it** — it is not built-in:
 
 ```
 type List a = Cons a (List a) | Nil

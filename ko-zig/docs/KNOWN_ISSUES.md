@@ -1,0 +1,90 @@
+# Known Issues
+
+## Users must define List type before using lists
+
+**Status:** Open (GitHub #15)  
+**Severity:** Medium  
+**Last tested:** 2026-07-22
+
+### Problem
+
+Lists are not a built-in type. Users must define `type List a = Cons a (List a) | Nil` before using `Cons`/`Nil`. This is poor UX — lists are a fundamental data structure.
+
+### Current behavior
+
+```ko
+# Fails: undefined constructor 'Nil'
+fn main = println (Cons 1 (Cons 2 Nil))
+
+# Must write:
+type List a = Cons a (List a) | Nil
+fn main = println (Cons 1 (Cons 2 Nil))
+```
+
+### What should work out of the box
+
+Like `Bool` (`True`/`False`) and `Result` (`Ok`/`Err`), lists should work without a type definition.
+
+### Fix
+
+Register `List`, `Cons`, and `Nil` as built-in types in `typecheck.zig` init, following the same pattern as Bool/True/False.
+
+See GitHub issue [#15](https://github.com/Adjanour/ko-language/issues/15).
+
+---
+
+## List element printing uses tag=100 (unknown)
+
+**Status:** Deferred  
+**Severity:** Medium  
+**Last tested:** 2026-07-22
+
+### Problem
+
+When printing a list with `println` or `inspect`, the list structure is detected correctly (`[1, 2, 3]`), but individual elements are printed using type tag=100 (unknown). This means:
+
+- Strings print as raw pointers: `println (Cons "hello" Nil)` → `[140073513881720]`
+- Non-integer elements may print incorrectly
+
+### Root cause
+
+The LLVM IR `inspect` function prints list elements via `inspect(head, 100, null, raw)`. Tag 100 means "unknown" — the inspect function has no type information for the head element and prints the raw i64 value.
+
+### What works
+
+```ko
+type List a = Cons a (List a) | Nil
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  println xs          # [1, 2, 3] ✓
+  println Nil         # [] ✓
+  inspect xs          # [1, 2, 3] ✓
+  print xs            # [1, 2, 3] ✓
+```
+
+### What doesn't work
+
+```ko
+println (Cons "hello" Nil)   # [140073513881720] ✗ (should be ["hello"])
+println (Cons True Nil)      # [1] ✗ (should be [True])
+```
+
+### Possible fixes
+
+1. **Store type tags in list nodes** — Add a type tag field to Cons cells so each element carries its type. Changes the list memory layout.
+
+2. **Runtime type detection heuristic** — In the inspect function's tag=100 case, try to detect the type by looking at the value:
+   - If val > 4096 (pointer), dereference and check if ptr[0] is a valid tag (0-9)
+   - If yes, re-invoke inspect with the detected tag
+   - Risk: false positives for non-tag pointer values
+
+3. **Codegen-level type tag propagation** — When printing list elements, use the typechecker's type information to determine the element's type tag. Requires propagating type info through the list structure.
+
+4. **Separate list element type** — Change the inspect function to accept a "element type hint" parameter for list printing. The codegen would pass the correct element type when printing lists.
+
+### Related code
+
+- `src/stdlib_codegen.zig:1450` — `codegenInspect` case 6 list printing calls `inspect(head, 100, null, raw)`
+- `src/codegen.zig:1139` — `codegenFnCall` println/print name_ptr resolution
+- `src/codegen.zig:3293` — `builtin_inspect_tag` tag=6 handling (JIT fallback)
