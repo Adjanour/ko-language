@@ -2,13 +2,15 @@
 
 Quick reference for Kō syntax.
 
+> **Note:** Some examples use pseudo-code (`body`, `expr`) to show syntax patterns.
+> See [TUTORIAL.md](TUTORIAL.md) for runnable examples.
+
 ---
 
 ## Functions
 
 ```ko
 fn name param1 param2 = body
-fn name ~named ~params = body       # Named parameters
 fn name = body                      # No parameters
 \x -> expr                          # Lambda
 \x y -> expr                        # Multi-param lambda

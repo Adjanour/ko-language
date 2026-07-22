@@ -78,8 +78,8 @@ record.field
 ```ko
 fn add x y = x + y
 
-fn greet ~name ~age =
-  "Hello, " ++ name ++ "! You are " ++ Int.toString age
+fn main =
+  println (add 1 2)  # 3
 ```
 
 ### Multi-line Body
@@ -88,6 +88,10 @@ fn greet ~name ~age =
 fn abs n =
   if n < 0 then -n
   else n
+
+fn main =
+  println (abs 5)    # 5
+  println (abs (-3)) # 3
 ```
 
 ### Lambdas
@@ -95,15 +99,6 @@ fn abs n =
 ```ko
 \x -> x + 1
 \x y -> x + y
-```
-
-### Partial Application
-
-```ko
-fn add x y = x + y
-
-let add5 = add 5
-add5 3  # 8
 ```
 
 ### Recursion
@@ -121,6 +116,10 @@ fn isEven n =
 fn isOdd n =
   if n == 0 then False
   else isEven (n - 1)
+
+fn main =
+  println (factorial 10)
+  println (isEven 4)
 ```
 
 ---
@@ -271,21 +270,22 @@ x + y
 let r = ref 0         # Create mutable reference
 !r                    # Dereference (read)
 r := !r + 1           # Update (write)
+
+# No-arg lambdas use a wildcard parameter
+let get = \ _ -> !r
+get 0                 # Call with any value (unit)
 ```
 
 ### Example: Counter
 
 ```ko
-fn counter () =
+fn main =
   let r = ref 0
-  let increment = \ -> r := !r + 1
-  let get = \ -> !r
-  (increment, get)
-
-let (inc, get) = counter ()
-inc ()
-inc ()
-get ()  # 2
+  let increment = \ _ -> r := !r + 1
+  let get = \ _ -> !r
+  increment 0
+  increment 0
+  println (get 0)  # 2
 ```
 
 ---
