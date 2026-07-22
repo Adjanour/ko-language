@@ -345,7 +345,7 @@ Executable
 | Pattern Compilation | `src/codegen.zig` | Augustsson (1985), linear decision trees |
 | Closure Conversion | `src/codegen.zig` | Appel (1992) |
 | Code Generation | `src/codegen.zig` | SSA form (Cytron 1991), LLVM IR |
-| Memory Management | `ko_runtime.c` | Reference counting (Collins 1960) |
+| Memory Management | `stdlib.zig` + `stdlib_codegen.zig` | Reference counting (Collins 1960) |
 
 ---
 
@@ -549,3 +549,12 @@ Kō is closest to OCaml with a simpler type system and no side effects beyond re
   doi     = {10.1016/0304-3975(75)90017-1}
 }
 ```
+
+---
+
+## See Also
+
+- [Codegen](CODEGEN.md) — how LLVM IR generation works
+- [Typechecking](TYPECHECKING.md) — how Hindley-Milner type inference works
+- [Handbook](HANDBOOK.md) — how to add features to the compiler
+- [Status](STATUS.md) — current state and completed work

@@ -26,7 +26,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 
 ---
 
-## Current State (v0.2.0-alpha) — July 2026
+## Current State (v0.2.1-alpha) — July 2026
 
 ### What Works
 - Full HM type inference with let-polymorphism
@@ -37,20 +37,20 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - Module imports (flat file system)
 - LSP server, VS Code extension, REPL
 - Multiple compilation modes (JIT, IR, object, executable)
+- String operations (length, append, contains, trim, replace, split, toUpperCase, toLowerCase, charAt)
+- 155 runtime correctness tests
 
 ### What's Broken
-- LLVM 22 optimization bug (AOT compiles unoptimized)
-- Multi-line closures capturing free variables crash
-- True/False inside lambdas don't work
-- Imported type info doesn't propagate to main module
-- Float binary operations not supported by typechecker
+- LLVM 22 optimization bug (AOT compiles unoptimized) — fixed upstream, pending verification
+- `String.trim` only trims leading whitespace (not trailing)
+- List element printing uses tag=100 for non-integer types
+- Users must define List type before using lists
 
 ### What's Missing
-- String operations (split, replace, trim, contains, etc.)
+- `++` string concatenation operator
 - Collections beyond List (Set, Map, Array)
 - Guard expressions in match arms
 - Package/module system (hierarchical imports)
-- Runtime correctness tests (only parse tests exist)
 - Concurrency (async, threads, IO monad)
 - Ecosystem (package manager, test framework, docs generator)
 

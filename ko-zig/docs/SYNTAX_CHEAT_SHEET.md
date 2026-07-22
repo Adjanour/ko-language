@@ -33,7 +33,6 @@ if cond then expr1 else expr2    # If expression
 match expr | Pattern => body     # Pattern matching
 fn_call arg1 arg2                # Function application
 expr.field                       # Field access
-expr ++ expr                     # String concatenation
 expr |> fn                       # Pipe operator
 ```
 
@@ -109,6 +108,15 @@ print expr                       # Print without newline
 inspect expr                     # Debug print
 expr?                            # Try operator (Result)
 ```
+
+---
+
+## See Also
+
+- [Tutorial](TUTORIAL.md) — beginner guide with examples
+- [Language Reference](LANGUAGE_REFERENCE.md) — complete syntax reference
+- [Handbook](HANDBOOK.md) — how to add features to the compiler
+- [Known Issues](KNOWN_ISSUES.md) — bugs and limitations
 
 ---
 

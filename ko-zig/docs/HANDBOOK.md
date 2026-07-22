@@ -553,3 +553,13 @@ ko --emit-exe out file.ko
 - Every `.ko` test must parse before it can test typecheck/codegen
 - Use `ArenaAllocator` wrapping `std.testing.allocator` for parser/typechecker tests
 - Never use `page_allocator` for tests (bypasses leak detection)
+
+---
+
+## See Also
+
+- [Codegen](CODEGEN.md) — how LLVM IR generation works
+- [Typechecking](TYPECHECKING.md) — how Hindley-Milner type inference works
+- [Theory](THEORY.md) — theoretical foundations and references
+- [Status](STATUS.md) — current state and completed work
+- [Known Issues](KNOWN_ISSUES.md) — bugs and limitations

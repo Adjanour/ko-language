@@ -1,7 +1,7 @@
 # Kō Compiler — Status & Active Bugs
 
 **Last updated**: 2026-07-22  
-**Tests**: 155/155 passing (commit TBD)
+**Tests**: 155/155 passing (v0.2.1-alpha)
 
 ---
 
@@ -20,14 +20,29 @@
 11. **Runtime correctness tests (40 more)**: Added 40 example-based and edge-case runtime tests (list sugar, multi-line strings, tuple field access, nested constructors in lists, string arithmetic, etc.). Total 155/155 tests passing.
 12. **Inspect list sugar in JIT**: `builtin_inspect_tag` now checks "Nil"→`[]` and "Cons"→recursive list display, matching LLVM IR stdlib behavior.
 13. **Error message improvements**: Added `note` and `help` fields to `ErrorContext`. Added `reportNote`/`reportHelp` functions. Added `printSourceLine` for source code display with column pointer. Added `findSimilarName` with Levenshtein distance for "did you mean?" suggestions. Improved occurs check message ("this type occurs in" → "this type infinite type"). Added "these types are not compatible" note on type mismatches.
+14. **Reassignment error message**: Parser now detects `x = expr` and gives clear error: "cannot reassign variable 'x' — use 'let x = ...' to create a new binding".
+15. **Documentation audit**: Validated and updated all docs. Fixed outdated version numbers, test counts, removed unimplemented `++` operator references, updated `ko_runtime.c` references to `stdlib.zig`/`stdlib_codegen.zig`.
 
 ---
 
 ## Other Known Issues
 
 - **Imported type propagation**: Types from imported modules show as type variables in the main inferer (not started).
+- **String.trim**: Only trims leading whitespace, not trailing (GitHub #16).
+- **List element printing**: Non-integer list elements print as raw pointers (tag=100).
 
 ## Next Steps
 
-1. Multi-arg lambda closures — lambdas (`\x y -> ...`) don't get PA wrappers, only global `fn` definitions do
-2. Import system hardening — circular import detection, type info propagation from imported modules
+1. Fix `String.trim` to trim both leading and trailing whitespace
+2. Add `++` string concatenation operator
+3. Add built-in List type (Cons/Nil) — GitHub #15
+4. Multi-arg lambda closures — lambdas (`\x y -> ...`) don't get PA wrappers, only global `fn` definitions do
+5. Import system hardening — circular import detection, type info propagation from imported modules
+
+---
+
+## See Also
+
+- [Known Issues](KNOWN_ISSUES.md) — bugs and limitations
+- [Roadmap](../ROADMAP.md) — future plans and phases
+- [Vision](../VISION.md) — long-term vision and philosophy

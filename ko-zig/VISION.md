@@ -51,13 +51,13 @@ A Kō program should be:
 
 ## Current State
 
-Kō is at **v0.2.0-alpha** with:
+Kō is at **v0.2.1-alpha** with:
 - Full HM type inference
 - Sum types, records, pattern matching
 - Reference counting (no GC)
 - Compile-time evaluation
 - LSP server, VS Code extension, REPL
-- 78 tests, 24 examples
+- 155 tests, 24 examples
 
 ## The Road Ahead
 

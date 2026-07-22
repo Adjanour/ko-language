@@ -1,5 +1,37 @@
 # Known Issues
 
+## String.trim only trims leading whitespace
+
+**Status:** Open (GitHub #16)  
+**Severity:** Low  
+**Last tested:** 2026-07-22
+
+### Problem
+
+`String.trim` only removes leading whitespace, not trailing whitespace.
+
+### Current behavior
+
+```ko
+fn main =
+  println (String.trim "  hello  ")   # "hello  " (trailing spaces remain)
+```
+
+### Expected behavior
+
+```ko
+fn main =
+  println (String.trim "  hello  ")   # "hello" (both sides trimmed)
+```
+
+### Fix
+
+Update `ko_string_trim` in `stdlib.zig` to trim both leading and trailing whitespace.
+
+See GitHub issue [#16](https://github.com/Adjanour/ko-language/issues/16).
+
+---
+
 ## Users must define List type before using lists
 
 **Status:** Open (GitHub #15)  
@@ -88,3 +120,11 @@ println (Cons True Nil)      # [1] ✗ (should be [True])
 - `src/stdlib_codegen.zig:1450` — `codegenInspect` case 6 list printing calls `inspect(head, 100, null, raw)`
 - `src/codegen.zig:1139` — `codegenFnCall` println/print name_ptr resolution
 - `src/codegen.zig:3293` — `builtin_inspect_tag` tag=6 handling (JIT fallback)
+
+---
+
+## See Also
+
+- [Status](STATUS.md) — current state and completed work
+- [Roadmap](../ROADMAP.md) — future plans and phases
+- [Handbook](HANDBOOK.md) — how to add features to the compiler

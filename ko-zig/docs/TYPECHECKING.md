@@ -507,3 +507,12 @@ The `typeToString` function (line 1040) converts internal types to readable stri
 | Unify | Say "these two types must be the same" — point variables at concrete types |
 | Generalize | After inferring a function, make free variables polymorphic |
 | Instantiate | When using a polymorphic function, freshen its variables for this use |
+
+---
+
+## See Also
+
+- [Codegen](CODEGEN.md) — how LLVM IR generation works
+- [Handbook](HANDBOOK.md) — how to add features to the compiler
+- [Theory](THEORY.md) — theoretical foundations and references
+- [Status](STATUS.md) — current state and completed work

@@ -623,7 +623,7 @@ fn codegenLambda(self: *Codegen, params: []const Pattern, body: *Expr) !LLVMValu
 raw malloc ptr
 ```
 
-### Runtime Functions (in `ko_runtime.c`)
+### Runtime Functions (in `src/stdlib.zig` and `src/stdlib_codegen.zig`)
 
 - `ko_alloc(user_size)` — allocate with RC header (rc=1), return pointer to user data
 - `ko_incref(ptr)` — increment RC, return ptr
@@ -731,3 +731,12 @@ pub fn emitObjectFile(self: *Codegen, filename: []const u8) !void {
      - not equal → unreachable (trap)
 3. Merge: phi(0 from Nil, h from Cons)
 ```
+
+---
+
+## See Also
+
+- [Typechecking](TYPECHECKING.md) — how Hindley-Milner type inference works
+- [Handbook](HANDBOOK.md) — how to add features to the compiler
+- [Theory](THEORY.md) — theoretical foundations and references
+- [Status](STATUS.md) — current state and completed work

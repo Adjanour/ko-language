@@ -57,7 +57,7 @@ and or not
 ::
 
 # String concatenation
-++
+String.append a b
 
 # Assignment
 :=
@@ -365,6 +365,13 @@ Float.abs f       # Float -> Float
 ```ko
 String.length s      # String -> Int
 String.append a b    # String -> String -> String
+String.contains s sub # String -> String -> Bool
+String.charAt i s    # Int -> String -> Char
+String.toUpperCase s # String -> String
+String.toLowerCase s # String -> String
+String.trim s        # String -> String (leading whitespace only)
+String.replace s old new # String -> String -> String -> String
+String.split s sep   # String -> String -> List String
 ```
 
 ### Result Operations
@@ -584,6 +591,15 @@ ko --emit-exe out file.ko      # Emit linked executable
 ko --repl                   # Interactive REPL
 ko --version                # Show version
 ```
+
+---
+
+## See Also
+
+- [Tutorial](TUTORIAL.md) — beginner guide with examples
+- [Syntax Cheat Sheet](SYNTAX_CHEAT_SHEET.md) — quick reference card
+- [Handbook](HANDBOOK.md) — how to add features to the compiler
+- [Known Issues](KNOWN_ISSUES.md) — bugs and limitations
 
 ---
 
