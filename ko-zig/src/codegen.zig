@@ -19,6 +19,30 @@ const NULL_TERMINATE = @as(c_uint, 0);
 
 const CtorInfo = struct { type_name: []const u8, tag: i64, arity: u32 };
 
+/// Flattened pattern for pattern matrix compilation.
+/// A nested Pattern like `Cons x (Cons y rest)` becomes:
+///   ctor_check("Cons", 0, 2, [wildcard, ctor_check("Cons", 0, 2, [wildcard, identifier("rest")])])
+const FlatPattern = union(enum) {
+    wildcard,
+    identifier: []const u8,
+    ctor_check: struct {
+        name: []const u8,
+        tag: i64,
+        arity: u32,
+        /// Sub-patterns for each field of the constructor.
+        /// Length must equal arity.
+        field_patterns: []const parser.Pattern,
+    },
+    literal: parser.Literal,
+};
+
+/// A row in the pattern matrix: one arm's pattern for one column.
+const MatchRow = struct {
+    var_name: []const u8,
+    pattern: FlatPattern,
+    arm_idx: usize,
+};
+
 const RecordFieldInfo = struct {
     name: []const u8,
     llvm_type: types.LLVMTypeRef,
@@ -1994,274 +2018,433 @@ pub const Codegen = struct {
         return core.LLVMBuildOr(self.builder, closure_i64, core.LLVMConstInt(i64_type, 1, 0), "tagged_closure");
     }
 
-    fn codegenMatch(self: *Codegen, match_val_expr: *parser.Expr, arms: []const parser.MatchArm) Error!types.LLVMValueRef {
-        const match_val = try self.codegenExpr(match_val_expr);
-        const fn_val = core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder));
-        const i64_type = core.LLVMInt64TypeInContext(self.context);
-
-        // Sort arms: zero-arity constructors first (raw value comparison),
-        // then constructors with args (need to dereference to read tag).
-        // This prevents crashes when a raw tag value (like Nil=1) is dereferenced.
-        var sorted_indices: [32]usize = undefined;
-        for (arms, 0..) |_, i| sorted_indices[i] = i;
-        var changed = true;
-        while (changed) {
-            changed = false;
-            for (0..arms.len - 1) |i| {
-                const a = sorted_indices[i];
-                const b = sorted_indices[i + 1];
-                const a_zero = blk: {
-                    if (arms[a].pattern == .constructor) {
-                        if (self.constructor_tags.get(arms[a].pattern.constructor.name)) |info| {
-                            break :blk info.arity == 0;
-                        }
-                    }
-                    break :blk false;
-                };
-                const b_zero = blk: {
-                    if (arms[b].pattern == .constructor) {
-                        if (self.constructor_tags.get(arms[b].pattern.constructor.name)) |info| {
-                            break :blk info.arity == 0;
-                        }
-                    }
-                    break :blk false;
-                };
-                // Non-zero should come after zero
-                if (!a_zero and b_zero) {
-                    sorted_indices[i] = b;
-                    sorted_indices[i + 1] = a;
-                    changed = true;
-                }
-            }
-        }
-
-        var cmp_bbs: [32]types.LLVMBasicBlockRef = undefined;
-        var body_bbs: [32]types.LLVMBasicBlockRef = undefined;
-        for (0..arms.len) |i| {
-            cmp_bbs[i] = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cmp");
-            body_bbs[i] = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arm");
-        }
-        const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "match_end");
-        const unreachable_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "match_fail");
-
-        // Branch from current (entry) block to first comparison block
-        _ = core.LLVMBuildBr(self.builder, cmp_bbs[0]);
-
-        // Unreachable default
-        core.LLVMPositionBuilderAtEnd(self.builder, unreachable_bb);
-        _ = core.LLVMBuildUnreachable(self.builder);
-
-        // Build tag comparisons (in sorted order: zero-arg first)
-        for (sorted_indices[0..arms.len], 0..) |arm_idx, i| {
-            core.LLVMPositionBuilderAtEnd(self.builder, cmp_bbs[i]);
-            const fallthrough = if (i + 1 < arms.len) cmp_bbs[i + 1] else unreachable_bb;
-            switch (arms[arm_idx].pattern) {
-                .constructor => |ctor| {
-                    if (self.constructor_tags.get(ctor.name)) |info| {
-                        const tag_const = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
-                        if (info.arity == 0) {
-                            // Zero-arg constructor: could be raw tag (e.g., Nil = 1)
-                            // or boxed pointer (when used as argument to another ctor).
-                            // Use branching to avoid dereferencing a raw tag:
-                            //   if (val < 4096) -> compare val directly against tag
-                            //   else -> dereference, read tag, compare
-                            const threshold = core.LLVMConstInt(i64_type, 4096, 0);
-                            const is_raw = core.LLVMBuildICmp(self.builder, .LLVMIntULT, match_val, threshold, "is_raw");
-                            const raw_cmp_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw_cmp_bb");
-                            const boxed_cmp_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "boxed_cmp_bb");
-                            _ = core.LLVMBuildCondBr(self.builder, is_raw, raw_cmp_bb, boxed_cmp_bb);
-                            // Raw path: compare match_val against tag directly (no deref)
-                            core.LLVMPositionBuilderAtEnd(self.builder, raw_cmp_bb);
-                            const raw_cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, match_val, tag_const, "raw_cmp");
-                            _ = core.LLVMBuildCondBr(self.builder, raw_cmp, body_bbs[i], fallthrough);
-                            // Boxed path: dereference and read tag at offset 0
-                            core.LLVMPositionBuilderAtEnd(self.builder, boxed_cmp_bb);
-                            const boxed_struct_type = core.LLVMStructTypeInContext(self.context, @constCast(&[_]types.LLVMTypeRef{i64_type}), 1, 0);
-                            const boxed_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "boxed_ptr");
-                            var boxed_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
-                            const boxed_tag_ptr = core.LLVMBuildGEP2(self.builder, boxed_struct_type, boxed_ptr, @ptrCast(&boxed_gep), 2, "boxed_tag_ptr");
-                            const boxed_tag = core.LLVMBuildLoad2(self.builder, i64_type, boxed_tag_ptr, "boxed_tag_val");
-                            const boxed_cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, boxed_tag, tag_const, "boxed_cmp");
-                            _ = core.LLVMBuildCondBr(self.builder, boxed_cmp, body_bbs[i], fallthrough);
-                        } else {
-                            // Multi-arg constructor: value is a heap pointer, tag is at offset 0
-                            var struct_fields: [33]types.LLVMTypeRef = undefined;
-                            struct_fields[0] = i64_type;
-                            for (0..info.arity) |j| {
-                                struct_fields[j + 1] = i64_type;
-                            }
-                            const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(info.arity + 1), 0);
-                            const struct_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
-                            var tag_gep: [2]types.LLVMValueRef = .{
-                                core.LLVMConstInt(i64_type, 0, 0),
-                                core.LLVMConstInt(i64_type, 0, 0),
-                            };
-                            const tag_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, struct_ptr, @ptrCast(&tag_gep), 2, "tag_ptr");
-                            const actual_tag = core.LLVMBuildLoad2(self.builder, i64_type, tag_ptr, "tag_val");
-                            const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, actual_tag, tag_const, "cmp");
-                            _ = core.LLVMBuildCondBr(self.builder, cmp, body_bbs[i], fallthrough);
-                        }
-                    }
-                },
-                .record => |rec| {
-                    // Record pattern — extract fields and bind them
-                    var resolved_name = rec.name;
-                    if (self.record_types.get(rec.name) == null) {
-                        // Try all record types to find matching one
-                        var rt_iter = self.record_types.iterator();
-                        while (rt_iter.next()) |entry| {
-                            if (std.mem.endsWith(u8, entry.key_ptr.*, rec.name) or std.mem.eql(u8, entry.key_ptr.*, rec.name)) {
-                                resolved_name = entry.key_ptr.*;
-                                break;
-                            }
-                        }
-                    }
-                    if (self.record_types.get(resolved_name)) |info| {
-                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "rec_ptr");
-                        for (rec.fields) |field| {
-                            // Find field index by name
-                            for (info.fields, 0..) |decl, di| {
-                                if (std.mem.eql(u8, decl.name, field.name)) {
-                                    var gep: [2]types.LLVMValueRef = .{
-                                        core.LLVMConstInt(i64_type, 0, 0),
-                                        core.LLVMConstInt(i64_type, di, 0),
-                                    };
-                                    const field_ptr = core.LLVMBuildGEP2(self.builder, info.llvm_type, record_ptr, @ptrCast(&gep), 2, "field_ptr");
-                                    const field_val = core.LLVMBuildLoad2(self.builder, decl.llvm_type, field_ptr, "field_val");
-                                    if (field.pattern) |sub_pat| {
-                                        if (sub_pat.* == .identifier) {
-                                            try self.named_values.put(sub_pat.identifier, field_val);
-                                        }
-                                    } else {
-                                        try self.named_values.put(field.name, field_val);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    _ = core.LLVMBuildBr(self.builder, body_bbs[i]);
-                },
-                .wildcard => _ = core.LLVMBuildBr(self.builder, body_bbs[i]),
-                .literal => |lit| {
-                    // Compare match_val against literal value
-                    const lit_val = switch (lit) {
-                        .int => |v| core.LLVMConstInt(i64_type, @bitCast(v), 0),
-                        .bool => |v| core.LLVMConstInt(i64_type, if (v) 1 else 0, 0),
-                        .char => |v| core.LLVMConstInt(i64_type, v[0], 0),
-                        else => {
-                            // Non-comparable literals just fall through (like wildcard)
-                            _ = core.LLVMBuildBr(self.builder, body_bbs[i]);
-                            continue;
-                        },
-                    };
-                    const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, match_val, lit_val, "lit_cmp");
-                    _ = core.LLVMBuildCondBr(self.builder, cmp, body_bbs[i], fallthrough);
-                },
-                .tuple => {
-                    // Tuple patterns: just bind all (simplified — no field extraction for now)
-                    _ = core.LLVMBuildBr(self.builder, body_bbs[i]);
-                },
-                .identifier => |name| {
-                    // Identifier pattern: bind the value
-                    try self.named_values.put(name, match_val);
-                    _ = core.LLVMBuildBr(self.builder, body_bbs[i]);
-                },
-            }
-        }
-
-        // Codegen each arm body (in sorted order)
-        var phi_vals: [32]types.LLVMValueRef = undefined;
-        var phi_bbs: [32]types.LLVMBasicBlockRef = undefined;
-        var phi_count: usize = 0;
-
-        // Track that we're inside conditional branches (match arms)
-        self.conditional_depth += 1;
-        defer self.conditional_depth -= 1;
-
-        for (sorted_indices[0..arms.len], 0..) |arm_idx, i| {
-            core.LLVMPositionBuilderAtEnd(self.builder, body_bbs[i]);
-            const arm = arms[arm_idx];
-
-            // Bind constructor pattern args (extract from tagged struct)
-            if (arm.pattern == .constructor) {
-                const ctor = arm.pattern.constructor;
+    /// Flatten a nested Pattern into a FlatPattern.
+    /// For constructor patterns, extracts the tag and arity from constructor_tags.
+    /// Sub-patterns are kept as-is in field_patterns (not flattened further).
+    fn flattenPattern(self: *Codegen, pattern: parser.Pattern) FlatPattern {
+        switch (pattern) {
+            .wildcard => return .wildcard,
+            .identifier => |name| return .{ .identifier = name },
+            .constructor => |ctor| {
                 if (self.constructor_tags.get(ctor.name)) |info| {
-                    if (ctor.args.len > 0 and info.arity > 0) {
-                        // Reconstruct the tagged struct type
+                    return .{ .ctor_check = .{
+                        .name = ctor.name,
+                        .tag = info.tag,
+                        .arity = info.arity,
+                        .field_patterns = ctor.args,
+                    } };
+                }
+                // Unknown constructor — treat as wildcard
+                return .wildcard;
+            },
+            .literal => |lit| return .{ .literal = lit },
+            .tuple => return .wildcard, // Tuple patterns: treat as wildcard for now
+            .record => return .wildcard, // Record patterns: treat as wildcard for now
+        }
+    }
+
+    /// Recursively bind a runtime value to a pattern.
+    /// For identifier patterns: bind the name.
+    /// For constructor patterns: check the tag, extract fields, recurse.
+    /// For wildcard: do nothing.
+    /// For tuple: extract elements.
+    /// fail_bb is where to jump if a constructor tag doesn't match.
+    fn bindPattern(self: *Codegen, val: types.LLVMValueRef, pattern: parser.Pattern, fail_bb: types.LLVMBasicBlockRef) Error!void {
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+        switch (pattern) {
+            .identifier => |name| {
+                try self.named_values.put(name, val);
+            },
+            .wildcard => {},
+            .constructor => |ctor| {
+                if (self.constructor_tags.get(ctor.name)) |info| {
+                    if (info.arity == 0) {
+                        // Zero-arg constructor: compare raw tag
+                        const tag_const = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
+                        const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, val, tag_const, "ctor_cmp");
+                        const ok_bb = core.LLVMAppendBasicBlockInContext(self.context, core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder)), "ctor_ok");
+                        _ = core.LLVMBuildCondBr(self.builder, cmp, ok_bb, fail_bb);
+                        core.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+                    } else if (ctor.args.len > 0) {
+                        // Multi-arg constructor: check tag, extract fields, recurse
+                        const threshold = core.LLVMConstInt(i64_type, 4096, 0);
+                        const is_raw = core.LLVMBuildICmp(self.builder, .LLVMIntULT, val, threshold, "is_raw");
+                        const raw_bb = core.LLVMAppendBasicBlockInContext(self.context, core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder)), "ctor_raw");
+                        const deref_bb = core.LLVMAppendBasicBlockInContext(self.context, core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder)), "ctor_deref");
+                        _ = core.LLVMBuildCondBr(self.builder, is_raw, raw_bb, deref_bb);
+                        // Raw path: tag mismatch (raw tags are zero-arg)
+                        core.LLVMPositionBuilderAtEnd(self.builder, raw_bb);
+                        _ = core.LLVMBuildBr(self.builder, fail_bb);
+                        // Dereference path: read tag, compare, extract fields
+                        core.LLVMPositionBuilderAtEnd(self.builder, deref_bb);
                         var struct_fields: [33]types.LLVMTypeRef = undefined;
                         struct_fields[0] = i64_type;
                         for (0..info.arity) |j| {
-                            struct_fields[j + 1] = i64_type; // default to i64 for now
+                            struct_fields[j + 1] = i64_type;
                         }
                         const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(info.arity + 1), 0);
-                        // Bitcast match_val back to tagged struct pointer
-                        const record_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
-                        // Extract each arg
-                        for (ctor.args, 0..) |arg, j| {
-                            if (arg == .identifier) {
-                                var gep: [2]types.LLVMValueRef = .{
-                                    core.LLVMConstInt(i64_type, 0, 0),
-                                    core.LLVMConstInt(i64_type, j + 1, 0),
-                                };
-                                const field_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, record_ptr, @ptrCast(&gep), 2, "field_ptr");
-                                const field_val = core.LLVMBuildLoad2(self.builder, i64_type, field_ptr, "field_val");
-                                try self.named_values.put(arg.identifier, field_val);
-                            }
+                        const struct_ptr = core.LLVMBuildIntToPtr(self.builder, val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
+                        var tag_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
+                        const tag_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, struct_ptr, @ptrCast(&tag_gep), 2, "tag_ptr");
+                        const actual_tag = core.LLVMBuildLoad2(self.builder, i64_type, tag_ptr, "tag_val");
+                        const tag_const = core.LLVMConstInt(i64_type, @bitCast(info.tag), 0);
+                        const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, actual_tag, tag_const, "ctor_cmp");
+                        const ok_bb = core.LLVMAppendBasicBlockInContext(self.context, core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder)), "ctor_ok");
+                        _ = core.LLVMBuildCondBr(self.builder, cmp, ok_bb, fail_bb);
+                        core.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+                        // Extract each arg and recursively bind
+                        for (ctor.args, 0..) |arg, k| {
+                            var gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, k + 1, 0) };
+                            const field_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, struct_ptr, @ptrCast(&gep), 2, "field_ptr");
+                            const field_val = core.LLVMBuildLoad2(self.builder, i64_type, field_ptr, "field_val");
+                            try self.bindPattern(field_val, arg, fail_bb);
                         }
                     }
                 }
-            }
-
-            // Record pattern fields are already bound in the cmp block phase above
-
-            // Bind tuple pattern fields
-            if (arm.pattern == .tuple) {
-                const tuple_patterns = arm.pattern.tuple;
-                // match_val is a ptrtoint of the tuple allocation
-                // Tuple layout: [N x i64] at offset 1 (after the count header)
-                for (tuple_patterns, 0..) |tp, j| {
+            },
+            .tuple => |tuples| {
+                // Extract each element from the tuple
+                const tuple_ptr = core.LLVMBuildIntToPtr(self.builder, val, core.LLVMPointerTypeInContext(self.context, 0), "tuple_ptr");
+                for (tuples, 0..) |tp, j| {
                     if (tp == .identifier) {
-                        // Extract element j from the tuple
-                        var elem_gep: [2]types.LLVMValueRef = .{
-                            core.LLVMConstInt(i64_type, 0, 0),
-                            core.LLVMConstInt(i64_type, j, 0),
-                        };
-                        const tuple_ptr_type = core.LLVMArrayType(i64_type, @intCast(tuple_patterns.len));
-                        const tuple_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "tuple_ptr");
-                        const elem_ptr = core.LLVMBuildGEP2(self.builder, tuple_ptr_type, tuple_ptr, @ptrCast(&elem_gep), 2, "elem_ptr");
+                        var elem_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, j, 0) };
+                        const tuple_type = core.LLVMArrayType(i64_type, @intCast(tuples.len));
+                        const elem_ptr = core.LLVMBuildGEP2(self.builder, tuple_type, tuple_ptr, @ptrCast(&elem_gep), 2, "elem_ptr");
                         const elem_val = core.LLVMBuildLoad2(self.builder, i64_type, elem_ptr, "elem_val");
                         try self.named_values.put(tp.identifier, elem_val);
                     }
                 }
-            }
+            },
+            .literal => {
+                // Literals in sub-patterns are compared (like constructor tag check)
+                // For now, just bind as identifier (full support later)
+            },
+            .record => {
+                // Record sub-patterns: for now, just skip (full support later)
+            },
+        }
+    }
 
-            var arm_val = try self.codegenExpr(arm.body);
+    /// Recursively compile one column of the pattern matrix.
+    /// Each row has a variable name, a flat pattern, and an arm index.
+    /// When all rows are wildcards/identifiers, we bind and codegen the first arm's body.
+    /// Otherwise, we pick a constructor (or literal) to test, create blocks, and recurse.
+    fn compileMatchColumn(
+        self: *Codegen,
+        rows: []const MatchRow,
+        arm_bodies: []const parser.MatchArm,
+        merge_bb: types.LLVMBasicBlockRef,
+        fn_val: types.LLVMValueRef,
+        phi_vals: *std.ArrayList(types.LLVMValueRef),
+        phi_bbs: *std.ArrayList(types.LLVMBasicBlockRef),
+    ) Error!void {
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+
+        // Base case: all patterns are wildcards or identifiers
+        var all_wild = true;
+        for (rows) |row| {
+            switch (row.pattern) {
+                .wildcard, .identifier => {},
+                else => {
+                    all_wild = false;
+                    break;
+                },
+            }
+        }
+        if (all_wild) {
+            // Bind identifiers: look up the variable value and bind to the identifier name
+            for (rows) |row| {
+                if (row.pattern == .identifier) {
+                    const val = self.named_values.get(row.var_name) orelse unreachable;
+                    try self.named_values.put(row.pattern.identifier, val);
+                }
+            }
+            // Create body block, codegen the first matching arm's body
+            const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arm_body");
+            _ = core.LLVMBuildBr(self.builder, body_bb);
+            core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+            var arm_val = try self.codegenExpr(arm_bodies[rows[0].arm_idx].body);
             // Box zero-arg constructors returned from match arms
-            // (e.g., `| Nil => Nil` in map — without boxing, Nil returns raw tag 1
-            // which segfaults when the caller tries to pattern-match it as a pointer)
-            if (arm.body.* == .constructor) {
-                if (self.constructor_tags.get(arm.body.constructor.name)) |info| {
+            if (arm_bodies[rows[0].arm_idx].body.* == .constructor) {
+                if (self.constructor_tags.get(arm_bodies[rows[0].arm_idx].body.constructor.name)) |info| {
                     if (info.arity == 0) {
                         arm_val = try self.boxZeroArgCtor(info.tag, i64_type);
                     }
                 }
             }
-            // Record the block where the builder ended up AFTER codegen'ing the arm body.
-            // This may differ from body_bbs[i] if the arm body contains function calls
-            // (which create intermediate basic blocks like call_merge).
-            const arm_exit_bb = core.LLVMGetInsertBlock(self.builder);
+            const exit_bb = core.LLVMGetInsertBlock(self.builder);
             _ = core.LLVMBuildBr(self.builder, merge_bb);
-            phi_vals[phi_count] = arm_val;
-            phi_bbs[phi_count] = arm_exit_bb;
-            phi_count += 1;
+            try phi_vals.append(self.allocator, arm_val);
+            try phi_bbs.append(self.allocator, exit_bb);
+            return;
         }
 
-        // Merge block with phi
+        // Find first constructor pattern to test
+        var test_row_idx: ?usize = null;
+        for (rows, 0..) |row, i| {
+            if (row.pattern == .ctor_check) {
+                test_row_idx = i;
+                break;
+            }
+        }
+        // If no constructor, check for literals
+        if (test_row_idx == null) {
+            for (rows, 0..) |row, i| {
+                if (row.pattern == .literal) {
+                    test_row_idx = i;
+                    break;
+                }
+            }
+        }
+
+        // If no constructor or literal found, all must be wildcards (handled above)
+        const test_row = rows[test_row_idx orelse return];
+        const match_val = self.named_values.get(test_row.var_name) orelse unreachable;
+
+        switch (test_row.pattern) {
+            .ctor_check => |ctor| {
+                const default_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ctor_default");
+
+                if (ctor.arity == 0) {
+                    // Zero-arg: raw/boxed tag comparison → arm_bb on match, default_bb on fallthrough
+                    const arm_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arm");
+                    const raw_cmp_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw_cmp");
+                    const boxed_check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "boxed_check");
+                    const tag_const = core.LLVMConstInt(i64_type, @bitCast(ctor.tag), 0);
+                    const threshold = core.LLVMConstInt(i64_type, 4096, 0);
+                    const is_raw = core.LLVMBuildICmp(self.builder, .LLVMIntULT, match_val, threshold, "is_raw");
+                    _ = core.LLVMBuildCondBr(self.builder, is_raw, raw_cmp_bb, boxed_check_bb);
+                    // Raw path: compare directly
+                    core.LLVMPositionBuilderAtEnd(self.builder, raw_cmp_bb);
+                    const raw_cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, match_val, tag_const, "raw_cmp");
+                    _ = core.LLVMBuildCondBr(self.builder, raw_cmp, arm_bb, default_bb);
+                    // Boxed path: dereference, read tag, compare
+                    core.LLVMPositionBuilderAtEnd(self.builder, boxed_check_bb);
+                    const boxed_struct_type = core.LLVMStructTypeInContext(self.context, @constCast(&[_]types.LLVMTypeRef{i64_type}), 1, 0);
+                    const boxed_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "boxed_ptr");
+                    var boxed_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
+                    const boxed_tag_ptr = core.LLVMBuildGEP2(self.builder, boxed_struct_type, boxed_ptr, @ptrCast(&boxed_gep), 2, "boxed_tag_ptr");
+                    const boxed_tag = core.LLVMBuildLoad2(self.builder, i64_type, boxed_tag_ptr, "boxed_tag_val");
+                    const boxed_cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, boxed_tag, tag_const, "boxed_cmp");
+                    _ = core.LLVMBuildCondBr(self.builder, boxed_cmp, arm_bb, default_bb);
+
+                    // arm_bb: recurse on specialized rows (zero-arg → field patterns are sub-patterns)
+                    core.LLVMPositionBuilderAtEnd(self.builder, arm_bb);
+                    var specialized_rows: std.ArrayList(MatchRow) = .empty;
+                    defer specialized_rows.deinit(self.allocator);
+                    for (rows) |row| {
+                        if (row.pattern == .ctor_check and std.mem.eql(u8, row.pattern.ctor_check.name, ctor.name)) {
+                            // Zero-arg ctor: no fields, so specialized rows are all wildcards
+                            try specialized_rows.append(self.allocator, .{
+                                .var_name = test_row.var_name,
+                                .pattern = .wildcard,
+                                .arm_idx = row.arm_idx,
+                            });
+                        }
+                    }
+                    if (specialized_rows.items.len > 0) {
+                        try self.compileMatchColumn(specialized_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                    }
+                } else {
+                    // Multi-arg: raw → default; boxed → check tag → extract_bb on match
+                    const raw_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw_check");
+                    const boxed_check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "boxed_check");
+                    const extract_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "extract");
+                    const threshold = core.LLVMConstInt(i64_type, 4096, 0);
+                    const is_raw = core.LLVMBuildICmp(self.builder, .LLVMIntULT, match_val, threshold, "is_raw");
+                    _ = core.LLVMBuildCondBr(self.builder, is_raw, raw_bb, boxed_check_bb);
+                    // Raw path: always fails for multi-arg
+                    core.LLVMPositionBuilderAtEnd(self.builder, raw_bb);
+                    _ = core.LLVMBuildBr(self.builder, default_bb);
+                    // Boxed path: dereference, check tag
+                    core.LLVMPositionBuilderAtEnd(self.builder, boxed_check_bb);
+                    var struct_fields: [33]types.LLVMTypeRef = undefined;
+                    struct_fields[0] = i64_type;
+                    for (0..ctor.arity) |j| {
+                        struct_fields[j + 1] = i64_type;
+                    }
+                    const tagged_type = core.LLVMStructTypeInContext(self.context, &struct_fields, @intCast(ctor.arity + 1), 0);
+                    const struct_ptr = core.LLVMBuildIntToPtr(self.builder, match_val, core.LLVMPointerTypeInContext(self.context, 0), "ctor_ptr");
+                    var tag_gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, 0, 0) };
+                    const tag_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, struct_ptr, @ptrCast(&tag_gep), 2, "tag_ptr");
+                    const actual_tag = core.LLVMBuildLoad2(self.builder, i64_type, tag_ptr, "tag_val");
+                    const tag_const = core.LLVMConstInt(i64_type, @bitCast(ctor.tag), 0);
+                    const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, actual_tag, tag_const, "tag_cmp");
+                    _ = core.LLVMBuildCondBr(self.builder, cmp, extract_bb, default_bb);
+
+                    // extract_bb: extract fields, recurse on specialized rows
+                    core.LLVMPositionBuilderAtEnd(self.builder, extract_bb);
+                    var field_vals: [32]types.LLVMValueRef = undefined;
+                    for (0..ctor.arity) |j| {
+                        var gep: [2]types.LLVMValueRef = .{ core.LLVMConstInt(i64_type, 0, 0), core.LLVMConstInt(i64_type, j + 1, 0) };
+                        const field_ptr = core.LLVMBuildGEP2(self.builder, tagged_type, struct_ptr, @ptrCast(&gep), 2, "field_ptr");
+                        field_vals[j] = core.LLVMBuildLoad2(self.builder, i64_type, field_ptr, "field_val");
+                    }
+                    // Store extracted fields in named_values with generated names
+                    var field_var_names: [32][]const u8 = undefined;
+                    for (0..ctor.arity) |j| {
+                        const name = try std.fmt.allocPrint(self.allocator, "__f{d}_{s}", .{ j, test_row.var_name });
+                        field_var_names[j] = name;
+                        try self.named_values.put(name, field_vals[j]);
+                    }
+                    // Specialized rows: arms matching this ctor, with sub-patterns for fields
+                    var specialized_rows: std.ArrayList(MatchRow) = .empty;
+                    defer specialized_rows.deinit(self.allocator);
+                    for (rows) |row| {
+                        if (row.pattern == .ctor_check and std.mem.eql(u8, row.pattern.ctor_check.name, ctor.name)) {
+                            for (row.pattern.ctor_check.field_patterns, 0..) |fp, j| {
+                                try specialized_rows.append(self.allocator, .{
+                                    .var_name = field_var_names[j],
+                                    .pattern = self.flattenPattern(fp),
+                                    .arm_idx = row.arm_idx,
+                                });
+                            }
+                        }
+                    }
+                    if (specialized_rows.items.len > 0) {
+                        try self.compileMatchColumn(specialized_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                    }
+                }
+
+                // Default rows: arms that didn't match this ctor (wildcards + other ctors)
+                core.LLVMPositionBuilderAtEnd(self.builder, default_bb);
+                var default_rows: std.ArrayList(MatchRow) = .empty;
+                defer default_rows.deinit(self.allocator);
+                for (rows) |row| {
+                    if (row.pattern == .ctor_check and std.mem.eql(u8, row.pattern.ctor_check.name, ctor.name)) {
+                        // Already handled in specialized
+                    } else {
+                        try default_rows.append(self.allocator, row);
+                    }
+                }
+                if (default_rows.items.len > 0) {
+                    try self.compileMatchColumn(default_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                } else {
+                    _ = core.LLVMBuildUnreachable(self.builder);
+                }
+            },
+            .literal => |lit| {
+                const lit_val = switch (lit) {
+                    .int => |v| core.LLVMConstInt(i64_type, @bitCast(v), 0),
+                    .bool => |v| core.LLVMConstInt(i64_type, if (v) 1 else 0, 0),
+                    .char => |v| core.LLVMConstInt(i64_type, v[0], 0),
+                    else => {
+                        // Non-comparable: treat as wildcard, recurse on remaining
+                        var wild_rows: std.ArrayList(MatchRow) = .empty;
+                        defer wild_rows.deinit(self.allocator);
+                        for (rows) |row| {
+                            try wild_rows.append(self.allocator, .{
+                                .var_name = row.var_name,
+                                .pattern = if (row.pattern == .literal) .wildcard else row.pattern,
+                                .arm_idx = row.arm_idx,
+                            });
+                        }
+                        try self.compileMatchColumn(wild_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                        return;
+                    },
+                };
+                const match_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "lit_match");
+                const default_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "lit_default");
+                const cmp = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, match_val, lit_val, "lit_cmp");
+                _ = core.LLVMBuildCondBr(self.builder, cmp, match_bb, default_bb);
+
+                // match_bb: recurse with matching rows (literal → wildcard)
+                core.LLVMPositionBuilderAtEnd(self.builder, match_bb);
+                var match_rows: std.ArrayList(MatchRow) = .empty;
+                defer match_rows.deinit(self.allocator);
+                for (rows) |row| {
+                    try match_rows.append(self.allocator, .{
+                        .var_name = row.var_name,
+                        .pattern = if (row.pattern == .literal) .wildcard else row.pattern,
+                        .arm_idx = row.arm_idx,
+                    });
+                }
+                if (match_rows.items.len > 0) {
+                    try self.compileMatchColumn(match_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                }
+
+                // default_bb: recurse on non-matching rows
+                core.LLVMPositionBuilderAtEnd(self.builder, default_bb);
+                var default_rows: std.ArrayList(MatchRow) = .empty;
+                defer default_rows.deinit(self.allocator);
+                for (rows) |row| {
+                    if (row.pattern == .literal) {
+                        // Already handled
+                    } else {
+                        try default_rows.append(self.allocator, row);
+                    }
+                }
+                if (default_rows.items.len > 0) {
+                    try self.compileMatchColumn(default_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+                }
+            },
+            else => {
+                // Wildcards/identifiers should have been caught by base case
+                // Record/tuple: treat as wildcard for now
+                var wild_rows: std.ArrayList(MatchRow) = .empty;
+                defer wild_rows.deinit(self.allocator);
+                for (rows) |row| {
+                    try wild_rows.append(self.allocator, .{
+                        .var_name = row.var_name,
+                        .pattern = .wildcard,
+                        .arm_idx = row.arm_idx,
+                    });
+                }
+                try self.compileMatchColumn(wild_rows.items, arm_bodies, merge_bb, fn_val, phi_vals, phi_bbs);
+            },
+        }
+    }
+
+    fn codegenMatch(self: *Codegen, match_val_expr: *parser.Expr, arms: []const parser.MatchArm) Error!types.LLVMValueRef {
+        const match_val = try self.codegenExpr(match_val_expr);
+        const fn_val = core.LLVMGetBasicBlockParent(core.LLVMGetInsertBlock(self.builder));
+        const i64_type = core.LLVMInt64TypeInContext(self.context);
+
+        // Save current block (entry point for pattern matching)
+        const entry_bb = core.LLVMGetInsertBlock(self.builder);
+
+        // Create merge block and unreachable default
+        const merge_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "match_end");
+        const unreachable_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "match_fail");
+        core.LLVMPositionBuilderAtEnd(self.builder, unreachable_bb);
+        _ = core.LLVMBuildUnreachable(self.builder);
+
+        // Position builder back at entry so compileMatchColumn builds into it
+        core.LLVMPositionBuilderAtEnd(self.builder, entry_bb);
+
+        // Phi node accumulators
+        var phi_vals: std.ArrayList(types.LLVMValueRef) = .empty;
+        defer phi_vals.deinit(self.allocator);
+        var phi_bbs: std.ArrayList(types.LLVMBasicBlockRef) = .empty;
+        defer phi_bbs.deinit(self.allocator);
+
+        // Flatten each arm's pattern and create initial rows
+        var rows: std.ArrayList(MatchRow) = .empty;
+        defer rows.deinit(self.allocator);
+        for (arms, 0..) |arm, i| {
+            try rows.append(self.allocator, .{
+                .var_name = "match_val",
+                .pattern = self.flattenPattern(arm.pattern),
+                .arm_idx = i,
+            });
+        }
+
+        // Store match value in named_values under "match_val"
+        try self.named_values.put("match_val", match_val);
+
+        // Don't terminate the current block — compileMatchColumn will build
+        // the first comparison block and branch to it from here.
+
+        // Compile the pattern matrix
+        self.conditional_depth += 1;
+        defer self.conditional_depth -= 1;
+        try self.compileMatchColumn(rows.items, arms, merge_bb, fn_val, &phi_vals, &phi_bbs);
+
+        // Position builder in merge block and create phi
         core.LLVMPositionBuilderAtEnd(self.builder, merge_bb);
-        if (phi_count > 0) {
+        if (phi_vals.items.len > 0) {
             const phi = core.LLVMBuildPhi(self.builder, i64_type, "result");
-            core.LLVMAddIncoming(phi, @ptrCast(&phi_vals), @ptrCast(&phi_bbs), @intCast(phi_count));
+            core.LLVMAddIncoming(phi, @ptrCast(phi_vals.items.ptr), @ptrCast(phi_bbs.items.ptr), @intCast(phi_vals.items.len));
             return phi;
         }
         return core.LLVMConstInt(i64_type, 0, 0);
