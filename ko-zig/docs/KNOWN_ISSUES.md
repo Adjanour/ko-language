@@ -1,5 +1,231 @@
 # Known Issues
 
+## Parser: Negative numbers as function arguments need parentheses
+
+**Status:** Open (GitHub #17)  
+**Severity:** Medium  
+**Last tested:** 2026-07-22
+
+### Problem
+
+Negative numbers as function arguments must be wrapped in parentheses. Without parentheses, the parser treats `-3` as a minus operator applied to the function call.
+
+### Current behavior
+
+```ko
+fn main =
+  println (abs -3)    # ERROR: type mismatch
+  println (abs (-3))  # Works: 3
+```
+
+### Expected behavior
+
+```ko
+fn main =
+  println (abs -3)    # Should work: 3
+```
+
+### Workaround
+
+Use parentheses: `f (-3)` instead of `f -3`
+
+See GitHub issue [#17](https://github.com/Adjanour/ko-language/issues/17).
+
+---
+
+## Parser: Multi-line pipe operator doesn't work
+
+**Status:** Open (GitHub #18)  
+**Severity:** Low  
+**Last tested:** 2026-07-22
+
+### Problem
+
+The pipe operator `|>` doesn't work across multiple lines.
+
+### Current behavior
+
+```ko
+fn main =
+  let result = 5
+    |> \x -> x * 2    # ERROR: expected expression
+    |> \x -> x + 1
+  println result
+```
+
+### Expected behavior
+
+```ko
+fn main =
+  let result = 5
+    |> \x -> x * 2    # Should work
+    |> \x -> x + 1
+  println result
+```
+
+### Workaround
+
+Put the entire pipe chain on one line:
+
+```ko
+fn main =
+  let result = 5 |> \x -> x * 2 |> \x -> x + 1
+  println result
+```
+
+See GitHub issue [#18](https://github.com/Adjanour/ko-language/issues/18).
+
+---
+
+## Parser: Record literal syntax doesn't work
+
+**Status:** Open (GitHub #19)  
+**Severity:** Medium  
+**Last tested:** 2026-07-22
+
+### Problem
+
+Record literal syntax `{ name = "Alice", age = 30 }` causes a parse error.
+
+### Current behavior
+
+```ko
+fn main =
+  let person = { name = "Alice", age = 30 }  # ERROR: expected expression
+  println person.name
+```
+
+### Expected behavior
+
+```ko
+fn main =
+  let person = { name = "Alice", age = 30 }  # Should work
+  println person.name
+```
+
+See GitHub issue [#19](https://github.com/Adjanour/ko-language/issues/19).
+
+---
+
+## Parser: `if/else if` chains fail in multi-line function bodies
+
+**Status:** Open (GitHub #20)  
+**Severity:** Medium  
+**Last tested:** 2026-07-22
+
+### Problem
+
+`if/else if` chains cause type errors when used in multi-line function bodies.
+
+### Current behavior
+
+```ko
+fn classify n =
+  if n > 0 then "positive"
+  else if n < 0 then "negative"    # ERROR: type mismatch
+  else "zero"
+```
+
+### Expected behavior
+
+```ko
+fn classify n =
+  if n > 0 then "positive"
+  else if n < 0 then "negative"    # Should work
+  else "zero"
+```
+
+### Workaround
+
+Use nested `if/else` with parentheses:
+
+```ko
+fn classify n =
+  if n > 0 then "positive"
+  else (if n < 0 then "negative"
+  else "zero")
+```
+
+See GitHub issue [#20](https://github.com/Adjanour/ko-language/issues/20).
+
+---
+
+## Codegen: Pattern matching on `True`/`False` causes type mismatch
+
+**Status:** Open (GitHub #21)  
+**Severity:** High  
+**Last tested:** 2026-07-22
+
+### Problem
+
+Pattern matching on `True`/`False` constructors causes a type mismatch error, even though they are built-in Bool constructors.
+
+### Current behavior
+
+```ko
+fn negate b =
+  match b
+    True => False
+    False => True
+
+fn main =
+  println (negate True)  # ERROR: type mismatch: expected Bool, got Bool
+```
+
+### Expected behavior
+
+```ko
+fn negate b =
+  match b
+    True => False
+    False => True
+
+fn main =
+  println (negate True)  # Should work: False
+```
+
+See GitHub issue [#21](https://github.com/Adjanour/ko-language/issues/21).
+
+---
+
+## Codegen: Lowercase `true`/`false` causes segfault
+
+**Status:** Open (GitHub #22)  
+**Severity:** High  
+**Last tested:** 2026-07-22
+
+### Problem
+
+Using lowercase `true`/`false` in pattern matching causes a segmentation fault.
+
+### Current behavior
+
+```ko
+fn negate b =
+  match b
+    true => false
+    false => true
+
+fn main =
+  println (negate true)  # SEGFAULT
+```
+
+### Expected behavior
+
+```ko
+fn negate b =
+  match b
+    true => false
+    false => true
+
+fn main =
+  println (negate true)  # Should work: false
+```
+
+See GitHub issue [#22](https://github.com/Adjanour/ko-language/issues/22).
+
+---
+
 ## String.trim only trims leading whitespace
 
 **Status:** Open (GitHub #16)  

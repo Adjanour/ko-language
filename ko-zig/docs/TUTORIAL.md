@@ -17,6 +17,8 @@ Run it:
 ko hello.ko
 ```
 
+Note: `println` wraps strings in quotes in the output. Use `print` for raw output.
+
 ## 2. Numbers and Arithmetic
 
 ```
@@ -26,7 +28,7 @@ fn main =
     println (4 * 5)       # 20
     println (15 / 3)      # 5
     println (17 % 5)      # 2
-    println (2.5 + 1.5)   # 4.0 (floats)
+    println (2.5 + 1.5)   # 4.000000 (floats)
 ```
 
 Kō has both integers and floating-point numbers. Arithmetic on two integers returns an integer. If either operand is a float, the result is a float.
@@ -95,9 +97,9 @@ fn classify n =
     else "zero"
 
 fn main =
-    println (classify 5)    # positive
-    println (classify -3)   # negative
-    println (classify 0)    # zero
+    println (classify 5)       # "positive"
+    println (classify (-3))    # "negative" (parentheses needed for negative args)
+    println (classify 0)       # "zero"
 ```
 
 ## 5. Lambdas
