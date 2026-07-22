@@ -81,7 +81,20 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - [ ] Suggested fixes for common mistakes
 - [ ] Warning system for unused bindings, shadowing
 
-### 1.4 Documentation
+### 1.4 Compiler Architecture (HIR/LIR Pipeline)
+
+**Prerequisite for all downstream optimizations.** The current compiler is AST → LLVM IR (single pass). Adding HIR (high-level IR for functional optimization) and LIR (low-level IR for machine-oriented optimization) is the key architectural investment.
+
+- [ ] Design HIR data structures (functional, ANF-like, typed, with explicit closures and pattern matching)
+- [ ] Design LIR data structures (CFG with basic blocks, explicit memory ops, RC instructions)
+- [ ] Implement AST → HIR lowering pass
+- [ ] Implement HIR → LIR lowering pass (including pattern match compilation via matrix algorithm, closure conversion)
+- [ ] Implement LIR → LLVM IR generation pass
+- [ ] Port existing optimizations to new pipeline
+
+See `docs/RESEARCH.md §6` for detailed IR design recommendations.
+
+### 1.5 Documentation
 - [ ] Language reference (one-page spec)
 - [ ] Tutorial for beginners
 - [ ] Migration guide from OCaml/Haskell
@@ -362,12 +375,18 @@ head : Vect (n + 1) a -> a
 head (Cons x _) = x
 ```
 
-### 4.6 Compiler Optimizations
+### 4.6 Compiler Optimizations (Leveraging HIR/LIR Pipeline)
+
+*Requires HIR/LIR pipeline from Phase 1.4.*
+
 - [ ] LLVM 23 upgrade (fix optimization bug)
+- [ ] Perceus-style RC optimization (precise RC insertion, drop specialization, reuse analysis / FBIP)
+- [ ] Pattern match matrix compilation (Maranget heuristics, usefulness/redundancy checking)
+- [ ] Deforestation and fusion (map/map, map/filter, stream fusion)
 - [ ] Whole-program optimization
 - [ ] Link-time optimization (LTO)
 - [ ] Profile-guided optimization (PGO)
-- [ ] Tail call optimization ( guaranteed by pattern matching)
+- [ ] Tail call optimization (guaranteed by pattern matching at LIR level)
 
 ### 4.7 Foreign Function Interface (FFI)
 ```ko
@@ -462,10 +481,12 @@ type NonEmptyList a = { list : List a | length list > 0 }
 #### Pattern Matching
 - [Compiling Pattern Matching (Augustsson 1985)](https://doi.org/10.1145/318593.318622) — Efficient pattern matching compilation
 - [Pattern Matching Compilation (Maranget 2008)](https://hal.archives-ouvertes.fr/hal-01100582) — "Warnings for pattern matching" — Modern pattern matching compilation
+- [Compiling Pattern Matching to Good Decision Trees (Maranget 2008)](http://moscova.inria.fr/~maranget/papers/ml05e-maranget.pdf) — Matrix algorithm, necessity heuristics, DAG sharing
 
 #### Memory Management
 - [Reference Counting (Collins 1960)](https://doi.org/10.1145/367173.367192) — Original reference counting paper
 - [Efficient Reference Counting (Sekiguchi 1997)](https://doi.org/10.1017/S0956796897002624) — Optimizing reference counting for functional languages
+- [Perceus: Garbage Free Reference Counting with Reuse (Reinking et al. 2021)](https://doi.org/10.1145/3453483.3454032) — Precise RC with drop specialization and reuse analysis (FBIP); directly applicable to Kō
 
 #### Closure Conversion
 - [Closure Conversion (Appel 1992)](https://doi.org/10.1016/0167-6423(92)90013-3) — "Effective static-graph reuse" — Closure conversion techniques

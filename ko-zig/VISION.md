@@ -1,85 +1,259 @@
-# Kō (光) — Vision Statement
+# Kō (光) — Compiler Vision
 
-## What is Kō?
+## The Bet
 
-Kō is a **minimal, eager, purely functional language** that compiles to native machine code via LLVM. It proves that simplicity is sufficient.
+Most languages make you choose: expressive but slow, or fast but verbose.
 
-## The Hypothesis
+Kō rejects the tradeoff. Eager evaluation, reference counting, and LLVM codegen give you functional expressiveness *and* predictable performance. No GC pauses. No thunks. No category theory prerequisite.
 
-> Can a language with **50 features** do **80% of what a language with 200 features** can do, with **50% of the complexity**?
+The bet: you can have both if you're disciplined about what the compiler does and doesn't do.
 
-Kō tests this by combining:
-- **Haskell's type inference** (HM with let-polymorphism)
-- **OCaml's evaluation model** (eager, refs for mutation)
-- **Rust's compilation target** (native code via LLVM)
+## Lessons from the Past
 
-While deliberately omitting:
-- Type classes (use function dispatch instead)
-- Monads (use refs instead)
-- Ownership (use reference counting instead)
-- Lazy evaluation (use eager evaluation instead)
+Fifty years of programming language research contains a lot of wisdom — and a lot of dead ends.
 
-## Design Principles
+### Haskell's Gift and Burden
 
-1. **Simplicity over power** — Every feature must earn its place
-2. **Predictable performance** — No hidden costs, no GC pauses
-3. **Good error messages** — Explain *why* a type error occurred
-4. **Practical purity** — Pure by default, mutation when needed
-5. **Minimal surface area** — The spec fits on a single page
+Haskell proved that purity and type inference could scale to real programs. Lazy evaluation enabled compositional programming that eager languages couldn't easily express.
 
-## Target Audience
+But laziness makes performance unpredictable. A thunk can hide anywhere. Space leaks are a constant tax. The runtime needs a sophisticated GC that trades latency for throughput. The language is beautiful; the performance profile is anything but.
 
-- **Systems programmers** who need mutation without unsafe blocks
-- **Web developers** who want functional programming without monads
-- **Educators** who need a clear, understandable language
-- **Haskell refugees** who want HM inference without laziness
+Kō takes Haskell's type inference and ADTs. It leaves behind laziness, monads as the only effect mechanism, and the heavyweight runtime.
 
-## Success Metric
+### OCaml's Pragmatism
 
-A Kō program should be:
-- **Shorter** than an equivalent OCaml program (no module ceremony)
-- **Simpler** than an equivalent Haskell program (no monads, no type classes)
-- **Safer** than an equivalent C program (no null, no buffer overflows)
-- **Faster** than an equivalent Python program (native code, no interpreter)
+OCaml showed that a strict functional language with mutations, objects, and a practical module system could build real systems. Its runtime is lighter than GHC's but still has a GC that punts on predictable latency.
 
-## The Name
+Kō takes OCaml's eagerness, ref cells, and practical attitude. It replaces GC with reference counting for deterministic destruction.
 
-**光 (Kō)** means "light" in Japanese. The language is:
-- **Lightweight** — small spec, small implementation
-- **Illuminating** — clear error messages, explicit behavior
-- **Fast** — eager evaluation, LLVM optimization
+### Rust's Insight
 
-## Current State
+Rust proved that zero-cost abstractions and memory safety could coexist without a GC. Its ownership model is brilliant — and expensive to learn. The borrow checker, lifetimes, and unsafe blocks form a system that takes months to internalize.
 
-Kō is at **v0.2.1-alpha** with:
-- Full HM type inference
-- Sum types, records, pattern matching
-- Reference counting (no GC)
-- Compile-time evaluation
-- LSP server, VS Code extension, REPL
-- 155 tests, 24 examples
+Kō takes Rust's LLVM backend and mechanical sympathy. It replaces ownership with reference counting — less precise, but dramatically simpler. The tradeoff: predictable performance without the learning cliff.
 
-## The Road Ahead
+### What C Got Right
 
-1. **v0.3.0** — Fix bugs, add runtime tests, improve error messages
-2. **v0.4.0** — Complete stdlib (String, Array, Set, Map), add guards
-3. **v0.5.0** — Package manager, test framework, documentation
-4. **v1.0.0** — Concurrency, effects, FFI, optimization
-5. **v2.0.0** — Self-hosting, web backend, mobile support
+C is successful because it maps directly to the hardware. A C programmer has a mental model of the machine that's almost always correct. The compiler does very little behind your back.
 
-## The Ultimate Goal
+Kō keeps the transparency. If you write `let x = a + b`, you get an `add` instruction (eventually). No hidden allocations. No control flow the compiler inserted without your knowledge.
 
-**Self-hosting.** Rewrite the Kō compiler in Kō. This proves the language is expressive enough to implement itself.
+### What Lisp Understood
 
-## Philosophy
+Lisp got two things right: (1) the language should be small enough to hold in your head, and (2) powerful abstractions can emerge from simple primitives, not from feature accretion.
 
-> In a world of complexity, Kō chooses simplicity.
+Kō's 19 keywords is a deliberate debt to this tradition.
 
-Kō doesn't try to be everything to everyone. It tries to be:
-- **Simple enough** to understand completely
-- **Powerful enough** to be useful
-- **Predictable enough** to be reliable
+## The Insight: Functional Has a Hardware Story
 
-The language is small enough that you can hold the entire thing in your head. The compiler is small enough that you can understand the entire implementation. The ecosystem is small enough that you can know every package.
+Functional programming's biggest mistake was treating the hardware as a distraction. Laziness, pervasive GC, heavy runtime systems, and complex effects systems all distance the programmer from what the machine actually does.
 
-**That's the vision.** Not a language that does everything, but a language that does the right things well.
+But functions alone don't cause slowness. The overhead comes from specific runtime choices:
+
+| Choice | Performance Cost |
+|--------|-----------------|
+| Lazy evaluation | Thunk allocation, space leaks, unpredictable evaluation order |
+| Tracing GC | Pause times, cache misses, object graph traversal |
+| Boxing everything | Indirection, allocation for every value |
+| Monads for effects | Closure allocation per bind, opaque control flow |
+| Type class dispatch | Dictionary passing, prevents inlining across boundaries |
+| High-level IR (STG, λ-calculus) | Mismatch with LLVM's SSA form, missed optimization |
+
+Kō systematically avoids each one:
+
+- **Eager evaluation** — no thunks, evaluation order is the source order
+- **Reference counting** — deterministic, no pauses, predictable overhead
+- **Unboxed scalars** — Int is i64, Float is f64, Bool is i1, no boxing
+- **Refs for mutation** — `let r = ref 0; r := 1; !r` — mutation is visible in syntax and type
+- **HM inference without type classes** — monomorphic dispatch, full inlining
+- **LLVM IR** — SSA from the start, LLVM can optimize naturally
+
+The result: a functional language whose performance you can reason about. The same way you reason about a C or Rust program.
+
+## Mechanical Sympathy in Practice
+
+### 1. Eager Evaluation
+
+```
+fn fib n =
+  if n <= 1 then n
+  else fib (n - 1) + fib (n - 2)
+```
+
+When `fib` is called, arguments are evaluated before the function body executes. The call stack maps directly to the CPU stack. No thunks, no suspensions, no forcing.
+
+If you can't tell where evaluation happens, neither can the programmer.
+
+### 2. Reference Counting
+
+Every heap-allocated object carries a refcount. When the count drops to zero, the object is freed immediately. No sweep phase, no mark phase, no stop-the-world.
+
+The cost: inc/dec on every pointer copy and function return.
+
+The benefit: free (and predictable) within 2x of Rust's ownership, with no borrow checker.
+
+Reference counting works especially well for functional languages because:
+- Most data is tree-shaped (no cycles in practice)
+- Immutable values are shared, not copied — RC enables safe structural sharing
+- Allocation is sequential (bump allocator per object)
+- Deallocation is immediate (not deferred to a GC epoch)
+
+### 3. Tagged Unions
+
+ADTs compile to tagged unions, not boxed objects:
+
+```
+type Maybe a = Just a | Nothing
+```
+
+becomes (in LLVM IR):
+
+```
+%Just = i64          # tag + payload packed into register
+%Nothing = i64       # tag only
+```
+
+No heap allocation for zero-arg constructors. Single-arg constructors are pass-through. Multi-arg constructors are heap-allocated structs with explicit RC.
+
+Pattern matching compiles to integer comparison, not RTTI or reflection.
+
+### 4. LLVM IR
+
+The compiler generates LLVM IR as its lowest representation. LLVM handles register allocation, instruction selection, and machine code generation.
+
+The key constraint: the IR must be LLVM-friendly. SSA form, explicit control flow, flat memory model. This means the compiler must lower functional abstractions (closures, pattern matching, tail calls) *before* reaching LLVM IR, not within it.
+
+### 5. The IR Pipeline
+
+```
+Source
+  → AST (parser output, syntax-oriented)
+  → HIR (functional IR: Lambda, Match, LetRec, Apply)
+  → LIR (imperative IR: blocks, branches, loads, stores)
+  → LLVM IR (SSA, phi nodes, explicit memory)
+```
+
+Each stage strips away one layer of abstraction:
+
+- **HIR**: still knows about functions as values, pattern matching as a construct, closures as captures. Optimizations here are functional: inline small functions, beta-reduce, constant fold.
+- **LIR**: closures are structs, pattern matching is a decision tree, tail calls are loops or explicit trampolines. Optimizations here are imperative: dead code elimination, constant propagation, loop invariant code motion.
+- **LLVM IR**: final lowering. LLVM does the rest.
+
+## Minimum Viable Magic
+
+The right amount of magic saves the programmer work. The wrong amount makes behavior unpredictable.
+
+### What the compiler does for you
+
+- **Type inference** — you rarely write types. The compiler figures them out and checks them.
+- **Memory management** — RC is automatic. You don't `free` or think about lifetimes.
+- **Pattern match exhaustiveness** — the compiler checks you handled all cases.
+- **Compile-time evaluation** — `comptime` expressions run during compilation.
+
+### What the compiler does NOT do
+
+- **No implicit allocations** — if something allocates, it's visible in the type or the code.
+- **No hidden evaluation** — evaluation order follows source order.
+- **No type class dispatch** — calls resolve to concrete functions.
+- **No implicit conversions** — what you write is what you get.
+- **No magic syntax** — every syntax form has a direct semantic meaning.
+
+The goal: a programmer can read a Kō function and predict, within a factor of 2, what the generated machine code looks like.
+
+## The Compact Language
+
+Kō has 19 keywords, 20 operators, and about 22 expression types. The grammar fits on a page.
+
+This is not a limitation. It's an affordance:
+
+- **Learnable** — an afternoon to learn, a week to master
+- **Portable** — every implementation (Python, Zig, future self-hosted) targets the same surface
+- **Forkable** — the spec is small enough that a motivated person could implement it from scratch
+- **Auditable** — a security review covers the whole language, not just "the unsafe parts"
+
+The library does the rest. `String.split`, `Array.map`, `Math.sqrt` — these are not language features. They're library functions, written in Kō, that the compiler can recognize and optimize.
+
+## The Pipeline
+
+```
+Source Code
+  │
+  ├── 1. Lexer  (text → tokens)
+  │     └── Indentation tracking, comment stripping
+  │
+  ├── 2. Parser  (tokens → AST)
+  │     └── Recursive descent, error recovery
+  │
+  ├── 3. Name Resolution  (AST → scoped AST)
+  │     └── Module imports, scope nesting, symbol resolution
+  │
+  ├── 4. Type Inference  (AST → typed AST)
+  │     └── HM with let-polymorphism, unification, exhaustiveness
+  │
+  ├── 5. Lower to HIR  (AST → HIR)
+  │     └── Desugar pattern matching, desugar let, flatten
+  │
+  ├── 6. HIR Optimizer
+  │     └── Inline, const fold, DCE, simplify
+  │
+  ├── 7. Lower to LIR  (HIR → LIR)
+  │     └── Closure conversion, pattern match compilation,
+  │         lambda lifting, tail call analysis, monomorphization
+  │
+  ├── 8. LIR Optimizer
+  │     └── Block layout, constant propagation, dead block removal
+  │
+  └── 9. LLVM IR Generation  (LIR → LLVM IR)
+        └── Two-pass: declare functions, then emit bodies
+              │
+              ├── ORC JIT  (development)
+              └── AOT Codegen (production)
+                    └── Object file → Linker → Executable
+```
+
+Each IR exists because the next one can't represent what the current one understands:
+
+- **AST** understands `match x | Just v => f v | Nothing => 0`
+- **HIR** understands the same, but with desugared patterns and explicit scoping
+- **LIR** understands conditional branches, phi nodes, and explicit loads/stores — `match` is gone
+- **LLVM IR** understands registers, stack slots, and function calls — closures are gone
+
+## What This Enables
+
+### Fast iteration
+
+Compile times stay low because the language is simple. No trait resolution, no elaborate monomorphization, no complex type-level computation (outside explicit `comptime`).
+
+### Predictable deployment
+
+Static linking produces a single binary. No runtime to install, no VM version to manage, no GC to tune.
+
+### Accessible systems programming
+
+A web developer who knows Python can learn Kō in a day and write a CLI tool that compiles to a 200KB native binary. No borrow checker to fight, no monads to compose.
+
+### Clear mental model
+
+```
+if condition then a else b    →  compare, branch
+match x | A => ... | B => ... →  tag compare, jump table or chain
+let x = f y                   →  call f, store result in SSA register
+ref x, !r, r := v            →  stack/heap alloc, load, store
+```
+
+Every language construct has a straightforward translation to machine operations.
+
+## What We're Not Building
+
+- **Not a research language.** No dependent types, linear types, or effect systems (yet).
+- **Not a systems language.** No manual memory management, no `unsafe`, no inline assembly.
+- **Not a cloud language.** No distributed runtime, no actor model, no hot code reloading.
+- **Not a general-purpose language for everything.** Kō is for CLI tools, compilers, data transforms, build tooling, and small-to-medium programs.
+
+## The Verdict We're Waiting For
+
+Can a language with 19 keywords, eager evaluation, and reference counting compete with Rust for systems programming, with Haskell for expressiveness, and with Go for simplicity?
+
+Probably not on any single axis. But the intersection — fast, simple, functional, native — is empty right now.
+
+Kō fills that space.
