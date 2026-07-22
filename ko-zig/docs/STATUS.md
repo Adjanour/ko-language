@@ -1,7 +1,7 @@
 # Kō Compiler — Status & Active Bugs
 
 **Last updated**: 2026-07-22  
-**Tests**: 115/115 passing (commit TBD)
+**Tests**: 155/155 passing (commit TBD)
 
 ---
 
@@ -17,6 +17,9 @@
 8. **Nested lambda captures / over-application**: When `argc > arity`, call with first `arity` args, then apply remaining args one at a time via `codegenApplyIndirect`.
 9. **Runtime correctness tests**: Added 28 JIT-executed tests covering literals, arithmetic, if/else, negation, function calls, recursion, mutual recursion, sum types, sum type payloads, recursive Nat, nested pattern matching, pattern matching with computation, refs/mutation, swap, lambdas, closures, higher-order functions, partial application, let bindings, nested let, complex expressions, list length, fibonacci, factorial, String.length, pipe operator, if/else computation, nested Succ Zero patterns.
 10. **Codegen test fixes**: Fixed pre-existing orphaned tests in `codegen.zig` (LLVM type cast issues, IR assertion format, memory leaks). Fixed JIT double-free by setting `module_owned_by_jit`.
+11. **Runtime correctness tests (40 more)**: Added 40 example-based and edge-case runtime tests (list sugar, multi-line strings, tuple field access, nested constructors in lists, string arithmetic, etc.). Total 155/155 tests passing.
+12. **Inspect list sugar in JIT**: `builtin_inspect_tag` now checks "Nil"→`[]` and "Cons"→recursive list display, matching LLVM IR stdlib behavior.
+13. **Error message improvements**: Added `note` and `help` fields to `ErrorContext`. Added `reportNote`/`reportHelp` functions. Added `printSourceLine` for source code display with column pointer. Added `findSimilarName` with Levenshtein distance for "did you mean?" suggestions. Improved occurs check message ("this type occurs in" → "this type infinite type"). Added "these types are not compatible" note on type mismatches.
 
 ---
 

@@ -3285,18 +3285,22 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
         5 => std.debug.print("()", .{}),
         6 => {
             if (name_ptr) |name| {
-                var len: usize = 0;
-                while (name[len] != 0) : (len += 1) {}
-                std.debug.print("{s}", .{name[0..len]});
+                // Check for Nil → print []
+                if (std.mem.eql(u8, name[0..std.mem.len(name)], "Nil")) {
+                    std.debug.print("[]", .{});
+                } else if (std.mem.eql(u8, name[0..std.mem.len(name)], "Cons")) {
+                    // List sugar: print [head, rest...]
+                    printConsList(val, raw);
+                } else {
+                    std.debug.print("{s}", .{name[0..std.mem.len(name)]});
+                }
             } else {
                 std.debug.print("Constructor({d})", .{val});
             }
         },
         7 => {
             if (name_ptr) |name| {
-                var len: usize = 0;
-                while (name[len] != 0) : (len += 1) {}
-                std.debug.print("{s} {{ ... }}", .{name[0..len]});
+                std.debug.print("{s} {{ ... }}", .{name[0..std.mem.len(name)]});
             } else {
                 std.debug.print("Record({d})", .{val});
             }
@@ -3306,6 +3310,33 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
         else => std.debug.print("{d}", .{val}),
     }
     return val;
+}
+
+fn printConsList(val: i64, raw: i64) void {
+    // val is a ptrtoint of a Cons cell: { i64 tag=0, i64 head, i64 tail }
+    if (val <= 4096) return; // not a pointer
+    const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
+    const tag = ptr[0];
+    if (tag != 0) return; // not Cons
+    const head = ptr[1];
+    const tail = ptr[2];
+    std.debug.print("[", .{});
+    _ = builtin_inspect_tag(head, 100, null, raw);
+    printConsListTail(tail, raw);
+    std.debug.print("]", .{});
+}
+
+fn printConsListTail(tail: i64, raw: i64) void {
+    if (tail == 1) return; // raw Nil tag
+    if (tail <= 4096) return; // not a pointer
+    const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(tail)));
+    const tag = ptr[0];
+    if (tag != 0) return; // not Cons (boxed Nil or other)
+    const head = ptr[1];
+    const next_tail = ptr[2];
+    std.debug.print(", ", .{});
+    _ = builtin_inspect_tag(head, 100, null, raw);
+    printConsListTail(next_tail, raw);
 }
 
 extern fn malloc(usize) callconv(.c) ?*anyopaque;

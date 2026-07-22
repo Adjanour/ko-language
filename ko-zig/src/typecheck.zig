@@ -73,11 +73,62 @@ pub const Env = struct {
 
 pub const Error = error{ UndefinedName, TypeMismatch, OccursCheck, UnknownConstructor, UnknownType, OutOfMemory };
 
+fn levenshteinDistance(a: []const u8, b: []const u8) usize {
+    const m = a.len;
+    const n = b.len;
+    if (m == 0) return n;
+    if (n == 0) return m;
+    if (m > 64 or n > 64) return 999;
+
+    var prev: [65]usize = undefined;
+    var curr: [65]usize = undefined;
+
+    for (0..n + 1) |j| prev[j] = j;
+
+    for (0..m) |i| {
+        curr[0] = i + 1;
+        for (0..n) |j| {
+            const cost: usize = if (a[i] == b[j]) 0 else 1;
+            const insert = prev[j + 1] + 1;
+            const del = curr[j] + 1;
+            const replace = prev[j] + cost;
+            curr[j + 1] = @min(insert, del, replace);
+        }
+        std.mem.swap([65]usize, &prev, &curr);
+    }
+    return prev[n];
+}
+
+fn findSimilarName(name: []const u8, env: *Env) ?[]const u8 {
+    var best_name: ?[]const u8 = null;
+    var best_dist: usize = 3;
+
+    var it = env.bindings.keyIterator();
+    while (it.next()) |key_ptr| {
+        const key = key_ptr.*;
+        const dist = levenshteinDistance(name, key);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_name = key;
+        }
+    }
+
+    if (env.parent) |parent| {
+        if (findSimilarName(name, parent)) |suggestion| {
+            return suggestion;
+        }
+    }
+
+    return best_name;
+}
+
 pub const ErrorContext = struct {
     message: ?[]const u8 = null,
     expected: ?[]const u8 = null,
     actual: ?[]const u8 = null,
     loc: ?parser.Loc = null,
+    note: ?[]const u8 = null,
+    help: ?[]const u8 = null,
 };
 
 pub const Inferer = struct {
@@ -238,7 +289,19 @@ pub const Inferer = struct {
 
         switch (a.*) {
             .variable => |v| {
-                if (self.occurs(v, b)) return error.OccursCheck;
+                if (self.occurs(v, b)) {
+                    const a_str = typeToString(self.allocator, a.*) catch null;
+                    const b_str = typeToString(self.allocator, b.*) catch null;
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "infinite type: {s} would contain {s}", .{
+                            a_str orelse "?",
+                            b_str orelse "?",
+                        }) catch null,
+                        .loc = self.current_loc,
+                        .note = "occurs check failed: this type variable appears inside the type it would be unified with",
+                    };
+                    return error.OccursCheck;
+                }
                 v.instance = b;
                 return;
             },
@@ -247,7 +310,19 @@ pub const Inferer = struct {
 
         switch (b.*) {
             .variable => |v| {
-                if (self.occurs(v, a)) return error.OccursCheck;
+                if (self.occurs(v, a)) {
+                    const a_str = typeToString(self.allocator, a.*) catch null;
+                    const b_str = typeToString(self.allocator, b.*) catch null;
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "infinite type: {s} would contain {s}", .{
+                            b_str orelse "?",
+                            a_str orelse "?",
+                        }) catch null,
+                        .loc = self.current_loc,
+                        .note = "occurs check failed: this type variable appears inside the type it would be unified with",
+                    };
+                    return error.OccursCheck;
+                }
                 v.instance = a;
                 return;
             },
@@ -258,6 +333,10 @@ pub const Inferer = struct {
             fn f(self_inner: *Inferer, l: *Type, r: *Type) Error!void {
                 const exp_str = typeToString(self_inner.allocator, l.*) catch null;
                 const act_str = typeToString(self_inner.allocator, r.*) catch null;
+                var note_msg: ?[]const u8 = null;
+                if (exp_str != null and act_str != null) {
+                    note_msg = std.fmt.allocPrint(self_inner.allocator, "these types are not compatible", .{}) catch null;
+                }
                 self_inner.last_error = .{
                     .message = std.fmt.allocPrint(self_inner.allocator, "type mismatch: expected {s}, got {s}", .{
                         exp_str orelse "?",
@@ -266,6 +345,7 @@ pub const Inferer = struct {
                     .expected = exp_str,
                     .actual = act_str,
                     .loc = self_inner.current_loc,
+                    .note = note_msg,
                 };
                 return error.TypeMismatch;
             }
@@ -1029,9 +1109,14 @@ pub const Inferer = struct {
             .bool_literal => self.newType(.bool),
             .identifier => |id| blk: {
                 const scheme = self.resolveName(env, id.name) orelse {
+                    var help_msg: ?[]const u8 = null;
+                    if (findSimilarName(id.name, env)) |suggestion| {
+                        help_msg = std.fmt.allocPrint(self.allocator, "did you mean '{s}'?", .{suggestion}) catch null;
+                    }
                     self.last_error = .{
                         .message = std.fmt.allocPrint(self.allocator, "undefined name '{s}'", .{id.name}) catch null,
                         .loc = self.current_loc,
+                        .help = help_msg,
                     };
                     return error.UndefinedName;
                 };
@@ -1039,9 +1124,14 @@ pub const Inferer = struct {
             },
             .constructor => |c| blk: {
                 const scheme = self.resolveName(env, c.name) orelse {
+                    var help_msg: ?[]const u8 = null;
+                    if (findSimilarName(c.name, env)) |suggestion| {
+                        help_msg = std.fmt.allocPrint(self.allocator, "did you mean '{s}'?", .{suggestion}) catch null;
+                    }
                     self.last_error = .{
                         .message = std.fmt.allocPrint(self.allocator, "undefined constructor '{s}'", .{c.name}) catch null,
                         .loc = self.current_loc,
+                        .help = help_msg,
                     };
                     return error.UndefinedName;
                 };

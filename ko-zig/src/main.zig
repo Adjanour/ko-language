@@ -64,7 +64,85 @@ fn reportError(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []c
     }
     w.interface.print(fmt, args) catch {};
     w.interface.print("\n", .{}) catch {};
+
+    if (loc) |l| {
+        printSourceLine(io, &w, filename, l);
+    }
+
     w.interface.flush() catch {};
+}
+
+fn reportNote(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []const u8, args: anytype) void {
+    const stderr = Io.File.stderr();
+    var buffer: [4096]u8 = undefined;
+    var w = stderr.writer(io, &buffer);
+
+    if (loc) |l| {
+        w.interface.print("  note at {s}:{d}:{d}: ", .{ filename, l.line, l.col }) catch {};
+    } else {
+        w.interface.print("  note: ", .{}) catch {};
+    }
+    w.interface.print(fmt, args) catch {};
+    w.interface.print("\n", .{}) catch {};
+    w.interface.flush() catch {};
+}
+
+fn reportHelp(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []const u8, args: anytype) void {
+    const stderr = Io.File.stderr();
+    var buffer: [4096]u8 = undefined;
+    var w = stderr.writer(io, &buffer);
+
+    if (loc) |l| {
+        w.interface.print("  help at {s}:{d}:{d}: ", .{ filename, l.line, l.col }) catch {};
+    } else {
+        w.interface.print("  help: ", .{}) catch {};
+    }
+    w.interface.print(fmt, args) catch {};
+    w.interface.print("\n", .{}) catch {};
+    w.interface.flush() catch {};
+}
+
+fn printSourceLine(io: Io, w: anytype, filename: []const u8, loc: parser.Loc) void {
+    const cwd = Io.Dir.cwd();
+    const file = cwd.openFile(io, filename, .{}) catch return;
+    defer file.close(io);
+
+    var file_buffer: [4096]u8 = undefined;
+    var reader = file.reader(io, &file_buffer);
+    const source = reader.interface.allocRemainingAlignedSentinel(
+        std.heap.page_allocator,
+        .unlimited,
+        @enumFromInt(0),
+        0,
+    ) catch return;
+    defer std.heap.page_allocator.free(source);
+
+    var line_num: usize = 1;
+    var line_start: usize = 0;
+    for (source, 0..) |ch, i| {
+        if (ch == '\n') {
+            if (line_num == loc.line) {
+                const line_end = i;
+                const line_content = source[line_start..line_end];
+                w.interface.print("  {d} | ", .{loc.line}) catch {};
+                w.interface.print("{s}\n", .{line_content}) catch {};
+
+                w.interface.print("  ", .{}) catch {};
+                var j: usize = 0;
+                while (j < std.fmt.count("{d}", .{loc.line}) + 4) : (j += 1) {
+                    w.interface.print(" ", .{}) catch {};
+                }
+                var col: usize = 1;
+                while (col < loc.col) : (col += 1) {
+                    w.interface.print(" ", .{}) catch {};
+                }
+                w.interface.print("^\n", .{}) catch {};
+                return;
+            }
+            line_num += 1;
+            line_start = i + 1;
+        }
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -168,6 +246,12 @@ pub fn main(init: std.process.Init) !void {
     inferer.inferProgram(&prog) catch |err| {
         if (inferer.last_error) |ec| {
             reportError(io, fname, ec.loc, "{s}", .{ec.message orelse @errorName(err)});
+            if (ec.note) |note| {
+                reportNote(io, fname, ec.loc, "{s}", .{note});
+            }
+            if (ec.help) |help| {
+                reportHelp(io, fname, ec.loc, "{s}", .{help});
+            }
         } else {
             reportError(io, fname, null, "type error: {s}", .{@errorName(err)});
         }
