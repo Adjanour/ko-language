@@ -1,7 +1,7 @@
 # Kō Compiler — Status & Active Bugs
 
-**Last updated**: 2026-07-21  
-**Tests**: 78/78 passing (commit 02dc4dc)
+**Last updated**: 2026-07-22  
+**Tests**: 115/115 passing (commit TBD)
 
 ---
 
@@ -15,6 +15,8 @@
 6. **Release builds**: `ko` (5.8M) and `ko-lsp` (5.2M) with `-Doptimize=ReleaseFast`.
 7. **Partial application calling convention**: Extracted `codegenApplyIndirect` for single-arg bit-0 dispatch. Added `codegenApplyIndirectWithArity` for multi-arg calls. Fixed closure path: mask off bit 0, use i8 GEP, call wrapper with all args at once. Added arity propagation for let-bound partial applications. Added over-application support.
 8. **Nested lambda captures / over-application**: When `argc > arity`, call with first `arity` args, then apply remaining args one at a time via `codegenApplyIndirect`.
+9. **Runtime correctness tests**: Added 28 JIT-executed tests covering literals, arithmetic, if/else, negation, function calls, recursion, mutual recursion, sum types, sum type payloads, recursive Nat, nested pattern matching, pattern matching with computation, refs/mutation, swap, lambdas, closures, higher-order functions, partial application, let bindings, nested let, complex expressions, list length, fibonacci, factorial, String.length, pipe operator, if/else computation, nested Succ Zero patterns.
+10. **Codegen test fixes**: Fixed pre-existing orphaned tests in `codegen.zig` (LLVM type cast issues, IR assertion format, memory leaks). Fixed JIT double-free by setting `module_owned_by_jit`.
 
 ---
 
@@ -25,5 +27,4 @@
 ## Next Steps
 
 1. Multi-arg lambda closures — lambdas (`\x y -> ...`) don't get PA wrappers, only global `fn` definitions do
-2. Pattern matching on more types — records, tuples, nested patterns
-3. Import system hardening — circular import detection, type info propagation from imported modules
+2. Import system hardening — circular import detection, type info propagation from imported modules

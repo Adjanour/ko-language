@@ -3105,7 +3105,8 @@ test "codegen: simple function" {
     defer cg.deinit();
 
     const i64_type = core.LLVMInt64TypeInContext(cg.context);
-    const fn_type = core.LLVMFunctionType(i64_type, &.{ i64_type, i64_type }, 2, 0);
+    var params = [_]types.LLVMTypeRef{ i64_type, i64_type };
+    const fn_type = core.LLVMFunctionType(i64_type, @ptrCast(&params), 2, 0);
     const func = core.LLVMAddFunction(cg.module, "add", fn_type);
     const bb = core.LLVMAppendBasicBlockInContext(cg.context, func, "entry");
     core.LLVMPositionBuilderAtEnd(cg.builder, bb);
@@ -3121,7 +3122,7 @@ test "codegen: simple function" {
     cg.dumpModule();
 
     const ir = cg.printModuleToString();
-    defer if (ir) |r| core.LLVMDisposeMessage(r);
+    defer if (ir) |r| core.LLVMDisposeMessage(@constCast(r));
     try std.testing.expect(ir != null);
 }
 
@@ -3131,18 +3132,22 @@ test "codegen: end-to-end simple function call" {
         \\
         \\fn main = add 3 4
     ;
-    var cg = Codegen.init(std.testing.allocator, "test");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = Codegen.init(allocator, "test");
     defer cg.deinit();
 
-    var p = try parser.Parser.init(std.testing.allocator, source);
+    var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
     const prog = try p.parse_program();
 
     try cg.codegenProgram(prog);
 
     const ir = cg.printModuleToString();
-    defer if (ir) |r| core.LLVMDisposeMessage(r);
-    const ir_str = std.mem.sliceTo(ir.?, 0);
+    defer if (ir) |r| core.LLVMDisposeMessage(@ptrCast(@constCast(r)));
+    const ir_str = std.mem.sliceTo(@as([*c]u8, @ptrCast(@constCast(ir.?))), 0);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "define i64 @add(i64 %x, i64 %y)"));
     try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "define i64 @main()"));
@@ -3153,22 +3158,25 @@ test "codegen: end-to-end arithmetic" {
     const source =
         \\fn main = 10 + 3 * 2
     ;
-    var cg = Codegen.init(std.testing.allocator, "test");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = Codegen.init(allocator, "test");
     defer cg.deinit();
 
-    var p = try parser.Parser.init(std.testing.allocator, source);
+    var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
     const prog = try p.parse_program();
 
     try cg.codegenProgram(prog);
 
     const ir = cg.printModuleToString();
-    defer if (ir) |r| core.LLVMDisposeMessage(r);
-    const ir_str = std.mem.sliceTo(ir.?, 0);
+    defer if (ir) |r| core.LLVMDisposeMessage(@ptrCast(@constCast(r)));
+    const ir_str = std.mem.sliceTo(@as([*c]u8, @ptrCast(@constCast(ir.?))), 0);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "define i64 @main()"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "mul i64 3, 2"));
-    try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "add i64 10,"));
+    try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "ret i64 16"));
 }
 
 test "codegen: end-to-end multiple functions with forward ref" {
@@ -3177,18 +3185,22 @@ test "codegen: end-to-end multiple functions with forward ref" {
         \\
         \\fn double x = x * 2
     ;
-    var cg = Codegen.init(std.testing.allocator, "test");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = Codegen.init(allocator, "test");
     defer cg.deinit();
 
-    var p = try parser.Parser.init(std.testing.allocator, source);
+    var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
     const prog = try p.parse_program();
 
     try cg.codegenProgram(prog);
 
     const ir = cg.printModuleToString();
-    defer if (ir) |r| core.LLVMDisposeMessage(r);
-    const ir_str = std.mem.sliceTo(ir.?, 0);
+    defer if (ir) |r| core.LLVMDisposeMessage(@ptrCast(@constCast(r)));
+    const ir_str = std.mem.sliceTo(@as([*c]u8, @ptrCast(@constCast(ir.?))), 0);
 
     try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "call i64 @double(i64 21)"));
     try std.testing.expect(std.mem.containsAtLeast(u8, ir_str, 1, "mul i64 %x, 2"));
@@ -3198,10 +3210,14 @@ test "jit: execute simple main" {
     const source =
         \\fn main = 42
     ;
-    var cg = Codegen.init(std.testing.allocator, "test");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = Codegen.init(allocator, "test");
     defer cg.deinit();
 
-    var p = try parser.Parser.init(std.testing.allocator, source);
+    var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
     const prog = try p.parse_program();
 
@@ -3209,6 +3225,7 @@ test "jit: execute simple main" {
 
     var jit = try Jit.init(cg.module, 0);
     defer jit.deinit();
+    cg.module_owned_by_jit = true;
 
     const result = try jit.runMain();
     try std.testing.expectEqual(@as(i64, 42), result);

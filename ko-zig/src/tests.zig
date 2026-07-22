@@ -3,6 +3,24 @@ const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const repl_mod = @import("repl.zig");
+const codegen_mod = @import("codegen.zig");
+
+fn testRuntime(source: [:0]const u8) !i64 {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = codegen_mod.Codegen.init(allocator, "test");
+    defer cg.deinit();
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    try cg.codegenProgram(prog);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    return try jit.runMain();
+}
 
 test "lexer: keywords" {
     var tok = lexer.Tokenizer.init("fn let if then else match type import package pub module true false and or not");
@@ -1215,4 +1233,290 @@ test "tuple destructuring in let" {
     var infer = typecheck.Inferer.init(allocator);
     defer infer.deinit();
     try infer.inferProgram(&prog);
+}
+
+// =============================================================================
+// Runtime Correctness Tests — compile, JIT-execute, check return value
+// =============================================================================
+
+test "runtime: literal integer" {
+    const result = try testRuntime(
+        \\fn main = 42
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: arithmetic" {
+    const result = try testRuntime(
+        \\fn main = 2 + 3 * 4
+    );
+    try std.testing.expectEqual(@as(i64, 14), result);
+}
+
+test "runtime: boolean if/else" {
+    const result = try testRuntime(
+        \\fn main = if 1 < 2 then 10 else 20
+    );
+    try std.testing.expectEqual(@as(i64, 10), result);
+}
+
+test "runtime: negation" {
+    const result = try testRuntime(
+        \\fn main = -(5 + 3)
+    );
+    try std.testing.expectEqual(@as(i64, -8), result);
+}
+
+test "runtime: function call" {
+    const result = try testRuntime(
+        \\fn add x y = x + y
+        \\fn main = add 10 32
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: nested function calls" {
+    const result = try testRuntime(
+        \\fn double x = x + x
+        \\fn halve x = x / 2
+        \\fn main = double (halve 20)
+    );
+    try std.testing.expectEqual(@as(i64, 20), result);
+}
+
+test "runtime: recursive function" {
+    const result = try testRuntime(
+        \\fn fact n = if n <= 1 then 1 else n * fact (n - 1)
+        \\fn main = fact 6
+    );
+    try std.testing.expectEqual(@as(i64, 720), result);
+}
+
+test "runtime: mutual recursion" {
+    const result = try testRuntime(
+        \\fn is_even n = if n == 0 then 1 else is_odd (n - 1)
+        \\fn is_odd n = if n == 0 then 0 else is_even (n - 1)
+        \\fn main = is_even 10
+    );
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "runtime: sum type constructors" {
+    const result = try testRuntime(
+        \\type Bool = True | False
+        \\fn negate b = match b
+        \\  True => 0
+        \\  False => 1
+        \\fn main = negate True
+    );
+    try std.testing.expectEqual(@as(i64, 0), result);
+}
+
+test "runtime: sum type with payload" {
+    const result = try testRuntime(
+        \\type Option = Some Int | None
+        \\fn get_value opt = match opt
+        \\  Some v => v
+        \\  None => 0
+        \\fn main = get_value (Some 99)
+    );
+    try std.testing.expectEqual(@as(i64, 99), result);
+}
+
+test "runtime: recursive sum type (Nat)" {
+    const result = try testRuntime(
+        \\type Nat = Succ Nat | Zero
+        \\fn count n = match n
+        \\  Succ rest => 1 + count rest
+        \\  Zero => 0
+        \\fn main = count (Succ (Succ (Succ Zero)))
+    );
+    try std.testing.expectEqual(@as(i64, 3), result);
+}
+
+test "runtime: nested pattern matching" {
+    const result = try testRuntime(
+        \\type List a = Cons a (List a) | Nil
+        \\fn count xs = match xs
+        \\  Cons _ (Cons _ rest) => 1 + count rest
+        \\  Cons _ Nil => 1
+        \\  Nil => 0
+        \\fn main = count (Cons 1 (Cons 2 (Cons 3 Nil)))
+    );
+    try std.testing.expectEqual(@as(i64, 2), result);
+}
+
+test "runtime: pattern matching with computation" {
+    const result = try testRuntime(
+        \\type List a = Cons a (List a) | Nil
+        \\fn sum xs = match xs
+        \\  Cons x rest => x + sum rest
+        \\  Nil => 0
+        \\fn main = sum (Cons 10 (Cons 20 (Cons 30 Nil)))
+    );
+    try std.testing.expectEqual(@as(i64, 60), result);
+}
+
+test "runtime: ref and mutation" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let r = ref 0
+        \\  r := 5
+        \\  !r
+    );
+    try std.testing.expectEqual(@as(i64, 5), result);
+}
+
+test "runtime: ref in loop" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let r = ref 0
+        \\  r := !r + 1
+        \\  r := !r + 1
+        \\  r := !r + 1
+        \\  !r
+    );
+    try std.testing.expectEqual(@as(i64, 3), result);
+}
+
+test "runtime: swap via refs" {
+    const result = try testRuntime(
+        \\fn swap a b =
+        \\  let temp = !a
+        \\  a := !b
+        \\  b := temp
+        \\fn main =
+        \\  let x = ref 10
+        \\  let y = ref 20
+        \\  swap x y
+        \\  !x + !y
+    );
+    try std.testing.expectEqual(@as(i64, 30), result);
+}
+
+test "runtime: lambda application" {
+    const result = try testRuntime(
+        \\fn main = (\x -> x + 1) 41
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: lambda closure" {
+    const result = try testRuntime(
+        \\fn make_adder x = \y -> x + y
+        \\fn main = (make_adder 10) 32
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: higher-order function" {
+    const result = try testRuntime(
+        \\fn apply f x = f x
+        \\fn double x = x * 2
+        \\fn main = apply double 21
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: partial application" {
+    const result = try testRuntime(
+        \\fn add x y = x + y
+        \\fn main = (add 10) 32
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: let binding" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let x = 10
+        \\  let y = 32
+        \\  x + y
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: nested let" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let x = 10
+        \\  let y = 32
+        \\  let z = x + y
+        \\  z * 2
+    );
+    try std.testing.expectEqual(@as(i64, 84), result);
+}
+
+test "runtime: complex expression" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let x = 5
+        \\  let y = 10
+        \\  let z = 15
+        \\  x * y + z - (x + y)
+    );
+    try std.testing.expectEqual(@as(i64, 50), result);
+}
+
+test "runtime: list length recursive" {
+    const result = try testRuntime(
+        \\type List a = Cons a (List a) | Nil
+        \\fn length xs = match xs
+        \\  Cons _ rest => 1 + length rest
+        \\  Nil => 0
+        \\fn main = length (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil))))
+    );
+    try std.testing.expectEqual(@as(i64, 4), result);
+}
+
+test "runtime: fibonacci" {
+    const result = try testRuntime(
+        \\fn fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+        \\fn main = fib 10
+    );
+    try std.testing.expectEqual(@as(i64, 55), result);
+}
+
+test "runtime: factorial" {
+    const result = try testRuntime(
+        \\fn fact n = if n <= 1 then 1 else n * fact (n - 1)
+        \\fn main = fact 8
+    );
+    try std.testing.expectEqual(@as(i64, 40320), result);
+}
+
+test "runtime: string length" {
+    const result = try testRuntime(
+        \\fn main = String.length "hello"
+    );
+    try std.testing.expectEqual(@as(i64, 5), result);
+}
+
+test "runtime: pipe operator" {
+    const result = try testRuntime(
+        \\fn add_one x = x + 1
+        \\fn double x = x * 2
+        \\fn main = 20 |> add_one |> double
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: if/else with computation" {
+    const result = try testRuntime(
+        \\fn max a b = if a > b then a else b
+        \\fn main = max 10 20
+    );
+    try std.testing.expectEqual(@as(i64, 20), result);
+}
+
+test "runtime: nested pattern with recursion (Succ Zero)" {
+    const result = try testRuntime(
+        \\type Nat = Succ Nat | Zero
+        \\fn count n = match n
+        \\  Succ Zero => 1
+        \\  Succ rest => 1 + count rest
+        \\  Zero => 0
+        \\fn main = count (Succ (Succ (Succ Zero)))
+    );
+    try std.testing.expectEqual(@as(i64, 3), result);
 }
