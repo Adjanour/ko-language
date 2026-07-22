@@ -10,7 +10,7 @@ const codegen_mod = @import("codegen.zig");
 const repl_mod = @import("repl.zig");
 const module_loader_mod = @import("module_loader.zig");
 
-const VERSION = "0.2.0-alpha";
+const VERSION = "0.2.1-alpha";
 
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
