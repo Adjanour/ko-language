@@ -1520,3 +1520,450 @@ test "runtime: nested pattern with recursion (Succ Zero)" {
     );
     try std.testing.expectEqual(@as(i64, 3), result);
 }
+
+// =============================================================================
+// Example-based Runtime Tests — adapted from examples/ directory
+// =============================================================================
+
+test "runtime: ackermann function" {
+    const result = try testRuntime(
+        \\fn ack m n =
+        \\  if m == 0 then n + 1
+        \\  else if n == 0 then ack (m - 1) 1
+        \\  else ack (m - 1) (ack m (n - 1))
+        \\fn main = ack 3 3
+    );
+    try std.testing.expectEqual(@as(i64, 61), result);
+}
+
+test "runtime: ackermann base cases" {
+    const result = try testRuntime(
+        \\fn ack m n =
+        \\  if m == 0 then n + 1
+        \\  else if n == 0 then ack (m - 1) 1
+        \\  else ack (m - 1) (ack m (n - 1))
+        \\fn main = ack 2 2
+    );
+    try std.testing.expectEqual(@as(i64, 7), result);
+}
+
+test "runtime: numeric GCD" {
+    const result = try testRuntime(
+        \\fn gcd a b =
+        \\  if b == 0 then a
+        \\  else gcd b (a % b)
+        \\fn main = gcd 12 8
+    );
+    try std.testing.expectEqual(@as(i64, 4), result);
+}
+
+test "runtime: numeric LCM" {
+    const result = try testRuntime(
+        \\fn gcd a b =
+        \\  if b == 0 then a
+        \\  else gcd b (a % b)
+        \\fn lcm a b = (a * b) / gcd a b
+        \\fn main = lcm 4 6
+    );
+    try std.testing.expectEqual(@as(i64, 12), result);
+}
+
+test "runtime: fast exponentiation" {
+    const result = try testRuntime(
+        \\fn pow base exp =
+        \\  if exp == 0 then 1
+        \\  else if exp % 2 == 0 then pow (base * base) (exp / 2)
+        \\  else base * pow base (exp - 1)
+        \\fn main = pow 2 10
+    );
+    try std.testing.expectEqual(@as(i64, 1024), result);
+}
+
+test "runtime: primality test" {
+    const result = try testRuntime(
+        \\fn is_prime n =
+        \\  if n < 2 then 0
+        \\  else if n == 2 then 1
+        \\  else if n % 2 == 0 then 0
+        \\  else is_prime_aux n 3
+        \\fn is_prime_aux n d =
+        \\  if d * d > n then 1
+        \\  else if n % d == 0 then 0
+        \\  else is_prime_aux n (d + 2)
+        \\fn main = is_prime 13
+    );
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "runtime: digit sum" {
+    const result = try testRuntime(
+        \\fn digit_sum n =
+        \\  if n < 10 then n
+        \\  else n % 10 + digit_sum (n / 10)
+        \\fn main = digit_sum 999
+    );
+    try std.testing.expectEqual(@as(i64, 27), result);
+}
+
+test "runtime: number of digits" {
+    const result = try testRuntime(
+        \\fn num_digits n =
+        \\  if n < 10 then 1
+        \\  else 1 + num_digits (n / 10)
+        \\fn main = num_digits 12345
+    );
+    try std.testing.expectEqual(@as(i64, 5), result);
+}
+
+test "runtime: reverse number" {
+    const result = try testRuntime(
+        \\fn rev_aux n acc =
+        \\  if n == 0 then acc
+        \\  else rev_aux (n / 10) (acc * 10 + n % 10)
+        \\fn main = rev_aux 123 0
+    );
+    try std.testing.expectEqual(@as(i64, 321), result);
+}
+
+test "runtime: triangle number" {
+    const result = try testRuntime(
+        \\fn triangle n = n * (n + 1) / 2
+        \\fn main = triangle 10
+    );
+    try std.testing.expectEqual(@as(i64, 55), result);
+}
+
+test "runtime: hailstone length" {
+    const result = try testRuntime(
+        \\fn hailstoneLength n =
+        \\  if n == 1 then 0
+        \\  else if n % 2 == 0 then 1 + hailstoneLength (n / 2)
+        \\  else 1 + hailstoneLength (3 * n + 1)
+        \\fn main = hailstoneLength 6
+    );
+    try std.testing.expectEqual(@as(i64, 8), result);
+}
+
+test "runtime: binary tree sum" {
+    const result = try testRuntime(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_sum tree = match tree
+        \\  Branch left right => tree_sum left + tree_sum right
+        \\  Leaf n => n
+        \\fn main = tree_sum (Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5))
+    );
+    try std.testing.expectEqual(@as(i64, 9), result);
+}
+
+test "runtime: binary tree count" {
+    const result = try testRuntime(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_count tree = match tree
+        \\  Branch left right => tree_count left + tree_count right
+        \\  Leaf _ => 1
+        \\fn main = tree_count (Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5))
+    );
+    try std.testing.expectEqual(@as(i64, 3), result);
+}
+
+test "runtime: binary tree height" {
+    const result = try testRuntime(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_height tree = match tree
+        \\  Leaf _ => 1
+        \\  Branch left right =>
+        \\    let lh = tree_height left
+        \\    let rh = tree_height right
+        \\    if lh > rh then 1 + lh else 1 + rh
+        \\fn main = tree_height (Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5))
+    );
+    try std.testing.expectEqual(@as(i64, 3), result);
+}
+
+test "runtime: binary tree max" {
+    const result = try testRuntime(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_max tree = match tree
+        \\  Leaf n => n
+        \\  Branch left right =>
+        \\    let lm = tree_max left
+        \\    let rm = tree_max right
+        \\    if lm > rm then lm else rm
+        \\fn main = tree_max (Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5))
+    );
+    try std.testing.expectEqual(@as(i64, 5), result);
+}
+
+test "runtime: list map and sum" {
+    const result = try testRuntime(
+        \\type List a = Cons a (List a) | Nil
+        \\fn map f xs = match xs
+        \\  Cons x rest => Cons (f x) (map f rest)
+        \\  Nil => Nil
+        \\fn sumList xs = match xs
+        \\  Cons x rest => x + sumList rest
+        \\  Nil => 0
+        \\fn main = sumList (map (\x -> x * 2) (Cons 1 (Cons 2 (Cons 3 Nil))))
+    );
+    try std.testing.expectEqual(@as(i64, 12), result);
+}
+
+test "runtime: list filter and sum" {
+    const result = try testRuntime(
+        \\type List a = Cons a (List a) | Nil
+        \\fn filter pred xs = match xs
+        \\  Cons x rest =>
+        \\    if pred x then Cons x (filter pred rest)
+        \\    else filter pred rest
+        \\  Nil => Nil
+        \\fn sumList xs = match xs
+        \\  Cons x rest => x + sumList rest
+        \\  Nil => 0
+        \\fn main = sumList (filter (\x -> x % 2 == 0) (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))))
+    );
+    try std.testing.expectEqual(@as(i64, 6), result);
+}
+
+test "runtime: compose functions" {
+    const result = try testRuntime(
+        \\fn compose f g x = f (g x)
+        \\fn double x = x * 2
+        \\fn inc x = x + 1
+        \\fn main = (compose inc double) 5
+    );
+    try std.testing.expectEqual(@as(i64, 11), result);
+}
+
+test "runtime: record field access" {
+    const result = try testRuntime(
+        \\type Point = { x : Int, y : Int }
+        \\fn main =
+        \\  let p = Point { x = 3, y = 4 }
+        \\  p.x + p.y
+    );
+    try std.testing.expectEqual(@as(i64, 7), result);
+}
+
+test "runtime: record operations" {
+    const result = try testRuntime(
+        \\type Point = { x : Int, y : Int }
+        \\fn dist_sq p1 p2 =
+        \\  let dx = p1.x - p2.x
+        \\  let dy = p1.y - p2.y
+        \\  dx * dx + dy * dy
+        \\fn main =
+        \\  let origin = Point { x = 0, y = 0 }
+        \\  let p1 = Point { x = 3, y = 4 }
+        \\  dist_sq origin p1
+    );
+    try std.testing.expectEqual(@as(i64, 25), result);
+}
+
+test "runtime: state machine with refs" {
+    const result = try testRuntime(
+        \\type State = Idle | Counting Int | Done
+        \\fn extract state = match state
+        \\  Counting v => v
+        \\  Done => 99
+        \\  Idle => 0
+        \\fn next_state current limit =
+        \\  let c = !current
+        \\  if c >= limit then Done
+        \\  else
+        \\    current := c + 1
+        \\    Counting (c + 1)
+        \\fn main =
+        \\  let current = ref 0
+        \\  let _a = next_state current 5
+        \\  let _b = next_state current 5
+        \\  let _c = next_state current 5
+        \\  extract (next_state current 5)
+    );
+    try std.testing.expectEqual(@as(i64, 4), result);
+}
+
+test "runtime: nested pattern with recursion (Succ Zero) 2-level" {
+    const result = try testRuntime(
+        \\type Nat = Succ Nat | Zero
+        \\fn count n = match n
+        \\  Succ Zero => 1
+        \\  Succ rest => 1 + count rest
+        \\  Zero => 0
+        \\fn main = count (Succ (Succ Zero))
+    );
+    try std.testing.expectEqual(@as(i64, 2), result);
+}
+
+test "runtime: edge case zero" {
+    const result = try testRuntime(
+        \\fn main = 0
+    );
+    try std.testing.expectEqual(@as(i64, 0), result);
+}
+
+test "runtime: edge case negative" {
+    const result = try testRuntime(
+        \\fn main = -42
+    );
+    try std.testing.expectEqual(@as(i64, -42), result);
+}
+
+test "runtime: edge case large multiplication" {
+    const result = try testRuntime(
+        \\fn main = 999 * 999
+    );
+    try std.testing.expectEqual(@as(i64, 998001), result);
+}
+
+test "runtime: edge case division" {
+    const result = try testRuntime(
+        \\fn main = 100 / 7
+    );
+    try std.testing.expectEqual(@as(i64, 14), result);
+}
+
+test "runtime: edge case modulo" {
+    const result = try testRuntime(
+        \\fn main = 100 % 7
+    );
+    try std.testing.expectEqual(@as(i64, 2), result);
+}
+
+test "runtime: edge case chained arithmetic" {
+    const result = try testRuntime(
+        \\fn main = 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10
+    );
+    try std.testing.expectEqual(@as(i64, 55), result);
+}
+
+test "runtime: deep recursion factorial 12" {
+    const result = try testRuntime(
+        \\fn fact n = if n <= 1 then 1 else n * fact (n - 1)
+        \\fn main = fact 12
+    );
+    try std.testing.expectEqual(@as(i64, 479001600), result);
+}
+
+test "runtime: mutual recursion even/odd" {
+    const result = try testRuntime(
+        \\fn is_even n = if n == 0 then 1 else is_odd (n - 1)
+        \\fn is_odd n = if n == 0 then 0 else is_even (n - 1)
+        \\fn main = is_even 100
+    );
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "runtime: nested if/else" {
+    const result = try testRuntime(
+        \\fn clamp lo hi x =
+        \\  if x < lo then lo
+        \\  else if x > hi then hi
+        \\  else x
+        \\fn main = clamp 0 10 15
+    );
+    try std.testing.expectEqual(@as(i64, 10), result);
+}
+
+test "runtime: higher-order function with closure" {
+    const result = try testRuntime(
+        \\fn makeMultiplier n = \x -> x * n
+        \\fn main = (makeMultiplier 3) 7
+    );
+    try std.testing.expectEqual(@as(i64, 21), result);
+}
+
+test "runtime: nested closures" {
+    const result = try testRuntime(
+        \\fn make_adder x = \y -> x + y
+        \\fn main = ((make_adder 10) 20) + ((make_adder 30) 12)
+    );
+    try std.testing.expectEqual(@as(i64, 72), result);
+}
+
+test "runtime: complex nested match" {
+    const result = try testRuntime(
+        \\type Maybe = Just Int | Nothing
+        \\fn from_just m = match m
+        \\  Just v => v
+        \\  Nothing => 0
+        \\fn double_just m = match m
+        \\  Just v => Just (v * 2)
+        \\  Nothing => Nothing
+        \\fn main = from_just (double_just (Just 21))
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: pipe with multiple functions" {
+    const result = try testRuntime(
+        \\fn add_one x = x + 1
+        \\fn double x = x * 2
+        \\fn square x = x * x
+        \\fn main = 5 |> add_one |> double |> square
+    );
+    try std.testing.expectEqual(@as(i64, 144), result);
+}
+
+test "runtime: chained comparison" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let a = 5
+        \\  let b = 10
+        \\  let c = 15
+        \\  if a < b then if b < c then 1 else 0 else 0
+    );
+    try std.testing.expectEqual(@as(i64, 1), result);
+}
+
+test "runtime: nested let with computation" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  let x = 5
+        \\  let y = x * x
+        \\  let z = y + x
+        \\  z * 2
+    );
+    try std.testing.expectEqual(@as(i64, 60), result);
+}
+
+test "runtime: if/else as expression" {
+    const result = try testRuntime(
+        \\fn abs x = if x >= 0 then x else -x
+        \\fn main = abs (-10)
+    );
+    try std.testing.expectEqual(@as(i64, 10), result);
+}
+
+test "runtime: complex tree with map" {
+    const result = try testRuntime(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_sum tree = match tree
+        \\  Branch left right => tree_sum left + tree_sum right
+        \\  Leaf n => n
+        \\fn tree_map f tree = match tree
+        \\  Leaf n => Leaf (f n)
+        \\  Branch left right => Branch (tree_map f left) (tree_map f right)
+        \\fn main =
+        \\  let tree = Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5)
+        \\  let doubled = tree_map (\x -> x * 2) tree
+        \\  tree_sum doubled
+    );
+    try std.testing.expectEqual(@as(i64, 18), result);
+}
+
+test "runtime: state machine transitions" {
+    const result = try testRuntime(
+        \\type State = Idle | Running Int | Done
+        \\fn step s = match s
+        \\  Idle => Running 1
+        \\  Running n => if n >= 3 then Done else Running (n + 1)
+        \\  Done => Done
+        \\fn run s n = if n == 0 then s else run (step s) (n - 1)
+        \\fn extract s = match s
+        \\  Running v => v
+        \\  Done => -1
+        \\  Idle => 0
+        \\fn main = extract (run Idle 5)
+    );
+    try std.testing.expectEqual(@as(i64, -1), result);
+}
