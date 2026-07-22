@@ -1,0 +1,34 @@
+# Immutability in Kō
+#
+# Values are immutable — once bound, they cannot change.
+# This is a core property of functional languages.
+
+# --- Basic immutability ---
+
+fn main =
+  let x = 42
+  println x               # 42
+  let x = x + 1           # new binding shadows old 'x'
+  println x               # 43
+
+  let y = 10
+  let y = y * 2
+  println y               # 20
+
+  let name = "Alice"
+  let greeting = String.append "Hello, " name
+  println greeting         # "Hello, Alice"
+
+  let result = countdown 5
+  println result           # 0
+
+  let a = 100
+  let b = transform a
+  println b                # 300
+
+fn countdown n =
+  if n == 0 then 0
+  else countdown (n - 1)
+
+fn transform x =
+  x * 3

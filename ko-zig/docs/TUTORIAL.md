@@ -42,6 +42,36 @@ fn main =
     println (x + y)       # 30
 ```
 
+### Immutability
+
+Values in Kō are **immutable** — once bound, they cannot change:
+
+```
+fn main =
+    let x = 42
+    x = 100    # ERROR: 'x' cannot be reassigned
+```
+
+To "update" a value, create a new binding that shadows the old one:
+
+```
+fn main =
+    let x = 42
+    println x            # 42
+    let x = x + 1        # new binding, shadows the old 'x'
+    println x            # 43
+```
+
+This is not mutation — the original `x` (42) still exists. The new `x` (43) is a separate binding. This pattern is common in functional programming:
+
+```
+fn countdown n =
+    if n == 0 then "done"
+    else countdown (n - 1)    # recursive call with new value
+```
+
+Immutability makes code easier to reason about — you never need to worry about a value changing unexpectedly.
+
 ## 4. Functions
 
 Define functions with `fn`:
