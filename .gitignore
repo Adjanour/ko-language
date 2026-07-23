@@ -16,6 +16,9 @@ ko-zig/.zig-cache/
 ko-zig/zig-out/
 ko-zig/zig-pkg/
 
+# Research papers (kept locally, not in git)
+ko-zig/docs/*.pdf
+
 # VS Code extension
 vscode-ko/ko-language-*.vsix
 vscode-ko/node_modules/
