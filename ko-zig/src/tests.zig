@@ -1967,3 +1967,908 @@ test "runtime: state machine transitions" {
     );
     try std.testing.expectEqual(@as(i64, -1), result);
 }
+
+// ──── HIR data structure tests ────
+
+const hir = @import("hir.zig");
+
+fn testIntType() typecheck.Type {
+    return .{ .int = {} };
+}
+
+test "hir: create literal expression" {
+    const int_ty = testIntType();
+    const expr = hir.HirExpr{
+        .id = 0,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .int = 42 },
+    };
+    try std.testing.expectEqual(@as(hir.HirId, 0), expr.id);
+    switch (expr.kind) {
+        .int => |val| try std.testing.expectEqual(@as(i64, 42), val),
+        else => @panic("expected int literal"),
+    }
+}
+
+test "hir: create let expression" {
+    const int_ty = testIntType();
+    const body = hir.HirExpr{
+        .id = 1,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .local = 0 },
+    };
+    _ = &body;
+    const value = hir.HirExpr{
+        .id = 2,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .int = 10 },
+    };
+    _ = &value;
+    const let_expr = hir.HirExpr{
+        .id = 3,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .let = .{ .name = 0, .value = 2, .body = 1 } },
+    };
+    const kind = let_expr.kind;
+    switch (kind) {
+        .let => |l| {
+            try std.testing.expectEqual(@as(hir.LocalVarId, 0), l.name);
+            try std.testing.expectEqual(@as(hir.HirId, 2), l.value);
+            try std.testing.expectEqual(@as(hir.HirId, 1), l.body);
+        },
+        else => @panic("expected let"),
+    }
+}
+
+test "hir: create lambda expression" {
+    const int_ty = testIntType();
+    const body = hir.HirExpr{
+        .id = 4,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .local = 1 },
+    };
+    _ = &body;
+    const lam = hir.HirExpr{
+        .id = 5,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .lambda = .{ .params = &.{1}, .body = 4, .captures = &.{} } },
+    };
+    switch (lam.kind) {
+        .lambda => |l| {
+            try std.testing.expectEqual(@as(usize, 1), l.params.len);
+            try std.testing.expectEqual(@as(hir.LocalVarId, 1), l.params[0]);
+            try std.testing.expectEqual(@as(hir.HirId, 4), l.body);
+        },
+        else => @panic("expected lambda"),
+    }
+}
+
+test "hir: create match expression" {
+    const int_ty = testIntType();
+    const scrutinee = hir.HirExpr{ .id = 6, .ty = &int_ty, .span = .{}, .kind = .{ .local = 0 } };
+    const arm_body = hir.HirExpr{ .id = 7, .ty = &int_ty, .span = .{}, .kind = .{ .int = 1 } };
+    _ = .{ &scrutinee, &arm_body };
+    const arm = hir.MatchArm{
+        .pattern = hir.Pattern{ .wildcard = {} },
+        .guard = null,
+        .body = 7,
+    };
+    const match_expr = hir.HirExpr{
+        .id = 8,
+        .ty = &int_ty,
+        .span = .{},
+        .kind = .{ .match = .{ .scrutinee = 6, .arms = &.{arm} } },
+    };
+    switch (match_expr.kind) {
+        .match => |m| {
+            try std.testing.expectEqual(@as(hir.HirId, 6), m.scrutinee);
+            try std.testing.expectEqual(@as(usize, 1), m.arms.len);
+            try std.testing.expect(m.arms[0].guard == null);
+        },
+        else => @panic("expected match"),
+    }
+}
+
+test "hir: pattern variants" {
+    const wild = hir.Pattern{ .wildcard = {} };
+    const bind = hir.Pattern{ .bind = 0 };
+    const lit = hir.Pattern{ .literal = .{ .int = 5 } };
+    const ctor = hir.Pattern{
+        .constructor = .{
+            .type_name = "Bool",
+            .ctor_name = "True",
+            .args = &.{},
+        },
+    };
+    const record = hir.Pattern{
+        .record = .{ .fields = &.{}, .rest = false },
+    };
+
+    try std.testing.expectEqual(@as(usize, 0), @intFromEnum(std.meta.activeTag(wild)));
+    try std.testing.expect(wild == .wildcard);
+    try std.testing.expect(bind == .bind);
+    try std.testing.expect(lit == .literal);
+    try std.testing.expect(ctor == .constructor);
+    try std.testing.expect(record == .record);
+}
+
+test "hir: primop variants" {
+    try std.testing.expectEqual(hir.PrimOp.add, @as(hir.PrimOp, .add));
+    try std.testing.expectEqual(hir.PrimOp.sub, .sub);
+    try std.testing.expectEqual(hir.PrimOp.and_, .and_);
+    try std.testing.expectEqual(hir.PrimOp.or_, .or_);
+    try std.testing.expectEqual(hir.PrimOp.not_, .not_);
+    try std.testing.expectEqual(hir.PrimOp.concat, .concat);
+}
+
+// ──── HIR lowering tests ────
+
+const hir_lower = @import("hir_lower.zig");
+
+test "hir_lower: integer literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    try std.testing.expect(lower.expressions.items.len > 0);
+}
+
+test "hir_lower: string literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = \"hello\"";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    try std.testing.expect(lower.expressions.items.len > 0);
+}
+
+test "hir_lower: let expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = let x = 42\n  x";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var found_let = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .let) found_let = true;
+    }
+    try std.testing.expect(found_let);
+}
+
+test "hir_lower: binary operation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 1 + 2";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var found_primop = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .primop) found_primop = true;
+    }
+    try std.testing.expect(found_primop);
+}
+
+test "hir_lower: if expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = if True then 1 else 2";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var found_if = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .if_) found_if = true;
+    }
+    try std.testing.expect(found_if);
+}
+
+// ──── HIR constant folding tests ────
+
+const hir_fold = @import("hir_fold.zig");
+
+test "hir_fold: addition" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 1 + 2";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var found_folded = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .int and e.kind.int == 3) found_folded = true;
+    }
+    try std.testing.expect(found_folded);
+}
+
+test "hir_fold: comparison" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 3 > 5";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var found_folded = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .bool and !e.kind.bool) found_folded = true;
+    }
+    try std.testing.expect(found_folded);
+}
+
+test "hir_fold: let propagation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = let x = 1 + 2\n  x";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var any_local = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .local) any_local = true;
+    }
+    try std.testing.expect(!any_local);
+}
+
+test "hir_fold: nested binary ops" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = (1 + 2) * (3 + 4)";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var found_folded = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .int and e.kind.int == 21) found_folded = true;
+    }
+    try std.testing.expect(found_folded);
+}
+
+test "hir_fold: if folding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = if True then 42 else 99";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var found_folded = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .int and e.kind.int == 42) found_folded = true;
+    }
+    try std.testing.expect(found_folded);
+}
+
+test "hir_fold: niladic propagation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = (1 + 2) * (3 + 4)";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var found_folded = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .int and e.kind.int == 21) found_folded = true;
+    }
+    try std.testing.expect(found_folded);
+}
+
+// ──── HIR DCE tests ────
+
+const hir_dce = @import("hir_dce.zig");
+
+test "hir_dce: all live in simple program" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var dce = hir_dce.HirDce.init(allocator, &lower.expressions);
+    dce.run(lower.roots.items);
+    for (lower.expressions.items) |e| {
+        try std.testing.expect(e.live);
+    }
+}
+
+test "hir_dce: dead after folding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 1 + 2";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var fold = hir_fold.HirFold.init(allocator, &lower.expressions);
+    defer fold.deinit();
+    fold.run();
+    var dce = hir_dce.HirDce.init(allocator, &lower.expressions);
+    dce.run(lower.roots.items);
+    for (lower.expressions.items) |e| {
+        switch (e.kind) {
+            .int => |v| {
+                if (v == 1 or v == 2) try std.testing.expect(!e.live);
+                if (v == 3) try std.testing.expect(e.live);
+            },
+            .lambda => try std.testing.expect(e.live),
+            else => {},
+        }
+    }
+}
+
+// ──── LIR data structure tests ────
+
+const lir = @import("lir.zig");
+
+test "lir: create LirType variants" {
+    const int_ty = lir.LirType{ .int = {} };
+    const float_ty = lir.LirType{ .float = {} };
+    const bool_ty = lir.LirType{ .bool = {} };
+    const char_ty = lir.LirType{ .char = {} };
+    const string_ty = lir.LirType{ .string = {} };
+    const unit_ty = lir.LirType{ .unit = {} };
+    const opaque_ty = lir.LirType{ .opaque_type = {} };
+    _ = .{ &int_ty, &float_ty, &bool_ty, &char_ty, &string_ty, &unit_ty, &opaque_ty };
+
+    try std.testing.expect(int_ty == .int);
+    try std.testing.expect(float_ty == .float);
+    try std.testing.expect(bool_ty == .bool);
+    try std.testing.expect(char_ty == .char);
+    try std.testing.expect(string_ty == .string);
+    try std.testing.expect(unit_ty == .unit);
+    try std.testing.expect(opaque_ty == .opaque_type);
+}
+
+test "lir: create function type" {
+    const ret_ty = lir.LirType{ .int = {} };
+    const param_ty = lir.LirType{ .int = {} };
+    const fn_type = lir.LirFnType{
+        .params = &.{param_ty},
+        .returns = ret_ty,
+    };
+    _ = &fn_type;
+    try std.testing.expectEqual(@as(usize, 1), fn_type.params.len);
+    try std.testing.expect(fn_type.params[0] == .int);
+}
+
+test "lir: function in LirType" {
+    const ret_ty = lir.LirType{ .int = {} };
+    const fn_type = lir.LirFnType{ .params = &.{}, .returns = ret_ty };
+    const boxed = try std.testing.allocator.create(lir.LirFnType);
+    defer std.testing.allocator.destroy(boxed);
+    boxed.* = fn_type;
+    const ty = lir.LirType{ .function = boxed };
+    try std.testing.expect(ty == .function);
+}
+
+test "lir: create basic block" {
+    const block = lir.BasicBlock{
+        .id = 0,
+        .params = &.{},
+        .body = &.{},
+        .terminator = .{ .unreachable_ = {} },
+    };
+    _ = &block;
+    try std.testing.expectEqual(@as(lir.BlockId, 0), block.id);
+    try std.testing.expect(block.terminator == .unreachable_);
+}
+
+test "lir: create LirValue variants" {
+    const int_val = lir.LirValue{ .int = 42 };
+    const local_val = lir.LirValue{ .local = 0 };
+    const ret_ty = lir.LirType{ .int = {} };
+    const call_fn_type = try std.testing.allocator.create(lir.LirFnType);
+    defer std.testing.allocator.destroy(call_fn_type);
+    call_fn_type.* = .{ .params = &.{ret_ty}, .returns = ret_ty };
+    const call_val = lir.LirValue{
+        .call = .{
+            .func = 0,
+            .args = &.{1},
+            .fn_type = call_fn_type.*,
+        },
+    };
+    _ = .{ &int_val, &local_val, &call_val };
+
+    try std.testing.expect(int_val == .int);
+    try std.testing.expect(local_val == .local);
+    try std.testing.expect(call_val == .call);
+}
+
+test "lir: create LirFn" {
+    const lir_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = lir.LirType{ .int = {} },
+        .blocks = &.{},
+        .locals = &.{},
+    };
+    _ = &lir_fn;
+    try std.testing.expectEqualStrings("main", lir_fn.name);
+    try std.testing.expect(lir_fn.return_type == .int);
+}
+
+test "lir: terminator variants" {
+    const br = lir.LirTerminator{ .br = .{ .target = 1, .args = &.{0} } };
+    const ret = lir.LirTerminator{ .ret = 0 };
+    const unreach = lir.LirTerminator{ .unreachable_ = {} };
+    _ = .{ &br, &ret, &unreach };
+
+    try std.testing.expect(br == .br);
+    try std.testing.expectEqual(@as(lir.BlockId, 1), br.br.target);
+    try std.testing.expectEqual(@as(usize, 1), br.br.args.len);
+    try std.testing.expect(ret == .ret);
+    try std.testing.expect(unreach == .unreachable_);
+}
+
+test "lir: store and assign statements" {
+    const assign = lir.LirStmt{
+        .assign = .{
+            .dest = 0,
+            .value = .{ .int = 10 },
+        },
+    };
+    const store = lir.LirStmt{
+        .store = .{
+            .dest = 1,
+            .value = 0,
+        },
+    };
+    _ = .{ &assign, &store };
+
+    try std.testing.expect(assign == .assign);
+    try std.testing.expect(store == .store);
+}
+
+// ──── LIR → LLVM codegen tests ────
+
+const codegen_lir = @import("codegen_lir.zig");
+const llvm = @import("llvm");
+
+fn runLirProgram(allocator: std.mem.Allocator, fns: []const lir.LirFn, with_runtime: bool) !i64 {
+    var cg = codegen_lir.CodegenLir.init(allocator, "test_lir");
+    defer cg.deinit();
+    if (with_runtime) cg.declareRuntime();
+    try cg.codegenProgram(fns);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    return try jit.runMain();
+}
+
+test "codegen_lir: LirType to LLVM type mapping" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var cg = codegen_lir.CodegenLir.init(a, "test_lir_types");
+    defer cg.deinit();
+
+    const int_ty = try cg.lirType(.{ .int = {} });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(int_ty) == .LLVMIntegerTypeKind);
+    try std.testing.expectEqual(@as(c_uint, 64), llvm.core.LLVMGetIntTypeWidth(int_ty));
+
+    const float_ty = try cg.lirType(.{ .float = {} });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(float_ty) == .LLVMDoubleTypeKind);
+
+    const bool_ty = try cg.lirType(.{ .bool = {} });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(bool_ty) == .LLVMIntegerTypeKind);
+    try std.testing.expectEqual(@as(c_uint, 1), llvm.core.LLVMGetIntTypeWidth(bool_ty));
+
+    const ptr_ty = try cg.lirType(.{ .string = {} });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(ptr_ty) == .LLVMPointerTypeKind);
+
+    const struct_ty = try cg.lirType(.{ .struct_ = &.{ .{ .int = {} }, .{ .bool = {} } } });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(struct_ty) == .LLVMStructTypeKind);
+
+    const elem = lir.LirType{ .int = {} };
+    const array_ty = try cg.lirType(.{ .array = .{ .elem = &elem, .len = 4 } });
+    try std.testing.expect(llvm.core.LLVMGetTypeKind(array_ty) == .LLVMArrayTypeKind);
+}
+
+test "codegen_lir: constant return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{.{ .int = {} }},
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{.{ .assign = .{ .dest = 0, .value = .{ .int = 42 } } }},
+            .terminator = .{ .ret = 0 },
+        }},
+    };
+    const result = try runLirProgram(a, &.{main_fn}, false);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: cond_br with block arguments (phi)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // if 1 < 2 then 40 else 2, threaded through a block parameter
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .int = {} }, .{ .bool = {} }, .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{
+            .{
+                .id = 0,
+                .params = &.{},
+                .body = &.{
+                    .{ .assign = .{ .dest = 0, .value = .{ .int = 1 } } },
+                    .{ .assign = .{ .dest = 1, .value = .{ .int = 2 } } },
+                    .{ .assign = .{ .dest = 2, .value = .{ .primop = .{ .op = .lt, .args = &.{ 0, 1 } } } } },
+                    .{ .assign = .{ .dest = 3, .value = .{ .int = 40 } } },
+                    .{ .assign = .{ .dest = 4, .value = .{ .int = 2 } } },
+                },
+                .terminator = .{ .cond_br = .{
+                    .cond = 2,
+                    .then = .{ .target = 1, .args = &.{3} },
+                    .else_ = .{ .target = 1, .args = &.{4} },
+                } },
+            },
+            .{
+                .id = 1,
+                .params = &.{5},
+                .body = &.{},
+                .terminator = .{ .ret = 5 },
+            },
+        },
+    };
+    const result = try runLirProgram(a, &.{main_fn}, false);
+    try std.testing.expectEqual(@as(i64, 40), result);
+}
+
+test "codegen_lir: switch terminator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // switch 2 { 0 => 10, 1 => 20, 2 => 42, default => 0 }
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{
+            .{
+                .id = 0,
+                .params = &.{},
+                .body = &.{.{ .assign = .{ .dest = 0, .value = .{ .int = 2 } } }},
+                .terminator = .{ .switch_ = .{
+                    .val = 0,
+                    .cases = &.{
+                        .{ .tag = 0, .target = .{ .target = 1 } },
+                        .{ .tag = 1, .target = .{ .target = 2 } },
+                        .{ .tag = 2, .target = .{ .target = 3 } },
+                    },
+                    .default = .{ .target = 4 },
+                } },
+            },
+            .{ .id = 1, .params = &.{}, .body = &.{.{ .assign = .{ .dest = 1, .value = .{ .int = 10 } } }}, .terminator = .{ .ret = 1 } },
+            .{ .id = 2, .params = &.{}, .body = &.{.{ .assign = .{ .dest = 2, .value = .{ .int = 20 } } }}, .terminator = .{ .ret = 2 } },
+            .{ .id = 3, .params = &.{}, .body = &.{.{ .assign = .{ .dest = 3, .value = .{ .int = 42 } } }}, .terminator = .{ .ret = 3 } },
+            .{ .id = 4, .params = &.{}, .body = &.{.{ .assign = .{ .dest = 4, .value = .{ .int = 0 } } }}, .terminator = .{ .ret = 4 } },
+        },
+    };
+    const result = try runLirProgram(a, &.{main_fn}, false);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: direct call via fn_ref" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // add1(x) = x + 1 ; main = add1(41)
+    const add1_ft = lir.LirFnType{ .params = &.{.{ .int = {} }}, .returns = .{ .int = {} } };
+    const add1_fn = lir.LirFn{
+        .name = "add1",
+        .params = &.{0},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 1, .value = .{ .int = 1 } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .primop = .{ .op = .add, .args = &.{ 0, 1 } } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .function = &add1_ft }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 0, .value = .{ .int = 41 } } },
+                .{ .assign = .{ .dest = 1, .value = .{ .fn_ref = "add1" } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .call = .{ .func = 1, .args = &.{0}, .fn_type = add1_ft } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const result = try runLirProgram(a, &.{ add1_fn, main_fn }, false);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: tail_call terminator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // add1(x) = x + 1 ; wrap(x) = tail_call add1(x) ; main = wrap(41)
+    const add1_ft = lir.LirFnType{ .params = &.{.{ .int = {} }}, .returns = .{ .int = {} } };
+    const add1_fn = lir.LirFn{
+        .name = "add1",
+        .params = &.{0},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 1, .value = .{ .int = 1 } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .primop = .{ .op = .add, .args = &.{ 0, 1 } } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const wrap_fn = lir.LirFn{
+        .name = "wrap",
+        .params = &.{0},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .function = &add1_ft } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{.{ .assign = .{ .dest = 1, .value = .{ .fn_ref = "add1" } } }},
+            .terminator = .{ .tail_call = .{ .func = 1, .args = &.{0}, .fn_type = add1_ft } },
+        }},
+    };
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .function = &add1_ft }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 0, .value = .{ .int = 41 } } },
+                .{ .assign = .{ .dest = 1, .value = .{ .fn_ref = "wrap" } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .call = .{ .func = 1, .args = &.{0}, .fn_type = add1_ft } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const result = try runLirProgram(a, &.{ add1_fn, wrap_fn, main_fn }, false);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: integer primops" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // main = 6 * 7
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 0, .value = .{ .int = 6 } } },
+                .{ .assign = .{ .dest = 1, .value = .{ .int = 7 } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .primop = .{ .op = .mul, .args = &.{ 0, 1 } } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const result = try runLirProgram(a, &.{main_fn}, false);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: alloc + is_unique + incref/decref roundtrip" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // p = alloc({i64}); u = is_unique(p); incref/decref/decref frees p;
+    // return u ? 42 : 0 — exercises the real ko_alloc/ko_incref/ko_decref.
+    const cell_ty = lir.LirType{ .struct_ = &.{.{ .int = {} }} };
+    const cell_ptr_ty = lir.LirType{ .ptr = &cell_ty };
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ cell_ptr_ty, .{ .bool = {} }, .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+        .blocks = &.{
+            .{
+                .id = 0,
+                .params = &.{},
+                .body = &.{
+                    .{ .assign = .{ .dest = 0, .value = .{ .alloc = cell_ty } } },
+                    .{ .assign = .{ .dest = 1, .value = .{ .is_unique = 0 } } },
+                    .{ .assign = .{ .dest = 2, .value = .{ .int = 42 } } },
+                    .{ .assign = .{ .dest = 3, .value = .{ .int = 0 } } },
+                    .{ .effect = .{ .incref = 0 } },
+                    .{ .effect = .{ .decref = 0 } },
+                    .{ .effect = .{ .decref = 0 } },
+                },
+                .terminator = .{ .cond_br = .{
+                    .cond = 1,
+                    .then = .{ .target = 1, .args = &.{2} },
+                    .else_ = .{ .target = 1, .args = &.{3} },
+                } },
+            },
+            .{
+                .id = 1,
+                .params = &.{4},
+                .body = &.{},
+                .terminator = .{ .ret = 4 },
+            },
+        },
+    };
+    const result = try runLirProgram(a, &.{main_fn}, true);
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "codegen_lir: string constant + runtime call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // main = ko_string_length("hello") — string literal plus a call into
+    // the runtime emitted by declareRuntime.
+    const strlen_ft = lir.LirFnType{ .params = &.{.{ .string = {} }}, .returns = .{ .int = {} } };
+    const main_fn = lir.LirFn{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .locals = &.{ .{ .string = {} }, .{ .function = &strlen_ft }, .{ .int = {} } },
+        .blocks = &.{.{
+            .id = 0,
+            .params = &.{},
+            .body = &.{
+                .{ .assign = .{ .dest = 0, .value = .{ .string = .{ .ptr = "hello", .len = 5 } } } },
+                .{ .assign = .{ .dest = 1, .value = .{ .fn_ref = "ko_string_length" } } },
+                .{ .assign = .{ .dest = 2, .value = .{ .call = .{ .func = 1, .args = &.{0}, .fn_type = strlen_ft } } } },
+            },
+            .terminator = .{ .ret = 2 },
+        }},
+    };
+    const result = try runLirProgram(a, &.{main_fn}, true);
+    try std.testing.expectEqual(@as(i64, 5), result);
+}

@@ -145,6 +145,7 @@ pub const Inferer = struct {
     current_loc: ?parser.Loc = null,
     doc_comments: std.StringHashMap([]const []const u8),
     expr_type_tags: std.AutoHashMap(*const parser.Expr, i64),
+    expr_types: std.AutoHashMap(*const parser.Expr, *Type),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
 
@@ -162,6 +163,7 @@ pub const Inferer = struct {
             .last_error = null,
             .doc_comments = std.StringHashMap([]const []const u8).init(allocator),
             .expr_type_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
+            .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
         };
@@ -187,6 +189,7 @@ pub const Inferer = struct {
         self.type_ids.deinit();
         self.doc_comments.deinit();
         self.expr_type_tags.deinit();
+        self.expr_types.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
     }
@@ -201,7 +204,7 @@ pub const Inferer = struct {
         return null;
     }
 
-    fn newType(self: *Inferer, ty: Type) Error!*Type {
+    pub fn newType(self: *Inferer, ty: Type) Error!*Type {
         const ptr = try self.allocator.create(Type);
         ptr.* = ty;
         return ptr;
@@ -251,6 +254,7 @@ pub const Inferer = struct {
 
     fn recordExprType(self: *Inferer, expr: *const parser.Expr, ty: *Type) void {
         self.expr_type_tags.put(expr, self.typeToTag(ty)) catch {};
+        self.expr_types.put(expr, ty) catch {};
     }
 
     fn occurs(self: *Inferer, tv: *TypeVar, ty: *Type) bool {
