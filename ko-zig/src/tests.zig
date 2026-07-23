@@ -2872,3 +2872,236 @@ test "codegen_lir: string constant + runtime call" {
     const result = try runLirProgram(a, &.{main_fn}, true);
     try std.testing.expectEqual(@as(i64, 5), result);
 }
+
+// ──── HIR → LIR lowering tests (full pipeline, differential vs legacy) ────
+
+const lir_lower = @import("lir_lower.zig");
+
+fn testRuntimeLir(source: [:0]const u8) !i64 {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var hl = hir_lower.HirLower.init(allocator, &inferer);
+    defer hl.deinit();
+    try hl.lowerProgram(&prog);
+    var ll = lir_lower.LirLower.init(allocator, hl.expressions.items, hl.defs.items, &inferer);
+    defer ll.deinit();
+    const fns = try ll.lowerProgram();
+    var cg = codegen_lir.CodegenLir.init(allocator, "test_lir_lower");
+    defer cg.deinit();
+    cg.declareRuntime();
+    try cg.codegenProgram(fns);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    return try jit.runMain();
+}
+
+/// Compile and run the same source through the legacy AST→LLVM path and the
+/// new HIR→LIR→LLVM path; results must match.
+fn expectLirMatchesLegacy(source: [:0]const u8) !void {
+    const legacy = try testRuntime(source);
+    const via_lir = try testRuntimeLir(source);
+    try std.testing.expectEqual(legacy, via_lir);
+}
+
+test "lir_lower: integer literal" {
+    try expectLirMatchesLegacy("fn main = 42");
+}
+
+test "lir_lower: arithmetic primops" {
+    try expectLirMatchesLegacy("fn main = 1 + 2 * 3 - 4 / 2");
+}
+
+test "lir_lower: nested let with computation" {
+    try expectLirMatchesLegacy(
+        \\fn main =
+        \\  let x = 5
+        \\  let y = x * x
+        \\  let z = y + x
+        \\  z * 2
+    );
+}
+
+test "lir_lower: if expression with comparison" {
+    try expectLirMatchesLegacy(
+        \\fn abs x = if x >= 0 then x else -x
+        \\fn main = abs (-10)
+    );
+}
+
+test "lir_lower: chained comparison" {
+    try expectLirMatchesLegacy(
+        \\fn main =
+        \\  let a = 5
+        \\  let b = 10
+        \\  let c = 15
+        \\  if a < b then if b < c then 1 else 0 else 0
+    );
+}
+
+test "lir_lower: pipe with multiple functions" {
+    try expectLirMatchesLegacy(
+        \\fn add_one x = x + 1
+        \\fn double x = x * 2
+        \\fn square x = x * x
+        \\fn main = 5 |> add_one |> double |> square
+    );
+}
+
+test "lir_lower: recursion (fib)" {
+    try expectLirMatchesLegacy(
+        \\fn fib n = if n <= 1 then n else fib (n - 1) + fib (n - 2)
+        \\fn main = fib 15
+    );
+}
+
+test "lir_lower: lambda applied directly" {
+    try expectLirMatchesLegacy(
+        \\fn apply f x = f x
+        \\fn main = apply (\y -> y * 2) 21
+    );
+}
+
+test "lir_lower: curried two-param lambda" {
+    try expectLirMatchesLegacy(
+        \\fn main =
+        \\  let add = \x y -> x + y
+        \\  add 20 22
+    );
+}
+
+test "lir_lower: closure capturing a variable" {
+    try expectLirMatchesLegacy(
+        \\fn make_adder x = \y -> x + y
+        \\fn main =
+        \\  let add5 = make_adder 5
+        \\  add5 37
+    );
+}
+
+test "lir_lower: higher-order function" {
+    try expectLirMatchesLegacy(
+        \\fn twice f x = f (f x)
+        \\fn main = twice (\n -> n + 1) 40
+    );
+}
+
+test "lir_lower: global function passed as value" {
+    try expectLirMatchesLegacy(
+        \\fn add_one x = x + 1
+        \\fn twice f x = f (f x)
+        \\fn main = twice add_one 40
+    );
+}
+
+test "lir_lower: ADT construction and match" {
+    try expectLirMatchesLegacy(
+        \\type Maybe = Just Int | Nothing
+        \\fn from_just m = match m
+        \\  Just v => v
+        \\  Nothing => 0
+        \\fn main = from_just (Just 42)
+    );
+}
+
+test "lir_lower: nested match with computation" {
+    try expectLirMatchesLegacy(
+        \\type Maybe = Just Int | Nothing
+        \\fn from_just m = match m
+        \\  Just v => v
+        \\  Nothing => 0
+        \\fn double_just m = match m
+        \\  Just v => Just (v * 2)
+        \\  Nothing => Nothing
+        \\fn main = from_just (double_just (Just 21))
+    );
+}
+
+test "lir_lower: recursive ADT (tree sum)" {
+    try expectLirMatchesLegacy(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_sum tree = match tree
+        \\  Branch left right => tree_sum left + tree_sum right
+        \\  Leaf n => n
+        \\fn main = tree_sum (Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5))
+    );
+}
+
+test "lir_lower: tree map with lambda" {
+    try expectLirMatchesLegacy(
+        \\type Tree = Branch Tree Tree | Leaf Int
+        \\fn tree_sum tree = match tree
+        \\  Branch left right => tree_sum left + tree_sum right
+        \\  Leaf n => n
+        \\fn tree_map f tree = match tree
+        \\  Leaf n => Leaf (f n)
+        \\  Branch left right => Branch (tree_map f left) (tree_map f right)
+        \\fn main =
+        \\  let tree = Branch (Branch (Leaf 1) (Leaf 3)) (Leaf 5)
+        \\  let doubled = tree_map (\x -> x * 2) tree
+        \\  tree_sum doubled
+    );
+}
+
+test "lir_lower: state machine transitions" {
+    try expectLirMatchesLegacy(
+        \\type State = Idle | Running Int | Done
+        \\fn step s = match s
+        \\  Idle => Running 1
+        \\  Running n => if n >= 3 then Done else Running (n + 1)
+        \\  Done => Done
+        \\fn run s n = if n == 0 then s else run (step s) (n - 1)
+        \\fn extract s = match s
+        \\  Running v => v
+        \\  Done => -1
+        \\  Idle => 0
+        \\fn main = extract (run Idle 5)
+    );
+}
+
+test "lir_lower: wildcard and literal patterns" {
+    // NOTE: the legacy path falls through literal patterns to the wildcard
+    // (300) — a legacy match bug. The LIR path matches literals correctly
+    // (200), so assert directly.
+    try std.testing.expectEqual(@as(i64, 200), try testRuntimeLir(
+        \\fn classify n = match n
+        \\  0 => 100
+        \\  1 => 200
+        \\  _ => 300
+        \\fn main = classify 1
+    ));
+}
+
+test "lir_lower: tuple construction and pattern" {
+    // NOTE: legacy match fails to register tuple-pattern binds
+    // (UndefinedVariable in the legacy codegen) — assert the LIR result.
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\fn main =
+        \\  let t = (20, 22)
+        \\  match t
+        \\  (a, b) => a + b
+    ));
+}
+
+test "lir_lower: mutable ref" {
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\fn main =
+        \\  let r = ref 41
+        \\  r := !r + 1
+        \\  !r
+    ));
+}
+
+test "lir_lower: string length via stdlib" {
+    try std.testing.expectEqual(@as(i64, 11), try testRuntimeLir(
+        \\fn main = String.length "hello world"
+    ));
+}

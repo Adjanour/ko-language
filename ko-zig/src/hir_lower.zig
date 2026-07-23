@@ -3,11 +3,37 @@ const ast = @import("ast.zig");
 const hir = @import("hir.zig");
 const typecheck = @import("typecheck.zig");
 
+/// A top-level function definition, recorded for downstream lowering
+/// (the root is the lambda expression wrapping the function body).
+pub const HirFnDef = struct {
+    name: []const u8,
+    root: hir.HirId,
+    arity: usize,
+};
+
+pub const HirCtorDecl = struct {
+    name: []const u8,
+    arity: usize,
+};
+
+pub const HirTypeDef = struct {
+    name: []const u8,
+    ctors: []const HirCtorDecl,
+};
+
+/// Top-level definition table entry, in source order.
+pub const HirDef = union(enum) {
+    fn_def: HirFnDef,
+    let_binding: struct { name: []const u8, root: hir.HirId },
+    type_def: HirTypeDef,
+};
+
 pub const HirLower = struct {
     allocator: std.mem.Allocator,
     inferer: *typecheck.Inferer,
     expressions: std.ArrayList(hir.HirExpr),
     roots: std.ArrayList(hir.HirId),
+    defs: std.ArrayList(HirDef),
     next_id: hir.HirId,
     scopes: std.ArrayList(Scope),
     next_local: hir.LocalVarId,
@@ -20,6 +46,7 @@ pub const HirLower = struct {
             .inferer = inferer,
             .expressions = .empty,
             .roots = .empty,
+            .defs = .empty,
             .next_id = 0,
             .scopes = .empty,
             .next_local = 0,
@@ -29,6 +56,7 @@ pub const HirLower = struct {
     pub fn deinit(self: *HirLower) void {
         for (self.scopes.items) |*s| s.deinit();
         self.scopes.deinit(self.allocator);
+        self.defs.deinit(self.allocator);
         self.roots.deinit(self.allocator);
         self.expressions.deinit(self.allocator);
     }
@@ -60,20 +88,44 @@ pub const HirLower = struct {
                 }
                 const body_id = try self.lowerExpr(fd.body);
                 const fd_ty = self.inferer.expr_types.get(fd.body) orelse @panic("fn body type not found");
-                _ = try self.allocExpr(.{
+                const root = try self.allocExpr(.{
                     .lambda = .{
                         .params = try param_ids.toOwnedSlice(self.allocator),
                         .body = body_id,
                         .captures = &.{},
                     },
                 }, fd_ty, fd.body);
+                try self.defs.append(self.allocator, .{ .fn_def = .{
+                    .name = fd.name,
+                    .root = root,
+                    .arity = fd.params.len,
+                } });
             },
-            .type_def => {},
+            .type_def => |td| {
+                var ctors: std.ArrayList(HirCtorDecl) = .empty;
+                defer ctors.deinit(self.allocator);
+                switch (td.body) {
+                    .sum => |cs| {
+                        for (cs) |c| {
+                            try ctors.append(self.allocator, .{ .name = c.name, .arity = c.params.len });
+                        }
+                    },
+                    .record => {},
+                }
+                try self.defs.append(self.allocator, .{ .type_def = .{
+                    .name = td.name,
+                    .ctors = try ctors.toOwnedSlice(self.allocator),
+                } });
+            },
             .let_binding => |lb| {
                 const val_id = try self.lowerExpr(lb.value);
                 const lb_ty = self.inferer.expr_types.get(lb.value) orelse
                     @panic("let binding type not found");
-                _ = try self.allocExpr(.{ .let = .{ .name = 0, .value = val_id, .body = 0 } }, lb_ty, lb.value);
+                const root = try self.allocExpr(.{ .let = .{ .name = 0, .value = val_id, .body = 0 } }, lb_ty, lb.value);
+                try self.defs.append(self.allocator, .{ .let_binding = .{
+                    .name = lb.name,
+                    .root = root,
+                } });
             },
             .import => {},
             .package => {},
@@ -165,6 +217,11 @@ pub const HirLower = struct {
             },
             .unary_op => |uop| {
                 const inner_id = try self.lowerExpr(uop.expr);
+                switch (uop.op) {
+                    .deref => return self.allocExpr(.{ .deref = inner_id }, ty, expr),
+                    .ref => return self.allocExpr(.{ .ref = inner_id }, ty, expr),
+                    else => {},
+                }
                 const op = astUnaryToPrimOp(uop.op);
                 const args = try self.allocator.alloc(hir.HirId, 1);
                 args[0] = inner_id;
@@ -200,9 +257,14 @@ pub const HirLower = struct {
                 var arms: std.ArrayList(hir.MatchArm) = .empty;
                 defer arms.deinit(self.allocator);
                 for (m.arms) |arm| {
+                    // Pattern first (it introduces binds into scope), then the
+                    // body — and each arm gets its own scope so binds don't leak.
+                    self.pushScope();
+                    const pat = try self.lowerPattern(&arm.pattern);
                     const body_id = try self.lowerExpr(arm.body);
+                    self.popScope();
                     try arms.append(self.allocator, .{
-                        .pattern = try self.lowerPattern(&arm.pattern),
+                        .pattern = pat,
                         .guard = null,
                         .body = body_id,
                     });
@@ -229,14 +291,10 @@ pub const HirLower = struct {
     }
 
     fn lowerFnCall(self: *HirLower, func_id: hir.HirId, args: []const hir.HirId, ty: *const typecheck.Type, expr: *const ast.Expr) !hir.HirId {
-        if (args.len == 1) {
-            return self.allocExpr(.{ .apply = .{ .func = func_id, .arg = args[0] } }, ty, expr);
-        }
-        var cur = try self.allocExpr(.{ .apply = .{ .func = func_id, .arg = args[args.len - 1] } }, ty, expr);
-        var i: usize = args.len - 1;
-        while (i > 0) {
-            i -= 1;
-            cur = try self.allocExpr(.{ .apply = .{ .func = cur, .arg = args[i] } }, ty, expr);
+        // Build the left-associative spine in source order: ((f a) b).
+        var cur = func_id;
+        for (args) |arg| {
+            cur = try self.allocExpr(.{ .apply = .{ .func = cur, .arg = arg } }, ty, expr);
         }
         return cur;
     }

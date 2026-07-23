@@ -216,7 +216,7 @@ pub const CodegenLir = struct {
         // Pass A: create all basic blocks.
         for (lfn.blocks) |blk| {
             var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrintZ(&name_buf, "b{d}", .{blk.id}) catch "block";
+            const name = std.fmt.bufPrintZ(&name_buf, "bb{d}", .{blk.id}) catch "block";
             const bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, name);
             try self.blocks.put(blk.id, bb);
         }
@@ -322,6 +322,18 @@ pub const CodegenLir = struct {
                 const v = self.locals.get(it.val) orelse return error.UndefinedLocal;
                 break :blk core.LLVMBuildIntToPtr(self.builder, v, try self.lirType(it.ty), "i2p");
             },
+            .zext => |c| blk: {
+                const v = self.locals.get(c.val) orelse return error.UndefinedLocal;
+                break :blk core.LLVMBuildZExt(self.builder, v, try self.lirType(c.ty), "zext");
+            },
+            .trunc => |c| blk: {
+                const v = self.locals.get(c.val) orelse return error.UndefinedLocal;
+                break :blk core.LLVMBuildTrunc(self.builder, v, try self.lirType(c.ty), "trunc");
+            },
+            .bitcast => |c| blk: {
+                const v = self.locals.get(c.val) orelse return error.UndefinedLocal;
+                break :blk core.LLVMBuildBitCast(self.builder, v, try self.lirType(c.ty), "bc");
+            },
             .primop => |p| try self.codegenPrimop(p),
         };
     }
@@ -402,10 +414,21 @@ pub const CodegenLir = struct {
 
     fn codegenGep(self: *CodegenLir, g: lir.GetElementPtr) CodegenError!types.LLVMValueRef {
         const ptr = self.locals.get(g.ptr) orelse return error.UndefinedLocal;
+        const elem_llvm = try self.lirType(g.elem_type);
+        // LLVM requires struct GEP indices to be i32 (constants fold; our
+        // struct indices are always constant locals). Pointer/array GEPs
+        // keep the i64 indices as-is.
+        const need_i32 = core.LLVMGetTypeKind(elem_llvm) == .LLVMStructTypeKind;
         const indices = try self.allocator.alloc(types.LLVMValueRef, g.indices.len);
         defer self.allocator.free(indices);
-        for (g.indices, 0..) |ix, i| indices[i] = self.locals.get(ix) orelse return error.UndefinedLocal;
-        return core.LLVMBuildGEP2(self.builder, try self.lirType(g.elem_type), ptr, indices.ptr, @intCast(indices.len), "gep");
+        for (g.indices, 0..) |ix, i| {
+            const v = self.locals.get(ix) orelse return error.UndefinedLocal;
+            indices[i] = if (need_i32)
+                core.LLVMBuildTrunc(self.builder, v, core.LLVMInt32TypeInContext(self.context), "idx32")
+            else
+                v;
+        }
+        return core.LLVMBuildGEP2(self.builder, elem_llvm, ptr, indices.ptr, @intCast(indices.len), "gep");
     }
 
     /// Primitive operations. Arithmetic/comparison selects integer or float

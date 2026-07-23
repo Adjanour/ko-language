@@ -157,6 +157,7 @@ pub fn main(init: std.process.Init) !void {
     var filename: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
+    var use_lir = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp(io);
@@ -174,6 +175,8 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--emit-exe")) {
             mode = .exe;
             output = args.next();
+        } else if (std.mem.eql(u8, arg, "--use-lir")) {
+            use_lir = true;
         } else if (std.mem.eql(u8, arg, "--emit-ir")) {
             mode = .emit_ir;
             output = args.next();
@@ -269,6 +272,27 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     const codegen_time = nowNs() - timer - parse_time - typecheck_time;
+
+    if (use_lir) {
+        // HIR → LIR → LLVM path (experimental --use-lir)
+        var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
+        defer hl.deinit();
+        hl.lowerProgram(&prog) catch |err| {
+            reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        const ll = lir_lower.LirLower.init(init.arena.allocator(), hl.expressions.items, hl.defs.items, &inferer);
+        defer ll.deinit();
+        const lir_fns = ll.lowerProgram() catch |err| {
+            reportError(io, fname, null, "LIR lowering error: {s}", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module_lir");
+        // The legacy Codegen struct is reused for JIT/AOT; point to the LIR
+        // module instead of re-creating from scratch.
+        // For now, only the JIT run path uses the new codegen.
+    }
+
 
     if (mode != .run) {
         const total_ms = @as(f64, @floatFromInt(parse_time + typecheck_time + codegen_time)) / std.time.ns_per_ms;

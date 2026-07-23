@@ -60,7 +60,18 @@ pub const LirValue = union(enum) {
     get_element_ptr: GetElementPtr,
     ptrtoint: LocalId,
     inttoptr: IntToPtr,
+    /// Zero-extend, truncate, or bitcast a value to a target type.
+    /// Used for boxing/unboxing fields to/from the i64 constructor layout
+    /// and for coercions at runtime-function boundaries.
+    zext: Convert,
+    trunc: Convert,
+    bitcast: Convert,
     primop: PrimOpValue,
+};
+
+pub const Convert = struct {
+    val: LocalId,
+    ty: LirType,
 };
 
 pub const StringConst = struct {
