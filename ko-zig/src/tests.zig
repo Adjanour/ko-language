@@ -3105,3 +3105,15 @@ test "lir_lower: string length via stdlib" {
         \\fn main = String.length "hello world"
     ));
 }
+
+test "lir_lower: string concat via + operator" {
+    try std.testing.expectEqual(@as(i64, 11), try testRuntimeLir(
+        \\fn main = String.length ("hello " + "world")
+    ));
+}
+
+test "lir_lower: string append via stdlib" {
+    try std.testing.expectEqual(@as(i64, 5), try testRuntimeLir(
+        \\fn main = String.length (String.append "he" "llo")
+    ));
+}

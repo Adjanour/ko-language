@@ -1027,6 +1027,7 @@ pub const LirLower = struct {
                     self.terminateCurrent(.{ .cond_br = .{ .cond = c, .then = .{ .target = arm_id }, .else_ = .{ .target = un_id } } });
                     try self.startBlockWithId(un_id, &.{});
                     self.terminateCurrent(.{ .unreachable_ = {} });
+                    pending_fail = null; // handled — don't emit a duplicate fail block
                 } else {
                     const fid = self.rid();
                     self.terminateCurrent(.{ .cond_br = .{ .cond = c, .then = .{ .target = arm_id }, .else_ = .{ .target = fid } } });
@@ -1093,17 +1094,33 @@ pub const LirLower = struct {
         }
         // Struct type for the ADT: {i64 tag, i64 x arity}
         const struct_ty = try self.ctorStructType(entry.arity);
+        // Guard the dereference: raw tags (zero-arg ctors) are small ints,
+        // heap pointers are large addresses. A multi-arg pattern can never
+        // match a raw tag, so bail without dereferencing (mirrors legacy's
+        // 4096 threshold).
+        const threshold = try self.emit(.{ .int = 4096 }, .{ .int = {} });
+        const is_raw = try self.emitPrimop2(.lt, scrut, threshold);
+        const raw_id = self.rid();
+        const deref_id = self.rid();
+        const cont_id = self.rid();
+        self.terminateCurrent(.{ .cond_br = .{ .cond = is_raw, .then = .{ .target = raw_id }, .else_ = .{ .target = deref_id } } });
+
+        // Raw path: this arm's ctor has fields, a raw tag can't match.
+        try self.startBlockWithId(raw_id, &.{});
+        const false_val = try self.emit(.{ .bool = false }, .{ .bool = {} });
+        self.terminateCurrent(.{ .br = .{ .target = cont_id, .args = try self.dupeIds(&.{false_val}) } });
+
+        // Deref path: load the tag from the heap cell and compare.
+        try self.startBlockWithId(deref_id, &.{});
         const ptr = try self.coerce(scrut, .{ .opaque_type = {} });
         const tag_slot = try self.gepStruct(struct_ty, ptr, 0, .{ .int = {} });
         const tag = try self.emit(.{ .load = tag_slot }, .{ .int = {} });
         const want = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
-        var cond = try self.emitPrimop2(.eq, tag, want);
+        var deref_cond = try self.emitPrimop2(.eq, tag, want);
 
-        // For each field sub-pattern: defer field *access* to the arm body
-        // (the tag check above already confirmed the constructor matches, but
-        // any GEP+load of the field is only safe once we're inside the arm).
-        // Nested sub-patterns (e.g. inner constructor checks) must happen in a
-        // specialisation block after the tag match.
+        // Field sub-patterns run here in the deref block: ptr is valid and
+        // the tag matched, so field access is safe. Simple binds are deferred
+        // to the arm body; nested sub-patterns are checked eagerly.
         var field_tys: std.ArrayList(*const typecheck.Type) = .empty;
         defer field_tys.deinit(self.allocator);
         if (self.inferer.global.getScheme(cp.ctor_name)) |scheme| {
@@ -1124,17 +1141,22 @@ pub const LirLower = struct {
                     .field_ty = fty.*,
                 } }),
                 // Nested or literal sub-pattern: load the field eagerly now
-                // (safe since we already confirmed the tag matches).
+                // (safe: tag matched and ptr dominates in this block).
                 else => {
                     const slot = try self.gepStruct(struct_ty, ptr, i + 1, .{ .int = {} });
                     const raw = try self.emit(.{ .load = slot }, .{ .int = {} });
                     const natural = try self.coerce(raw, try self.lowerType(fty));
                     if (try self.lowerPatternTest(sub, natural, fty, bindings)) |sc| {
-                        cond = try self.emitPrimop2(.and_, cond, sc);
+                        deref_cond = try self.emitPrimop2(.and_, deref_cond, sc);
                     }
                 },
             }
         }
+        self.terminateCurrent(.{ .br = .{ .target = cont_id, .args = try self.dupeIds(&.{deref_cond}) } });
+
+        // Continuation: cond = phi(false from raw, deref_cond from deref).
+        const cond = try self.newLocal(.{ .bool = {} });
+        try self.startBlockWithId(cont_id, try self.dupeIds(&.{cond}));
         return cond;
     }
 

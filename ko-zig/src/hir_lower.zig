@@ -141,7 +141,15 @@ pub const HirLower = struct {
             .float_literal => |val| self.allocExpr(.{ .float = val }, ty, expr),
             .bool_literal => |val| self.allocExpr(.{ .bool = val }, ty, expr),
             .char_literal => |val| self.allocExpr(.{ .char = if (val.len > 0) val[0] else 0 }, ty, expr),
-            .string_literal => |val| self.allocExpr(.{ .string = val }, ty, expr),
+            .string_literal => |val| blk: {
+                // Strip surrounding quotes once, here — downstream paths
+                // (HIR folds, LIR lowering, codegen) see clean string bytes.
+                const inner = if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"')
+                    val[1 .. val.len - 1]
+                else
+                    val;
+                break :blk self.allocExpr(.{ .string = inner }, ty, expr);
+            },
             .identifier => |id| {
                 const local = self.lookupLocal(id.name);
                 if (local) |lid| {
@@ -170,11 +178,20 @@ pub const HirLower = struct {
                 return self.allocExpr(.{ .tuple = .{ .elements = try elems.toOwnedSlice(self.allocator) } }, ty, expr);
             },
             .block => |blk| {
-                var last_id: hir.HirId = undefined;
-                for (blk.items) |item| {
-                    last_id = try self.lowerExpr(item);
+                if (blk.items.len == 0) return self.allocExpr(.{ .int = 0 }, ty, expr);
+                if (blk.items.len == 1) return self.lowerExpr(blk.items[0]);
+                // Chain intermediate items so side effects (assignments, calls)
+                // execute in order before the final expression:
+                //   item1; item2; …; last  →  let _ = item1 in let _ = item2 in … last
+                var result = try self.lowerExpr(blk.items[blk.items.len - 1]);
+                var i = blk.items.len - 1;
+                while (i > 0) {
+                    i -= 1;
+                    const item_id = try self.lowerExpr(blk.items[i]);
+                    const dummy = try self.newLocal("_blk");
+                    result = try self.allocExpr(.{ .let = .{ .name = dummy, .value = item_id, .body = result } }, ty, expr);
                 }
-                return last_id;
+                return result;
             },
             .field_access => |fa| {
                 const obj_id = try self.lowerExpr(fa.object);
@@ -230,7 +247,20 @@ pub const HirLower = struct {
             .binary_op => |binop| {
                 const left_id = try self.lowerExpr(binop.left);
                 const right_id = try self.lowerExpr(binop.right);
-                const op = astBinaryToPrimOp(binop.op);
+                var op = astBinaryToPrimOp(binop.op);
+                // `+` on strings is concatenation, not pointer arithmetic
+                // (fixes the documented STRING.md bug at the HIR level).
+                if (op == .add) {
+                    const lty = self.inferer.expr_types.get(binop.left);
+                    const rty = self.inferer.expr_types.get(binop.right);
+                    const is_str = struct {
+                        fn check(t: ?*const typecheck.Type) bool {
+                            const x = t orelse return false;
+                            return x.* == .string;
+                        }
+                    };
+                    if (is_str.check(lty) or is_str.check(rty)) op = .concat;
+                }
                 const args = try self.allocator.alloc(hir.HirId, 2);
                 args[0] = left_id;
                 args[1] = right_id;

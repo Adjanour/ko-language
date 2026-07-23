@@ -7,11 +7,12 @@ Strings are `i8*` (null-terminated byte arrays) at the LLVM level. The typecheck
 **Known problems:**
 
 - **No UTF-8 awareness.** Everything is raw bytes. `String.length` counts bytes, not code points. `String.charAt` returns a byte. `String.toUpperCase` uses C `toupper` (ASCII-only). Unicode strings will produce wrong results silently.
-- **`+` on strings is broken.** Typechecking accepts `"hello " + name` but codegen emits raw i64 addition on the pointer. The integration test only checks typing, not runtime.
+- ~~**`+` on strings is broken.**~~ **FIXED (middle-end branch).** `hir_lower` now detects string-typed operands to `+` and emits the `.concat` primop (→ `ko_string_append`) instead of `.add`. The legacy path still has the bug; the HIR→LIR→LLVM path is correct.
 - **`String.split` is a half-implementation.** The LLVM IR body is empty; only the Zig fallback (JIT) works.
-- **Comptime vs runtime mismatch.** `String.substring`, `String.startsWith`, `String.endsWith` exist in comptime but have no runtime codegen. This means programs that work in comptime can't use the same operations at runtime.
+- ~~**Comptime vs runtime mismatch.**~~ Partially addressed — see Migration Path.
 - **No efficient building.** Every `String.append` allocates + copies. Repeated appends in a loop are O(n²). Kō has no `StringBuilder` or difference-list pattern.
 - **Null-terminated everywhere.** Every operation recomputes `strlen` or null-terminates. For strings with known lengths (which all Ko strings have at creation time), this is wasted work.
+- ~~**Parser keeps raw quotes in string literals.**~~ **FIXED (middle-end branch).** `hir_lower` strips surrounding quotes when lowering `string_literal` to HIR, so all downstream paths (HIR folds, LIR lowering, codegen) see clean string bytes. The legacy path strips quotes per-consumer in `codegen.zig`.
 
 ## Design Goals
 
@@ -190,11 +191,13 @@ Two approaches:
 
 ### v0.3 (current branch)
 
-1. Fix the `+` on strings codegen bug (emit `ko_string_append` instead of i64 add).
+1. ~~Fix the `+` on strings codegen bug~~ **DONE** (HIR lowering emits `.concat`; legacy path still broken).
 2. Complete `String.split` LLVM IR implementation.
 3. Add `String.substring`, `String.startsWith`, `String.endsWith` runtime codegen to match comptime.
 4. All operations remain null-terminated `i8*` internally.
 5. Keep the existing `KoString`-as-`i8*` ABI.
+
+**Note on representation ownership:** the HIR→LIR→LLVM path (middle-end branch) is now the reference for correct string behavior: quote stripping happens once in `hir_lower`, and `+`→`concat` dispatch is type-directed in `hir_lower`. String operations route through runtime functions (`ko_string_*`), so the v0.4 representation change (length-prefixed `KoString`) only touches the runtime implementations and the string-literal codegen in `codegen_lir` — not the LIR structure or lowering logic.
 
 ### v0.4
 
