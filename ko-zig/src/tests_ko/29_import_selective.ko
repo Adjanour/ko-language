@@ -1,4 +1,0 @@
-# Test: selective import
-import Math.{abs, gcd}
-
-fn main = 1

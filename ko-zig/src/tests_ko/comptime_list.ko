@@ -1,0 +1,60 @@
+# Test: comptime list operations
+type List a = Cons a (List a) | Nil
+
+# Computes the sum of all elements in a list
+comptime fn sum lst =
+  match lst
+    | Cons x rest => x + sum rest
+    | Nil => 0
+
+# Computes the length of a list
+comptime fn length lst =
+  match lst
+    | Cons _ rest => 1 + length rest
+    | Nil => 0
+
+# Computes the product of all elements in a list
+comptime fn product lst =
+  match lst
+    | Cons x rest => x * product rest
+    | Nil => 1
+
+# Computes the maximum element in a list
+comptime fn max lst =
+  match lst
+    | Cons x rest =>
+      let rest_max = max rest
+      if x > rest_max then x else rest_max
+    | Nil => 0
+
+# Computes the number of elements in a list that satisfy a predicate
+comptime fn all_positive lst =
+  match lst
+    | Cons x rest => if x > 0 then 1 + all_positive rest else 0
+    | Nil => 1
+
+comptime fn count pred lst =
+  match lst
+    | Cons x rest => if pred x then 1 + count pred rest else count pred rest
+    | Nil => 0
+
+# Returns whether a number is positive
+comptime fn is_positive n = n > 0
+
+# Returns whether a number is even
+comptime fn is_even n = n % 2 == 0
+
+# Computes the factorial of a number
+comptime fn factorial n =
+    if n == 0 then 1
+    else n * factorial (n - 1)
+
+fn main =
+  let xs = 1 :: 2 :: 3 :: 4 :: Nil
+  println (sum xs) # 10
+  println (length xs) # 4
+  println (product xs) # 24
+  println (max xs) # 4
+  println (count is_even xs) # 2
+  println (count is_positive xs) # 4
+  println (factorial 5) # 120

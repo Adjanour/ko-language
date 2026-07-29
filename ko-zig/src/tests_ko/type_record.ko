@@ -1,0 +1,7 @@
+# Test: record types
+type Point = { x: Int, y: Int }
+type Person = { name: String, age: Int }
+
+fn main =
+  let point = Point { x = 1, y = 2 }
+  println point

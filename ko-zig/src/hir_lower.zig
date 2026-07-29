@@ -245,6 +245,15 @@ pub const HirLower = struct {
                 return self.allocExpr(.{ .primop = .{ .op = op, .args = args } }, ty, expr);
             },
             .binary_op => |binop| {
+                // `::` desugars to a Cons constructor application (mirrors
+                // the legacy codegen): left :: right → Cons left right.
+                if (binop.op == .cons) {
+                    const left_id = try self.lowerExpr(binop.left);
+                    const right_id = try self.lowerExpr(binop.right);
+                    const cons_ref = try self.allocExpr(.{ .constructor = .{ .type_name = "", .ctor_name = "Cons", .args = &.{} } }, ty, expr);
+                    const app1 = try self.allocExpr(.{ .apply = .{ .func = cons_ref, .arg = left_id } }, ty, expr);
+                    return self.allocExpr(.{ .apply = .{ .func = app1, .arg = right_id } }, ty, expr);
+                }
                 const left_id = try self.lowerExpr(binop.left);
                 const right_id = try self.lowerExpr(binop.right);
                 var op = astBinaryToPrimOp(binop.op);
@@ -267,6 +276,26 @@ pub const HirLower = struct {
                 return self.allocExpr(.{ .primop = .{ .op = op, .args = args } }, ty, expr);
             },
             .let_expr => |le| {
+                if (le.pattern) |pat| {
+                    // Tuple/constructor destructuring: desugar to match
+                    // let (x, y) = value in body  →  match value | (x, y) → body
+                    const val_id = try self.lowerExpr(le.value);
+                    self.pushScope();
+                    defer self.popScope();
+                    const hir_pat = try self.lowerPattern(&pat);
+                    const body_id = try self.lowerExpr(le.body);
+                    var arms: std.ArrayList(hir.MatchArm) = .empty;
+                    defer arms.deinit(self.allocator);
+                    try arms.append(self.allocator, .{
+                        .pattern = hir_pat,
+                        .guard = null,
+                        .body = body_id,
+                    });
+                    return self.allocExpr(.{ .match = .{
+                        .scrutinee = val_id,
+                        .arms = try arms.toOwnedSlice(self.allocator),
+                    } }, ty, expr);
+                }
                 self.pushScope();
                 defer self.popScope();
                 const val_id = try self.lowerExpr(le.value);

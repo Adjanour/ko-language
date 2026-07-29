@@ -1,0 +1,8 @@
+# Test: sum types (ADTs)
+type Option = Some Int | None
+type Bool = True | False
+type Result = Ok Int | Error
+
+fn main =
+  let result = Ok 42
+  println result

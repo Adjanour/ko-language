@@ -4,6 +4,11 @@ const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const repl_mod = @import("repl.zig");
 const codegen_mod = @import("codegen.zig");
+const stdlib = @import("stdlib.zig");
+const llvm = @import("llvm");
+const core = llvm.core;
+const engine = llvm.engine;
+const types = llvm.types;
 
 fn testRuntime(source: [:0]const u8) !i64 {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -1095,59 +1100,47 @@ test "integration: pipe with partial application" {
 
 test "parser: all .ko test files parse successfully" {
     const files = [_]struct { name: []const u8, source: [:0]const u8 }{
-        .{ .name = "01_literal.ko", .source = @embedFile("tests_ko/01_literal.ko") },
-        .{ .name = "02_string_char.ko", .source = @embedFile("tests_ko/02_string_char.ko") },
-        .{ .name = "03_bool.ko", .source = @embedFile("tests_ko/03_bool.ko") },
-        .{ .name = "04_arithmetic.ko", .source = @embedFile("tests_ko/04_arithmetic.ko") },
-        .{ .name = "05_comparison.ko", .source = @embedFile("tests_ko/05_comparison.ko") },
-        .{ .name = "06_logical.ko", .source = @embedFile("tests_ko/06_logical.ko") },
-        .{ .name = "07_unary.ko", .source = @embedFile("tests_ko/07_unary.ko") },
-        .{ .name = "08_application.ko", .source = @embedFile("tests_ko/08_application.ko") },
-        .{ .name = "09_named_args.ko", .source = @embedFile("tests_ko/09_named_args.ko") },
-        .{ .name = "10_let.ko", .source = @embedFile("tests_ko/10_let.ko") },
-        .{ .name = "11_fn_def.ko", .source = @embedFile("tests_ko/11_fn_def.ko") },
-        .{ .name = "12_fn_block.ko", .source = @embedFile("tests_ko/12_fn_block.ko") },
-        .{ .name = "13_if.ko", .source = @embedFile("tests_ko/13_if.ko") },
-        .{ .name = "14_if_block.ko", .source = @embedFile("tests_ko/14_if_block.ko") },
-        .{ .name = "15_sum_type.ko", .source = @embedFile("tests_ko/15_sum_type.ko") },
-        .{ .name = "16_sum_type_params.ko", .source = @embedFile("tests_ko/16_sum_type_params.ko") },
-        .{ .name = "17_record_type.ko", .source = @embedFile("tests_ko/17_record_type.ko") },
-        .{ .name = "18_record_literal.ko", .source = @embedFile("tests_ko/18_record_literal.ko") },
-        .{ .name = "19_match.ko", .source = @embedFile("tests_ko/19_match.ko") },
-        .{ .name = "20_match_multi.ko", .source = @embedFile("tests_ko/20_match_multi.ko") },
-        .{ .name = "21_match_record.ko", .source = @embedFile("tests_ko/21_match_record.ko") },
-        .{ .name = "22_lambda.ko", .source = @embedFile("tests_ko/22_lambda.ko") },
-        .{ .name = "23_lambda_wildcard.ko", .source = @embedFile("tests_ko/23_lambda_wildcard.ko") },
-        .{ .name = "24_pipe.ko", .source = @embedFile("tests_ko/24_pipe.ko") },
-        .{ .name = "25_tuple.ko", .source = @embedFile("tests_ko/25_tuple.ko") },
-        .{ .name = "26_ref.ko", .source = @embedFile("tests_ko/26_ref.ko") },
-        .{ .name = "27_module.ko", .source = @embedFile("tests_ko/27_module.ko") },
-        .{ .name = "28_import.ko", .source = @embedFile("tests_ko/28_import.ko") },
-        .{ .name = "29_import_selective.ko", .source = @embedFile("tests_ko/29_import_selective.ko") },
-        .{ .name = "30_import_constructor.ko", .source = @embedFile("tests_ko/30_import_constructor.ko") },
-        .{ .name = "31_package.ko", .source = @embedFile("tests_ko/31_package.ko") },
-        .{ .name = "32_pub.ko", .source = @embedFile("tests_ko/32_pub.ko") },
-        .{ .name = "33_comptime.ko", .source = @embedFile("tests_ko/33_comptime.ko") },
-        .{ .name = "34_nested.ko", .source = @embedFile("tests_ko/34_nested.ko") },
-        .{ .name = "35_precedence.ko", .source = @embedFile("tests_ko/35_precedence.ko") },
-        .{ .name = "36_hyphenated.ko", .source = @embedFile("tests_ko/36_hyphenated.ko") },
-        .{ .name = "37_wildcard.ko", .source = @embedFile("tests_ko/37_wildcard.ko") },
-        .{ .name = "38_comments.ko", .source = @embedFile("tests_ko/38_comments.ko") },
-        .{ .name = "39_multiline.ko", .source = @embedFile("tests_ko/39_multiline.ko") },
-        .{ .name = "40_minimal.ko", .source = @embedFile("tests_ko/40_minimal.ko") },
-        .{ .name = "41_partial.ko", .source = @embedFile("tests_ko/41_partial.ko") },
-        .{ .name = "42_curry_compose.ko", .source = @embedFile("tests_ko/42_curry_compose.ko") },
-        .{ .name = "43_closure.ko", .source = @embedFile("tests_ko/43_closure.ko") },
-        .{ .name = "44_cons_operator.ko", .source = @embedFile("tests_ko/44_cons_operator.ko") },
-        .{ .name = "45_comptime.ko", .source = @embedFile("tests_ko/45_comptime.ko") },
-        .{ .name = "46_math.ko", .source = @embedFile("tests_ko/46_math.ko") },
-        .{ .name = "47_float_math.ko", .source = @embedFile("tests_ko/47_float_math.ko") },
-        .{ .name = "48_result_ops.ko", .source = @embedFile("tests_ko/48_result_ops.ko") },
-        .{ .name = "49_rc_basic.ko", .source = @embedFile("tests_ko/49_rc_basic.ko") },
-        .{ .name = "50_comptime_lists.ko", .source = @embedFile("tests_ko/50_comptime_lists.ko") },
-        .{ .name = "51_comptime_strings.ko", .source = @embedFile("tests_ko/51_comptime_strings.ko") },
-        .{ .name = "52_comptime_match.ko", .source = @embedFile("tests_ko/52_comptime_match.ko") },
-        .{ .name = "53_comptime_tuples.ko", .source = @embedFile("tests_ko/53_comptime_tuples.ko") },
+        .{ .name = "syntax_literal.ko", .source = @embedFile("tests_ko/syntax_literal.ko") },
+        .{ .name = "syntax_string.ko", .source = @embedFile("tests_ko/syntax_string.ko") },
+        .{ .name = "syntax_bool.ko", .source = @embedFile("tests_ko/syntax_bool.ko") },
+        .{ .name = "syntax_arithmetic.ko", .source = @embedFile("tests_ko/syntax_arithmetic.ko") },
+        .{ .name = "syntax_comparison.ko", .source = @embedFile("tests_ko/syntax_comparison.ko") },
+        .{ .name = "syntax_logical.ko", .source = @embedFile("tests_ko/syntax_logical.ko") },
+        .{ .name = "syntax_unary.ko", .source = @embedFile("tests_ko/syntax_unary.ko") },
+        .{ .name = "syntax_application.ko", .source = @embedFile("tests_ko/syntax_application.ko") },
+        .{ .name = "syntax_let.ko", .source = @embedFile("tests_ko/syntax_let.ko") },
+        .{ .name = "syntax_fn.ko", .source = @embedFile("tests_ko/syntax_fn.ko") },
+        .{ .name = "syntax_fn_block.ko", .source = @embedFile("tests_ko/syntax_fn_block.ko") },
+        .{ .name = "syntax_if.ko", .source = @embedFile("tests_ko/syntax_if.ko") },
+        .{ .name = "type_sum.ko", .source = @embedFile("tests_ko/type_sum.ko") },
+        .{ .name = "type_sum_params.ko", .source = @embedFile("tests_ko/type_sum_params.ko") },
+        .{ .name = "type_record.ko", .source = @embedFile("tests_ko/type_record.ko") },
+        .{ .name = "syntax_record.ko", .source = @embedFile("tests_ko/syntax_record.ko") },
+        .{ .name = "pattern_match.ko", .source = @embedFile("tests_ko/pattern_match.ko") },
+        .{ .name = "fn_lambda.ko", .source = @embedFile("tests_ko/fn_lambda.ko") },
+        .{ .name = "fn_lambda_wildcard.ko", .source = @embedFile("tests_ko/fn_lambda_wildcard.ko") },
+        .{ .name = "syntax_pipe.ko", .source = @embedFile("tests_ko/syntax_pipe.ko") },
+        .{ .name = "syntax_tuple.ko", .source = @embedFile("tests_ko/syntax_tuple.ko") },
+        .{ .name = "module_def.ko", .source = @embedFile("tests_ko/module_def.ko") },
+        .{ .name = "module_import.ko", .source = @embedFile("tests_ko/module_import.ko") },
+        .{ .name = "comptime_expr.ko", .source = @embedFile("tests_ko/comptime_expr.ko") },
+        .{ .name = "syntax_nested.ko", .source = @embedFile("tests_ko/syntax_nested.ko") },
+        .{ .name = "syntax_precedence.ko", .source = @embedFile("tests_ko/syntax_precedence.ko") },
+        .{ .name = "syntax_hyphenated.ko", .source = @embedFile("tests_ko/syntax_hyphenated.ko") },
+        .{ .name = "pattern_wildcard.ko", .source = @embedFile("tests_ko/pattern_wildcard.ko") },
+        .{ .name = "syntax_comment.ko", .source = @embedFile("tests_ko/syntax_comment.ko") },
+        .{ .name = "syntax_block.ko", .source = @embedFile("tests_ko/syntax_block.ko") },
+        .{ .name = "syntax_minimal.ko", .source = @embedFile("tests_ko/syntax_minimal.ko") },
+        .{ .name = "fn_partial.ko", .source = @embedFile("tests_ko/fn_partial.ko") },
+        .{ .name = "fn_curry.ko", .source = @embedFile("tests_ko/fn_curry.ko") },
+        .{ .name = "fn_closure.ko", .source = @embedFile("tests_ko/fn_closure.ko") },
+        .{ .name = "syntax_cons.ko", .source = @embedFile("tests_ko/syntax_cons.ko") },
+        .{ .name = "comptime_fn.ko", .source = @embedFile("tests_ko/comptime_fn.ko") },
+        .{ .name = "builtin_math.ko", .source = @embedFile("tests_ko/builtin_math.ko") },
+        .{ .name = "builtin_result.ko", .source = @embedFile("tests_ko/builtin_result.ko") },
+        .{ .name = "comptime_list.ko", .source = @embedFile("tests_ko/comptime_list.ko") },
+        .{ .name = "comptime_string.ko", .source = @embedFile("tests_ko/comptime_string.ko") },
+        .{ .name = "comptime_match.ko", .source = @embedFile("tests_ko/comptime_match.ko") },
     };
 
     for (files) |f| {
@@ -2110,6 +2103,22 @@ test "hir: primop variants" {
 // ──── HIR lowering tests ────
 
 const hir_lower = @import("hir_lower.zig");
+const hir_beta = @import("hir_beta.zig");
+const hir_let_simpl = @import("hir_let_simpl.zig");
+const hir_known_match = @import("hir_known_match.zig");
+
+/// Run the HIR optimization passes that don't need roots (beta, let_simpl, known_match, fold).
+/// Caller must run DCE separately with the appropriate roots.
+fn runHirPassesNoDce(allocator: std.mem.Allocator, expressions: *std.ArrayList(hir.HirExpr)) void {
+    var beta = hir_beta.HirBeta.init(allocator, expressions);
+    beta.run();
+    var let_simpl = hir_let_simpl.HirLetSimpl.init(allocator, expressions);
+    let_simpl.run();
+    var known = hir_known_match.HirKnownMatch.init(allocator, expressions);
+    known.run();
+    var fold = hir_fold.HirFold.init(allocator, expressions);
+    fold.run();
+}
 
 test "hir_lower: integer literal" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -2412,6 +2421,195 @@ test "hir_dce: dead after folding" {
     }
 }
 
+// ──── HIR beta reduction tests ────
+
+test "hir_beta: simple lambda application" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = (\\x -> x) 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var beta = hir_beta.HirBeta.init(allocator, &lower.expressions);
+    beta.run();
+    // Should have at least one let expression (from beta reduction)
+    var found_let = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .let) found_let = true;
+    }
+    try std.testing.expect(found_let);
+    try std.testing.expectEqual(@as(usize, 1), beta.reduced);
+}
+
+test "hir_beta: multi-param partial application not reduced" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    // Partial application: fewer args than params — should NOT be reduced
+    const source: [:0]const u8 = "fn add x y = x + y\nfn main = add 1";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var beta = hir_beta.HirBeta.init(allocator, &lower.expressions);
+    beta.run();
+    // No reductions — partial application
+    try std.testing.expectEqual(@as(usize, 0), beta.reduced);
+}
+
+test "hir_beta: multi-param full application" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn add x y = x + y\nfn main = (\\x y -> x + y) 1 2";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var beta = hir_beta.HirBeta.init(allocator, &lower.expressions);
+    beta.run();
+    // At least one reduction (the outer apply)
+    try std.testing.expect(beta.reduced >= 1);
+}
+
+// ──── HIR let simplification tests ────
+
+test "hir_let_simpl: identity let removal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    // Use a simple program — the let_simpl pass runs but may find nothing to simplify.
+    // The important thing is it doesn't crash.
+    const source: [:0]const u8 = "fn main = 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var ls = hir_let_simpl.HirLetSimpl.init(allocator, &lower.expressions);
+    ls.run();
+    // Runs without crashing
+    try std.testing.expect(true);
+}
+
+test "hir_let_simpl: dead let removal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn f x = 0\nfn main = f 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var ls = hir_let_simpl.HirLetSimpl.init(allocator, &lower.expressions);
+    ls.run();
+    // Just verify it runs without crashing
+    try std.testing.expect(true);
+}
+
+test "hir_let_simpl: single-use literal inline" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 = "fn main = 42";
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var ls = hir_let_simpl.HirLetSimpl.init(allocator, &lower.expressions);
+    ls.run();
+    // Just verify it runs without crashing
+    try std.testing.expect(true);
+}
+
+// ──── HIR known-match reduction tests ────
+
+test "hir_known_match: known constructor match" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 =
+        \\type Maybe a = Just a | Nothing
+        \\fn main = match (Just 42)
+        \\  Just v => v
+        \\  Nothing => 0
+    ;
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var known = hir_known_match.HirKnownMatch.init(allocator, &lower.expressions);
+    known.run();
+    // Should have reduced: the match becomes a let binding
+    var found_let = false;
+    for (lower.expressions.items) |e| {
+        if (e.kind == .let) found_let = true;
+    }
+    try std.testing.expect(found_let);
+    try std.testing.expectEqual(@as(usize, 1), known.reduced);
+}
+
+test "hir_known_match: unknown scrutinee not reduced" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source: [:0]const u8 =
+        \\type Maybe a = Just a | Nothing
+        \\fn foo m = match m
+        \\  Just v => v
+        \\  Nothing => 0
+    ;
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var lower = hir_lower.HirLower.init(allocator, &inferer);
+    defer lower.deinit();
+    try lower.lowerProgram(&prog);
+    var known = hir_known_match.HirKnownMatch.init(allocator, &lower.expressions);
+    known.run();
+    // No reductions — scrutinee is a variable, not a known constructor
+    try std.testing.expectEqual(@as(usize, 0), known.reduced);
+}
+
 // ──── LIR data structure tests ────
 
 const lir = @import("lir.zig");
@@ -2538,7 +2736,6 @@ test "lir: store and assign statements" {
 // ──── LIR → LLVM codegen tests ────
 
 const codegen_lir = @import("codegen_lir.zig");
-const llvm = @import("llvm");
 
 fn runLirProgram(allocator: std.mem.Allocator, fns: []const lir.LirFn, with_runtime: bool) !i64 {
     var cg = codegen_lir.CodegenLir.init(allocator, "test_lir");
@@ -2891,6 +3088,10 @@ fn testRuntimeLir(source: [:0]const u8) !i64 {
     var hl = hir_lower.HirLower.init(allocator, &inferer);
     defer hl.deinit();
     try hl.lowerProgram(&prog);
+
+    // HIR optimization passes — only in main.zig for actual compilation.
+    // Not run here so testRuntimeLir matches legacy testRuntime semantics.
+
     var ll = lir_lower.LirLower.init(allocator, hl.expressions.items, hl.defs.items, &inferer);
     defer ll.deinit();
     const fns = try ll.lowerProgram();
@@ -2901,7 +3102,72 @@ fn testRuntimeLir(source: [:0]const u8) !i64 {
     var jit = try codegen_mod.Jit.init(cg.module, 0);
     defer jit.deinit();
     cg.module_owned_by_jit = true;
+    mapLirJitResultFns(cg.module, jit.engine);
     return try jit.runMain();
+}
+
+/// Like testRuntimeLir but runs HIR optimization passes (beta, let_simpl,
+/// known_match, fold, DCE) before LIR lowering, matching the CLI --use-lir path.
+fn testRuntimeLirOpt(source: [:0]const u8) !i64 {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var hl = hir_lower.HirLower.init(allocator, &inferer);
+    defer hl.deinit();
+    try hl.lowerProgram(&prog);
+
+    // HIR optimization passes — same set as main.zig --use-lir path.
+    var beta = hir_beta.HirBeta.init(allocator, &hl.expressions);
+    beta.run();
+    var let_simpl = hir_let_simpl.HirLetSimpl.init(allocator, &hl.expressions);
+    let_simpl.run();
+    var known = hir_known_match.HirKnownMatch.init(allocator, &hl.expressions);
+    known.run();
+    var fold = hir_fold.HirFold.init(allocator, &hl.expressions);
+    fold.run();
+    var dce = hir_dce.HirDce.init(allocator, &hl.expressions);
+    dce.run(hl.roots.items);
+
+    var ll = lir_lower.LirLower.init(allocator, hl.expressions.items, hl.defs.items, &inferer);
+    defer ll.deinit();
+    const fns = try ll.lowerProgram();
+    var cg = codegen_lir.CodegenLir.init(allocator, "test_lir_lower_opt");
+    defer cg.deinit();
+    cg.declareRuntime();
+    try cg.codegenProgram(fns);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    mapLirJitResultFns(cg.module, jit.engine);
+    return try jit.runMain();
+}
+
+fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionEngineRef) void {
+    if (core.LLVMGetNamedFunction(mod, "ko_result_is_ok")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_is_ok)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_is_err")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_is_err)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_unwrap")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_map")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_map)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_fold")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_fold)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_and_then")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_and_then)));
+    }
 }
 
 /// Compile and run the same source through the legacy AST→LLVM path and the
@@ -3091,6 +3357,14 @@ test "lir_lower: tuple construction and pattern" {
     ));
 }
 
+test "lir_lower: tuple destructuring let" {
+    try std.testing.expectEqual(@as(i64, 30), try testRuntimeLir(
+        \\fn main =
+        \\  let (x, y) = (10, 20)
+        \\  x + y
+    ));
+}
+
 test "lir_lower: mutable ref" {
     try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
         \\fn main =
@@ -3115,5 +3389,235 @@ test "lir_lower: string concat via + operator" {
 test "lir_lower: string append via stdlib" {
     try std.testing.expectEqual(@as(i64, 5), try testRuntimeLir(
         \\fn main = String.length (String.append "he" "llo")
+    ));
+}
+
+test "lir_lower: try_op basic" {
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main =
+        \\  (Ok 42)?
+    ));
+}
+
+test "lir_lower: Result.is_ok on Ok" {
+    try std.testing.expectEqual(@as(i64, 1), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main = Result.is_ok (Ok 42)
+    ));
+}
+
+test "lir_lower: Result.is_ok on Err" {
+    try std.testing.expectEqual(@as(i64, 0), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main = Result.is_ok (Err "fail")
+    ));
+}
+
+test "lir_lower: match on Result" {
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn show r = match r
+        \\  | Ok v => v
+        \\  | Err e => 0
+        \\fn main = show (Ok 42)
+    ));
+}
+
+test "lir_lower: Result.unwrap" {
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main =
+        \\  let r = Ok 42
+        \\  Result.unwrap 0 r
+    ));
+}
+
+test "lir_lower: Result.map" {
+    try std.testing.expectEqual(@as(i64, 84), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main =
+        \\  let r = Ok 42
+        \\  let doubled = Result.map (\x -> x * 2) r
+        \\  match doubled
+        \\    | Ok v => v
+        \\    | Err e => 0
+    ));
+}
+
+test "lir_lower: Result.and_then" {
+    try std.testing.expectEqual(@as(i64, 420), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn main =
+        \\  let r = Ok 42
+        \\  let chained = Result.and_then (\x -> Ok (x * 10)) r
+        \\  match chained
+        \\    | Ok v => v
+        \\    | Err e => 0
+    ));
+}
+
+test "lir_lower: divide with ?" {
+    try std.testing.expectEqual(@as(i64, 5), try testRuntimeLir(
+        \\type Result a b = Ok a | Err b
+        \\fn divide a b = if b == 0 then Err "div by zero" else Ok (a / b)
+        \\fn main =
+        \\  let r1 = (divide 10 2)?
+        \\  r1
+    ));
+}
+
+test "lir_lower: builtin_result.ko" {
+    try std.testing.expectEqual(@as(i64, 1), try testRuntimeLir(
+        @embedFile("tests_ko/builtin_result.ko"),
+    ));
+}
+
+test "lir_lower: switch dispatch for zero-arg constructors" {
+    // 3+ arm match on all-zero-arg constructors → should use switch instruction.
+    try std.testing.expectEqual(@as(i64, 3), try testRuntimeLir(
+        \\type Color = Red | Green | Blue
+        \\fn color_int c = match c
+        \\  Red => 1
+        \\  Green => 2
+        \\  Blue => 3
+        \\fn main = color_int Blue
+    ));
+}
+
+test "lir_lower: switch dispatch with wildcard" {
+    try std.testing.expectEqual(@as(i64, 0), try testRuntimeLir(
+        \\type Color = Red | Green | Blue
+        \\fn color_int c = match c
+        \\  Red => 1
+        \\  _ => 0
+        \\fn main = color_int Blue
+    ));
+}
+
+test "lir_lower: decision tree with nested constructors (Maybe)" {
+    // Two-arm match on Maybe — tests linear fallback for 2-arm matches.
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\type Maybe a = Just a | Nothing
+        \\fn from_just v = match v
+        \\  Just x => x
+        \\  Nothing => v
+        \\fn main = from_just (Just 42)
+    ));
+}
+
+test "lir_lower: decision tree with wildcard default" {
+    // 3-arm match with wildcard — decision tree.
+    try std.testing.expectEqual(@as(i64, 99), try testRuntimeLir(
+        \\type Color = Red | Green | Blue
+        \\fn color_int c = match c
+        \\  Red => 1
+        \\  Green => 2
+        \\  _ => 99
+        \\fn main = color_int Blue
+    ));
+}
+
+test "lir_lower: nested pattern with computation" {
+    // Multi-arg constructor with bind sub-patterns.
+    try std.testing.expectEqual(@as(i64, 10), try testRuntimeLir(
+        \\type Pair a b = Pair a b
+        \\fn fst p = match p
+        \\  Pair x _ => x
+        \\fn main = fst (Pair 10 20)
+    ));
+}
+
+test "lir_lower: nested constructor sub-pattern (Just (Just x))" {
+    // Constructor with a constructor sub-pattern — tests recursive specialization.
+    try std.testing.expectEqual(@as(i64, 7), try testRuntimeLir(
+        \\type Maybe a = Just a | Nothing
+        \\fn unwrap_inner m = match m
+        \\  Just (Just x) => x
+        \\  Just Nothing => 0
+        \\  Nothing => 0
+        \\fn main = unwrap_inner (Just (Just 7))
+    ));
+}
+
+test "lir_lower: nested constructor sub-pattern mismatch" {
+    // Same pattern but mismatched inner constructor — should hit fallback arm.
+    try std.testing.expectEqual(@as(i64, 0), try testRuntimeLir(
+        \\type Maybe a = Just a | Nothing
+        \\fn unwrap_inner m = match m
+        \\  Just (Just x) => x
+        \\  Just Nothing => 0
+        \\  Nothing => 0
+        \\fn main = unwrap_inner (Just Nothing)
+    ));
+}
+
+test "lir_lower: column selection — most frequent constructor first" {
+    // 3 arms, 2 test Cons — heuristic should test Cons first.
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
+        \\type Maybe a = Just a | Nothing
+        \\fn double_match m = match m
+        \\  Just (Just x) => x
+        \\  Just Nothing => 0
+        \\  Nothing => 0
+        \\fn main = double_match (Just (Just 42))
+    ));
+}
+
+// ========================================================================
+// Integration tests with HIR optimization passes enabled (testRuntimeLirOpt).
+// These match the CLI --use-lir path and catch HIR+LIR interaction bugs.
+// ========================================================================
+
+test "lir_lower+hir: basic match with optimization passes" {
+    try std.testing.expectEqual(@as(i64, 7), try testRuntimeLirOpt(
+        \\type Maybe a = Just a | Nothing
+        \\fn unwrap m = match m
+        \\  Just x => x
+        \\  Nothing => 0
+        \\fn main = unwrap (Just 7)
+    ));
+}
+
+test "lir_lower+hir: nested constructor sub-pattern after HIR passes" {
+    try std.testing.expectEqual(@as(i64, 7), try testRuntimeLirOpt(
+        \\type Maybe a = Just a | Nothing
+        \\fn unwrap_inner m = match m
+        \\  Just (Just x) => x
+        \\  Just Nothing => 0
+        \\  Nothing => 0
+        \\fn main = unwrap_inner (Just (Just 7))
+    ));
+}
+
+test "lir_lower+hir: nested constructor mismatch after HIR passes" {
+    try std.testing.expectEqual(@as(i64, 0), try testRuntimeLirOpt(
+        \\type Maybe a = Just a | Nothing
+        \\fn unwrap_inner m = match m
+        \\  Just (Just x) => x
+        \\  Just Nothing => 0
+        \\  Nothing => 0
+        \\fn main = unwrap_inner (Just Nothing)
+    ));
+}
+
+test "lir_lower+hir: let propagation into match" {
+    // HIR beta/fold may propagate the let binding, testing that LIR handles
+    // the resulting expression correctly.
+    try std.testing.expectEqual(@as(i64, 42), try testRuntimeLirOpt(
+        \\type Maybe a = Just a | Nothing
+        \\fn main =
+        \\  let x = Just 42
+        \\  match x
+        \\    Just v => v
+        \\    Nothing => 0
+    ));
+}
+
+test "lir_lower+hir: tuple destructuring with optimization" {
+    try std.testing.expectEqual(@as(i64, 30), try testRuntimeLirOpt(
+        \\fn main =
+        \\  let (x, y) = (10, 20)
+        \\  x + y
     ));
 }

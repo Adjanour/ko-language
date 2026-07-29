@@ -1,0 +1,33 @@
+# Test: comptime match expressions and constructors
+type Color = Red | Green | Blue | Mix Color Color
+type Nat = Succ Nat | Zero
+
+comptime fn color_name c =
+  match c
+    | Red => "red"
+    | Green => "green"
+    | Blue => "blue"
+    | Mix _ _ => "mixed"
+
+comptime fn to_int n =
+  match n
+    | Succ pred => 1 + to_int pred
+    | Zero => 0
+
+comptime fn from_int n =
+    if n == 0 then Zero else Succ (from_int (n - 1))
+
+comptime fn add_nats a b =
+  match a
+    | Succ pred => Succ (add_nats pred b)
+    | Zero => b
+
+fn main =
+  let name = color_name Red
+  println name # "red"
+  let mixed_name = color_name (Mix Green Blue)
+  println mixed_name # "mixed"
+  let three = from_int 3
+  let four = from_int 4
+  let seven = add_nats three four
+  println (to_int seven) # 7

@@ -1,0 +1,10 @@
+# Test: sum type with type parameters
+type List a = Cons a (List a) | Nil
+type Maybe a = Just a | Nothing
+type Either a b = Left a | Right b
+
+fn main =
+  let list = Cons 1 (Cons 2 Nil)
+  let list_2 = 1 :: 2 :: Nil # same as list
+  println list
+  println list_2

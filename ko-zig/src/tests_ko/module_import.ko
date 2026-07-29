@@ -1,0 +1,6 @@
+# Test: selective import
+import std.Math.{abs, gcd}
+
+fn main =
+  println (abs (-5))
+  println (gcd 12 18)

@@ -1,0 +1,8 @@
+# Test: function body as block
+fn sum_to n =
+  let a = n * (n + 1)
+  a / 2
+
+fn main =
+  let result = sum_to 10
+  println result

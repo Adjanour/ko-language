@@ -1,5 +1,0 @@
-# Test: record types
-type Point = { x: Int, y: Int }
-type Person = { name: String, age: Int }
-
-fn main = 1

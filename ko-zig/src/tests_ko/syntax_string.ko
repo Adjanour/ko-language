@@ -1,0 +1,8 @@
+# Test: string and char literals
+fn main =
+  let s = "hello world"
+  let c = 'x'
+  let escaped = "line1\nline2"
+  println s
+  println c
+  println escaped

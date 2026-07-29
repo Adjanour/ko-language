@@ -170,6 +170,9 @@ pub const Inferer = struct {
         // Pre-register built-in type IDs to match codegen's type_ids
         inferer.type_ids.put("Bool", 0) catch {};
         inferer.type_ids.put("Result", 1) catch {};
+        // Also register type parameter counts so pattern inference works
+        inferer.type_names.put("Bool", 0) catch {};
+        inferer.type_names.put("Result", 2) catch {};
 
         // Pre-register True/False as built-in Bool constructors
         inferer.ctors.put("True", .{ .type_name = "Bool", .arity = 0 }) catch {};
@@ -772,6 +775,31 @@ pub const Inferer = struct {
             string_split_to.* = .{ .arrow = .{ .from = sa, .to = inner } };
         }
         try self.global.set("String.split", .{ .quantified = &.{}, .body = string_split_to });
+
+        // Int module builtins
+        const int_ty = try self.newType(.int);
+        const int_to_int = try self.allocator.create(Type);
+        int_to_int.* = .{ .arrow = .{ .from = int_ty, .to = int_ty } };
+        try self.global.set("Int.factorial", .{ .quantified = &.{}, .body = int_to_int });
+        try self.global.set("Int.isqrt", .{ .quantified = &.{}, .body = int_to_int });
+        try self.global.set("Int.abs", .{ .quantified = &.{}, .body = int_to_int });
+
+        const int_int_to_int = try self.allocator.create(Type);
+        const int_param_a = try self.newType(.int);
+        const int_param_b = try self.newType(.int);
+        const int_result = try self.newType(.int);
+        const int_inner = try self.allocator.create(Type);
+        int_inner.* = .{ .arrow = .{ .from = int_param_b, .to = int_result } };
+        int_int_to_int.* = .{ .arrow = .{ .from = int_param_a, .to = int_inner } };
+        try self.global.set("Int.pow", .{ .quantified = &.{}, .body = int_int_to_int });
+        try self.global.set("Int.gcd", .{ .quantified = &.{}, .body = int_int_to_int });
+        try self.global.set("Int.lcm", .{ .quantified = &.{}, .body = int_int_to_int });
+        try self.global.set("Int.min", .{ .quantified = &.{}, .body = int_int_to_int });
+        try self.global.set("Int.max", .{ .quantified = &.{}, .body = int_int_to_int });
+
+        const int_to_string = try self.allocator.create(Type);
+        int_to_string.* = .{ .arrow = .{ .from = int_ty, .to = try self.newType(.string) } };
+        try self.global.set("Int.toString", .{ .quantified = &.{}, .body = int_to_string });
 
         // Result operations (built-in)
         // Result.is_ok : forall a b. Result a b -> Int

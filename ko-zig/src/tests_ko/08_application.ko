@@ -1,5 +1,0 @@
-# Test: function application (implicit, no parentheses)
-fn add x y = x + y
-fn main =
-  let result = add 1 2
-  result

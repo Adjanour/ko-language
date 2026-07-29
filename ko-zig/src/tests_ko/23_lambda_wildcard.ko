@@ -1,5 +1,0 @@
-# Test: lambda with pattern matching (wildcard)
-fn main =
-  let f = \_ -> 42
-  let result = f "anything"
-  result

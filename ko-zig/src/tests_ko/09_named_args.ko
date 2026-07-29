@@ -1,5 +1,0 @@
-# Test: named arguments (~name:expr) in function calls
-fn greet name = name
-fn main =
-  let result = greet ~name:"Alice"
-  result

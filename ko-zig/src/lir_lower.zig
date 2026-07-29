@@ -346,6 +346,43 @@ pub const LirLower = struct {
         return self.emit(.{ .primop = .{ .op = op, .args = try self.dupeIds(&.{ a, b }) } }, ty);
     }
 
+    /// Lower `?` (try_op): unwrap a Result, early-return on Err.
+    fn lowerTryOp(self: *LirLower, arg_id: hir.HirId) LowerError!lir.LocalId {
+        const result_val = try self.lowerExpr(arg_id);
+        const result_struct = try self.ctorStructType(1);
+        const result_ptr = try self.emit(.{ .inttoptr = .{ .val = result_val, .ty = .{ .opaque_type = {} } } }, .{ .opaque_type = {} });
+
+        const tag_ptr = try self.gepStruct(result_struct, result_ptr, 0, .{ .int = {} });
+        const tag = try self.emit(.{ .load = tag_ptr }, .{ .int = {} });
+
+        const zero = try self.emit(.{ .int = 0 }, .{ .int = {} });
+        const is_ok = try self.emit(.{ .primop = .{ .op = .eq, .args = try self.dupeIds(&.{ tag, zero }) } }, .{ .bool = {} });
+
+        const ok_id = self.rid();
+        const err_id = self.rid();
+        const merge_id = self.rid();
+
+        self.terminateCurrent(.{ .cond_br = .{
+            .cond = is_ok,
+            .then = .{ .target = ok_id },
+            .else_ = .{ .target = err_id },
+        } });
+
+        try self.startBlockWithId(ok_id, &.{});
+        const val_ptr = try self.gepStruct(result_struct, result_ptr, 1, .{ .int = {} });
+        const ok_val = try self.emit(.{ .load = val_ptr }, .{ .int = {} });
+        self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{ok_val}) } });
+
+        try self.startBlockWithId(err_id, &.{});
+        const err_ptr = try self.gepStruct(result_struct, result_ptr, 1, .{ .int = {} });
+        const err_val = try self.emit(.{ .load = err_ptr }, .{ .int = {} });
+        self.terminateCurrent(.{ .ret = err_val });
+
+        const result = try self.newLocal(.{ .int = {} });
+        try self.startBlockWithId(merge_id, try self.dupeIds(&.{result}));
+        return result;
+    }
+
     /// GEP into a struct value at a constant field index.
     fn gepStruct(self: *LirLower, struct_ty: lir.LirType, ptr: lir.LocalId, field_index: usize, pointee: lir.LirType) LowerError!lir.LocalId {
         const idx0 = try self.emit(.{ .int = 0 }, .{ .int = {} });
@@ -412,8 +449,27 @@ pub const LirLower = struct {
             .{ "String.toLowerCase", "ko_string_to_lower" },
             .{ "String.trim", "ko_string_trim" },
             .{ "Int.toString", "ko_int_to_string" },
+            .{ "Int.pow", "ko_int_pow" },
+            .{ "Int.gcd", "ko_int_gcd" },
+            .{ "Int.lcm", "ko_int_lcm" },
+            .{ "Int.factorial", "ko_int_factorial" },
+            .{ "Int.isqrt", "ko_int_isqrt" },
+
         };
         for (entries) |e| {
+            try self.std_names.put(e[0], e[1]);
+            try self.globals.put(e[0], .{ .arity = 0, .kind = .std_fn });
+        }
+        // Result operations (mapped to stdlib.zig native implementations)
+        const result_entries = [_][2][]const u8{
+            .{ "Result.is_ok", "ko_result_is_ok" },
+            .{ "Result.is_err", "ko_result_is_err" },
+            .{ "Result.unwrap", "ko_result_unwrap" },
+            .{ "Result.map", "ko_result_map" },
+            .{ "Result.fold", "ko_result_fold" },
+            .{ "Result.and_then", "ko_result_and_then" },
+        };
+        for (result_entries) |e| {
             try self.std_names.put(e[0], e[1]);
             try self.globals.put(e[0], .{ .arity = 0, .kind = .std_fn });
         }
@@ -506,7 +562,8 @@ pub const LirLower = struct {
             .ref => |inner| self.lowerRef(inner),
             .deref => |inner| self.lowerDeref(inner, e.ty),
             .assign => |a| self.lowerAssign(a),
-            .comptime_expr, .let_rec => error.Unsupported,
+            .comptime_expr => |inner| try self.lowerComptimeExpr(inner),
+            .let_rec => error.Unsupported,
         };
     }
 
@@ -525,6 +582,10 @@ pub const LirLower = struct {
             const x = try self.lowerExpr(p.args[0]);
             const b = try self.coerce(x, .{ .bool = {} });
             return self.emit(.{ .primop = .{ .op = .not_, .args = try self.dupeIds(&.{b}) } }, .{ .bool = {} });
+        }
+        // ? operator: primop(.add, [x]) is the HIR encoding of try_op.
+        if (p.op == .add and p.args.len == 1) {
+            return self.lowerTryOp(p.args[0]);
         }
         if (p.args.len != 2) return error.Unsupported;
         const a = try self.lowerExpr(p.args[0]);
@@ -606,8 +667,18 @@ pub const LirLower = struct {
             .std_fn => return self.lowerStdFnCall(name, args, result_hir_ty),
             .ctor => return self.lowerConstructorApply(name, args),
             .user_fn => {
-                if (args.len != g.arity) {
-                    std.debug.print("lir_lower: partial application of '{s}' ({d}/{d} args) not yet supported\n", .{ name, args.len, g.arity });
+                if (args.len < g.arity) {
+                    const sig = self.fn_sigs.get(name).?;
+                    var fn_val = try self.lowerGlobalValue(name);
+                    for (args, 0..) |ah, i| {
+                        const arg_lty = sig.params[i];
+                        const a = try self.coerce(try self.lowerExpr(ah), arg_lty);
+                        fn_val = try self.emitClosureApply(fn_val, a, arg_lty, .{ .opaque_type = {} });
+                    }
+                    return fn_val;
+                }
+                if (args.len > g.arity) {
+                    std.debug.print("lir_lower: too many arguments for '{s}' ({d}/{d})\n", .{ name, args.len, g.arity });
                     return error.ArityMismatch;
                 }
                 const sig = self.fn_sigs.get(name).?;
@@ -664,12 +735,38 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_string_to_lower")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_string_trim")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_to_string")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .string = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_pow")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_gcd")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_lcm")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_factorial")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_isqrt")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_is_ok")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_is_err")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_unwrap")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_map")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_fold")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_and_then")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             return error.Unsupported;
         };
         if (args.len != spec.params.len) return error.ArityMismatch;
         const fn_local = try self.emit(.{ .fn_ref = runtime }, .{ .opaque_type = {} });
         const arg_locals = try self.allocator.alloc(lir.LocalId, args.len);
-        for (args, 0..) |ah, i| arg_locals[i] = try self.coerce(try self.lowerExpr(ah), spec.params[i]);
+        for (args, 0..) |ah, i| {
+            var arg_val = try self.coerce(try self.lowerExpr(ah), spec.params[i]);
+            // C runtime functions (ko_result_map, ko_result_and_then, etc.)
+            // expect function values in the Kō calling convention: bit 0 = 1
+            // for closures, bit 0 = 0 for raw function pointers.
+            // The LIR closure representation is a raw heap pointer, so we must
+            // set bit 0 before passing to C runtime functions.
+            if (std.meta.activeTag(spec.params[i]) == .int) {
+                const hir_ty = self.resolve(self.exprs[ah].ty);
+                if (hir_ty.* == .arrow) {
+                    const one = try self.emit(.{ .int = 1 }, .{ .int = {} });
+                    arg_val = try self.emit(.{ .primop = .{ .op = .or_, .args = try self.dupeIds(&.{ arg_val, one }) } }, .{ .int = {} });
+                }
+            }
+            arg_locals[i] = arg_val;
+        }
         const result = try self.emit(.{ .call = .{
             .func = fn_local,
             .args = arg_locals,
@@ -680,7 +777,7 @@ pub const LirLower = struct {
     }
 
     /// `println`/`print`/`inspect` via the legacy `*_with_tag` convention:
-    /// `(value as i64, type tag, ctor/record name ptr or null, 0)`.
+    /// `(value as i64, type tag, ctor/record name ptr or null, 0, arity)`.
     fn lowerStdPrint(self: *LirLower, name: []const u8, args: []const hir.HirId) LowerError!lir.LocalId {
         if (args.len != 1) return error.ArityMismatch;
         const arg_hir = args[0];
@@ -698,6 +795,31 @@ pub const LirLower = struct {
             name_local = try self.emit(.{ .inttoptr = .{ .val = zero, .ty = .{ .opaque_type = {} } } }, .{ .opaque_type = {} });
         }
         const zero2 = try self.emit(.{ .int = 0 }, .{ .int = {} });
+        // Compute arity for compound types
+        const arity_val: i64 = switch (tag) {
+            9 => blk: { // tuple
+                const ty = self.resolve(self.exprs[arg_hir].ty);
+                if (ty.* == .tuple) break :blk @intCast(ty.tuple.len);
+                break :blk 0;
+            },
+            6 => blk: { // constructor
+                var cur = arg_hir;
+                while (true) {
+                    switch (self.exprs[cur].kind) {
+                        .constructor => |c| break :blk @intCast(c.args.len),
+                        .apply => |a| cur = a.func,
+                        else => break :blk 0,
+                    }
+                }
+            },
+            7 => blk: { // record
+                const ty = self.resolve(self.exprs[arg_hir].ty);
+                if (ty.* == .record) break :blk @intCast(ty.record.fields.len);
+                break :blk 0;
+            },
+            else => 0,
+        };
+        const arity_local = try self.emit(.{ .int = arity_val }, .{ .int = {} });
         const runtime: []const u8 = if (std.mem.eql(u8, name, "println"))
             "println_with_tag"
         else if (std.mem.eql(u8, name, "print"))
@@ -705,8 +827,8 @@ pub const LirLower = struct {
         else
             "inspect";
         const fn_local = try self.emit(.{ .fn_ref = runtime }, .{ .opaque_type = {} });
-        const call_args = try self.dupeIds(&.{ boxed, tag_local, name_local, zero2 });
-        const param_tys = try self.allocator.alloc(lir.LirType, 4);
+        const call_args = try self.dupeIds(&.{ boxed, tag_local, name_local, zero2, arity_local });
+        const param_tys = try self.allocator.alloc(lir.LirType, 5);
         for (param_tys, 0..) |*pt, i| pt.* = if (i == 2) .{ .opaque_type = {} } else .{ .int = {} };
         return self.emit(.{ .call = .{
             .func = fn_local,
@@ -1003,43 +1125,112 @@ pub const LirLower = struct {
     }
 
     // =================================================================
-    // Match (naive linear chain; decision trees are Phase 6)
+    // Match — decision tree with linear chain fallback
     // =================================================================
+
+    /// A row in the pattern matrix for the decision tree compiler.
+    const MatchRow = struct {
+        /// The scrutinee variable for this column.
+        scrut_var: lir.LocalId,
+        /// The pattern to test.
+        pattern: hir.Pattern,
+        /// Index into the match arms.
+        arm_index: usize,
+    };
 
     fn lowerMatch(self: *LirLower, m: hir.MatchExpr, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
         const scrut = try self.lowerExpr(m.scrutinee);
         const scrut_ty = self.exprs[m.scrutinee].ty;
         const result_ty = try self.lowerType(result_hir_ty);
+
+        // Use decision tree compilation for all matches.
         const merge_id = self.rid();
         const result = try self.newLocal(result_ty);
-        var pending_fail: ?lir.BlockId = null;
+
+        var rows: std.ArrayList(MatchRow) = .empty;
+        defer rows.deinit(self.allocator);
         for (m.arms, 0..) |arm, i| {
-            if (pending_fail == null and i > 0) break; // dead arm after unconditional match
-            if (pending_fail) |fid| try self.startBlockWithId(fid, &.{});
+            try rows.append(self.allocator, .{
+                .scrut_var = scrut,
+                .pattern = arm.pattern,
+                .arm_index = i,
+            });
+        }
+
+        try self.lowerDecisionTree(rows.items, m.arms, scrut, scrut_ty, result_ty, merge_id);
+        try self.startBlockWithId(merge_id, try self.dupeIds(&.{result}));
+        return result;
+    }
+
+    /// Compile a match via recursive decision tree (Maranget algorithm).
+    /// Each call compiles one column of the pattern matrix, specializing on
+    /// constructors and falling through to a default branch.
+    fn lowerDecisionTree(
+        self: *LirLower,
+        rows: []const MatchRow,
+        arms: []const hir.MatchArm,
+        scrut: lir.LocalId,
+        scrut_ty: *const typecheck.Type,
+        result_ty: lir.LirType,
+        merge_id: lir.BlockId,
+    ) LowerError!void {
+        // Base case: all patterns are wildcards or binds — bind and emit first matching arm.
+        var all_simple = true;
+        for (rows) |row| {
+            switch (row.pattern) {
+                .wildcard, .bind => {},
+                else => { all_simple = false; break; },
+            }
+        }
+        if (all_simple and rows.len > 0) {
+            for (rows) |row| {
+                if (row.pattern == .bind) {
+                    try self.state.hir_map.put(row.pattern.bind, row.scrut_var);
+                }
+            }
+            const arm = arms[rows[0].arm_index];
+            const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
+            self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+            return;
+        }
+
+        // Column selection heuristic: pick the row whose constructor appears
+        // most frequently across all rows. This minimizes the number of tests
+        // in the default branch (each test specializes away one constructor).
+        var test_row_idx: ?usize = null;
+        var best_ctor_count: usize = 0;
+        for (rows, 0..) |row, i| {
+            switch (row.pattern) {
+                .constructor => |cp| {
+                    var count: usize = 0;
+                    for (rows) |r| {
+                        if (r.pattern == .constructor and std.mem.eql(u8, r.pattern.constructor.ctor_name, cp.ctor_name)) {
+                            count += 1;
+                        }
+                    }
+                    if (count > best_ctor_count) {
+                        best_ctor_count = count;
+                        test_row_idx = i;
+                    }
+                },
+                .literal => {
+                    // Literals are tested individually; pick the first one.
+                    if (test_row_idx == null) test_row_idx = i;
+                },
+                else => {},
+            }
+        }
+        if (test_row_idx == null) {
+            // No constructor/literal patterns found. Handle tuple/record patterns
+            // by extracting fields and binding, then emit the first matching arm.
+            // This is similar to the base case but uses lowerPatternTest for
+            // field extraction.
             var bindings: std.ArrayList(Binding) = .empty;
             defer bindings.deinit(self.allocator);
-            const cond = try self.lowerPatternTest(arm.pattern, scrut, scrut_ty, &bindings);
-            const arm_id = self.rid();
-            const is_last = i == m.arms.len - 1;
-            if (cond) |c| {
-                if (is_last) {
-                    const un_id = self.rid();
-                    self.terminateCurrent(.{ .cond_br = .{ .cond = c, .then = .{ .target = arm_id }, .else_ = .{ .target = un_id } } });
-                    try self.startBlockWithId(un_id, &.{});
-                    self.terminateCurrent(.{ .unreachable_ = {} });
-                    pending_fail = null; // handled — don't emit a duplicate fail block
-                } else {
-                    const fid = self.rid();
-                    self.terminateCurrent(.{ .cond_br = .{ .cond = c, .then = .{ .target = arm_id }, .else_ = .{ .target = fid } } });
-                    pending_fail = fid;
-                }
-            } else {
-                self.terminateCurrent(.{ .br = .{ .target = arm_id } });
-                pending_fail = null;
-            }
-            try self.startBlockWithId(arm_id, &.{});
+            const first = rows[0];
+            _ = try self.lowerPatternTest(first.pattern, first.scrut_var, scrut_ty, &bindings);
             for (bindings.items) |b| switch (b) {
-                .alias => |a| { try self.state.hir_map.put(a.hir_lv, a.lir_local); },
+                .alias => |a| try self.state.hir_map.put(a.hir_lv, a.lir_local),
                 .field => |f| {
                     const struct_ty = try self.ctorStructType(f.ctor_arity);
                     const ptr = try self.coerce(f.scrut_local, .{ .opaque_type = {} });
@@ -1049,15 +1240,280 @@ pub const LirLower = struct {
                     try self.state.hir_map.put(f.hir_lv, natural);
                 },
             };
+            const arm = arms[first.arm_index];
             const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
             self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+            return;
         }
-        if (pending_fail) |fid| {
-            try self.startBlockWithId(fid, &.{});
-            self.terminateCurrent(.{ .unreachable_ = {} });
+        const test_row = rows[test_row_idx.?];
+
+        switch (test_row.pattern) {
+            .constructor => |cp| {
+                const entry = self.ctors.get(cp.ctor_name) orelse {
+                    self.terminateCurrent(.{ .unreachable_ = {} });
+                    return;
+                };
+
+                if (entry.arity == 0) {
+                    // Zero-arg constructor: simple tag comparison.
+                    const tag_val = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
+                    const cmp = try self.emitPrimop2(.eq, test_row.scrut_var, tag_val);
+
+                    const succ_id = self.rid();
+                    const fail_id = self.rid();
+                    self.terminateCurrent(.{ .cond_br = .{ .cond = cmp, .then = .{ .target = succ_id }, .else_ = .{ .target = fail_id } } });
+
+                    // Success block: bind and emit matching arm.
+                    try self.startBlockWithId(succ_id, &.{});
+                    const arm = arms[rows[test_row_idx.?].arm_index];
+                    const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
+                    self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+
+                    // Default block: compile remaining rows.
+                    try self.startBlockWithId(fail_id, &.{});
+                    var default_rows: std.ArrayList(MatchRow) = .empty;
+                    defer default_rows.deinit(self.allocator);
+                    for (rows) |row| {
+                        switch (row.pattern) {
+                            .constructor => |rcp| {
+                                if (!std.mem.eql(u8, rcp.ctor_name, cp.ctor_name)) {
+                                    try default_rows.append(self.allocator, .{
+                                        .scrut_var = row.scrut_var,
+                                        .pattern = row.pattern,
+                                        .arm_index = row.arm_index,
+                                    });
+                                }
+                            },
+                            else => {
+                                try default_rows.append(self.allocator, .{
+                                    .scrut_var = row.scrut_var,
+                                    .pattern = row.pattern,
+                                    .arm_index = row.arm_index,
+                                });
+                            },
+                        }
+                    }
+                    if (default_rows.items.len > 0) {
+                        try self.lowerDecisionTree(default_rows.items, arms, test_row.scrut_var, scrut_ty, result_ty, merge_id);
+                    } else {
+                        self.terminateCurrent(.{ .unreachable_ = {} });
+                    }
+                } else {
+                    // Multi-arg constructor: emit tag check directly, then
+                    // recurse on sub-patterns in the success branch.
+                    const struct_ty = try self.ctorStructType(entry.arity);
+                    const field_tys = try self.ctorFieldTypes(cp.ctor_name);
+
+                    // Raw/boxed check: raw tags (< 4096) can't match multi-arg ctors.
+                    const threshold = try self.emit(.{ .int = 4096 }, .{ .int = {} });
+                    const is_raw = try self.emitPrimop2(.lt, test_row.scrut_var, threshold);
+                    const raw_id = self.rid();
+                    const deref_id = self.rid();
+                    self.terminateCurrent(.{ .cond_br = .{ .cond = is_raw, .then = .{ .target = raw_id }, .else_ = .{ .target = deref_id } } });
+
+                    // Raw path: always fails for multi-arg.
+                    try self.startBlockWithId(raw_id, &.{});
+                    const fail_id_raw = self.rid();
+                    self.terminateCurrent(.{ .br = .{ .target = fail_id_raw } });
+
+                    // Deref path: load tag, compare.
+                    try self.startBlockWithId(deref_id, &.{});
+                    const ptr = try self.coerce(test_row.scrut_var, .{ .opaque_type = {} });
+                    const tag_slot = try self.gepStruct(struct_ty, ptr, 0, .{ .int = {} });
+                    const tag = try self.emit(.{ .load = tag_slot }, .{ .int = {} });
+                    const want = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
+                    const tag_cmp = try self.emitPrimop2(.eq, tag, want);
+
+                    const succ_id = self.rid();
+                    self.terminateCurrent(.{ .cond_br = .{ .cond = tag_cmp, .then = .{ .target = succ_id }, .else_ = .{ .target = fail_id_raw } } });
+
+                    // Success: extract fields, bind wildcards, recurse on sub-patterns.
+                    try self.startBlockWithId(succ_id, &.{});
+
+                    // Bind simple wildcards directly.
+                    for (cp.args, 0..) |sub, fi| {
+                        if (sub == .wildcard) continue;
+                        if (sub == .bind) {
+                            const fty = if (fi < field_tys.len) field_tys[fi] else self.inferer.newType(.{ .int = {} }) catch return error.TypeError;
+                            const slot = try self.gepStruct(struct_ty, ptr, fi + 1, .{ .int = {} });
+                            const raw = try self.emit(.{ .load = slot }, .{ .int = {} });
+                            const natural = try self.coerce(raw, try self.lowerType(fty));
+                            try self.state.hir_map.put(sub.bind, natural);
+                        }
+                    }
+
+                    // Build specialized rows: for each row matching this ctor,
+                    // create new rows from its sub-patterns.
+                    var specialized_rows: std.ArrayList(MatchRow) = .empty;
+                    defer specialized_rows.deinit(self.allocator);
+                    for (rows) |row| {
+                        if (row.pattern == .constructor) {
+                            const rcp = row.pattern.constructor;
+                            if (std.mem.eql(u8, rcp.ctor_name, cp.ctor_name)) {
+                                // This row matches our ctor — add sub-patterns as new rows.
+                                for (rcp.args, 0..) |sub, fi| {
+                                    const fty = if (fi < field_tys.len) field_tys[fi] else self.inferer.newType(.{ .int = {} }) catch return error.TypeError;
+                                    const slot = try self.gepStruct(struct_ty, ptr, fi + 1, .{ .int = {} });
+                                    const field_val = try self.emit(.{ .load = slot }, .{ .int = {} });
+                                    const field_lir_ty = try self.lowerType(fty);
+                                    const field_scrut = try self.coerce(field_val, field_lir_ty);
+                                    try specialized_rows.append(self.allocator, .{
+                                        .scrut_var = field_scrut,
+                                        .pattern = sub,
+                                        .arm_index = row.arm_index,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    if (specialized_rows.items.len > 0) {
+                        try self.lowerDecisionTree(specialized_rows.items, arms, test_row.scrut_var, scrut_ty, result_ty, merge_id);
+                    } else {
+                        self.terminateCurrent(.{ .unreachable_ = {} });
+                    }
+
+                    // Default: all rows that didn't match this ctor.
+                    try self.startBlockWithId(fail_id_raw, &.{});
+                    var default_rows: std.ArrayList(MatchRow) = .empty;
+                    defer default_rows.deinit(self.allocator);
+                    for (rows) |row| {
+                        switch (row.pattern) {
+                            .constructor => |rcp| {
+                                if (!std.mem.eql(u8, rcp.ctor_name, cp.ctor_name)) {
+                                    try default_rows.append(self.allocator, .{
+                                        .scrut_var = row.scrut_var,
+                                        .pattern = row.pattern,
+                                        .arm_index = row.arm_index,
+                                    });
+                                }
+                            },
+                            else => {
+                                try default_rows.append(self.allocator, .{
+                                    .scrut_var = row.scrut_var,
+                                    .pattern = row.pattern,
+                                    .arm_index = row.arm_index,
+                                });
+                            },
+                        }
+                    }
+                    if (default_rows.items.len > 0) {
+                        try self.lowerDecisionTree(default_rows.items, arms, test_row.scrut_var, scrut_ty, result_ty, merge_id);
+                    } else {
+                        self.terminateCurrent(.{ .unreachable_ = {} });
+                    }
+                }
+            },
+            .literal => |lit| {
+                // Literal comparison.
+                const lit_val = switch (lit) {
+                    .int => |v| try self.emit(.{ .int = v }, .{ .int = {} }),
+                    .float => |v| try self.emit(.{ .float = v }, .{ .float = {} }),
+                    .bool => |v| try self.emit(.{ .bool = v }, .{ .bool = {} }),
+                    .char => |v| try self.emit(.{ .char = if (v.len > 0) v[0] else 0 }, .{ .char = {} }),
+                    .string => {
+                        // String patterns unsupported — treat as wildcard.
+                        self.terminateCurrent(.{ .unreachable_ = {} });
+                        return;
+                    },
+                };
+                const sc = try self.coerce(scrut, self.localType(lit_val));
+                const cmp = try self.emitPrimop2(.eq, sc, lit_val);
+
+                const succ_id = self.rid();
+                const fail_id = self.rid();
+                self.terminateCurrent(.{ .cond_br = .{ .cond = cmp, .then = .{ .target = succ_id }, .else_ = .{ .target = fail_id } } });
+
+                // Success block.
+                try self.startBlockWithId(succ_id, &.{});
+                const arm = arms[rows[test_row_idx.?].arm_index];
+                const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
+                self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+
+                // Default block: all rows except the one we just tested.
+                try self.startBlockWithId(fail_id, &.{});
+                var default_rows: std.ArrayList(MatchRow) = .empty;
+                defer default_rows.deinit(self.allocator);
+                for (rows, 0..) |row, i| {
+                    if (i != test_row_idx.?) {
+                        try default_rows.append(self.allocator, .{
+                            .scrut_var = row.scrut_var,
+                            .pattern = row.pattern,
+                            .arm_index = row.arm_index,
+                        });
+                    }
+                }
+                if (default_rows.items.len > 0) {
+                    try self.lowerDecisionTree(default_rows.items, arms, scrut, scrut_ty, result_ty, merge_id);
+                } else {
+                    self.terminateCurrent(.{ .unreachable_ = {} });
+                }
+            },
+            else => {
+                // Wildcard/bind should have been caught by base case.
+                // Tuple/record patterns: extract fields and bind, then emit arm.
+                var bindings: std.ArrayList(Binding) = .empty;
+                defer bindings.deinit(self.allocator);
+                const cond = try self.lowerPatternTest(test_row.pattern, scrut, scrut_ty, &bindings);
+                if (cond) |c| {
+                    // Conditional match: branch to success or default.
+                    const succ_id = self.rid();
+                    const fail_id = self.rid();
+                    self.terminateCurrent(.{ .cond_br = .{ .cond = c, .then = .{ .target = succ_id }, .else_ = .{ .target = fail_id } } });
+
+                    try self.startBlockWithId(succ_id, &.{});
+                    for (bindings.items) |b| switch (b) {
+                        .alias => |a| try self.state.hir_map.put(a.hir_lv, a.lir_local),
+                        .field => |f| {
+                            const struct_ty = try self.ctorStructType(f.ctor_arity);
+                            const ptr = try self.coerce(f.scrut_local, .{ .opaque_type = {} });
+                            const slot = try self.gepStruct(struct_ty, ptr, f.field_index + 1, .{ .int = {} });
+                            const raw = try self.emit(.{ .load = slot }, .{ .int = {} });
+                            const natural = try self.coerce(raw, try self.lowerType(&f.field_ty));
+                            try self.state.hir_map.put(f.hir_lv, natural);
+                        },
+                    };
+                    const arm = arms[rows[test_row_idx.?].arm_index];
+                    const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
+                    self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+
+                    // Default: compile remaining rows.
+                    try self.startBlockWithId(fail_id, &.{});
+                    var default_rows: std.ArrayList(MatchRow) = .empty;
+                    defer default_rows.deinit(self.allocator);
+                    for (rows, 0..) |row, i| {
+                        if (i != test_row_idx.?) {
+                            try default_rows.append(self.allocator, .{
+                                .scrut_var = row.scrut_var,
+                                .pattern = row.pattern,
+                                .arm_index = row.arm_index,
+                            });
+                        }
+                    }
+                    if (default_rows.items.len > 0) {
+                        try self.lowerDecisionTree(default_rows.items, arms, test_row.scrut_var, scrut_ty, result_ty, merge_id);
+                    } else {
+                        self.terminateCurrent(.{ .unreachable_ = {} });
+                    }
+                } else {
+                    // Unconditional match: bind and emit arm body.
+                    for (bindings.items) |b| switch (b) {
+                        .alias => |a| try self.state.hir_map.put(a.hir_lv, a.lir_local),
+                        .field => |f| {
+                            const struct_ty = try self.ctorStructType(f.ctor_arity);
+                            const ptr = try self.coerce(f.scrut_local, .{ .opaque_type = {} });
+                            const slot = try self.gepStruct(struct_ty, ptr, f.field_index + 1, .{ .int = {} });
+                            const raw = try self.emit(.{ .load = slot }, .{ .int = {} });
+                            const natural = try self.coerce(raw, try self.lowerType(&f.field_ty));
+                            try self.state.hir_map.put(f.hir_lv, natural);
+                        },
+                    };
+                    const arm = arms[rows[test_row_idx.?].arm_index];
+                    const v = try self.coerce(try self.lowerExpr(arm.body), result_ty);
+                    self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{v}) } });
+                }
+            },
         }
-        try self.startBlockWithId(merge_id, try self.dupeIds(&.{result}));
-        return result;
     }
 
     /// Compile a pattern to a condition (null = matches unconditionally)
@@ -1084,6 +1540,15 @@ pub const LirLower = struct {
             .tuple => |subs| return self.lowerTuplePattern(subs, scrut, scrut_ty, bindings),
             .record => |rp| return self.lowerRecordPattern(rp, scrut, scrut_ty, bindings),
         }
+    }
+
+    /// Get field types for a constructor from its type scheme.
+    fn ctorFieldTypes(self: *LirLower, ctor_name: []const u8) ![]const *const typecheck.Type {
+        var field_tys: std.ArrayList(*const typecheck.Type) = .empty;
+        if (self.inferer.global.getScheme(ctor_name)) |scheme| {
+            _ = try self.arrowChain(scheme.body, &field_tys);
+        }
+        return try field_tys.toOwnedSlice(self.allocator);
     }
 
     fn lowerCtorPattern(self: *LirLower, cp: hir.ConstructorPattern, scrut: lir.LocalId, bindings: *std.ArrayList(Binding)) LowerError!?lir.LocalId {
@@ -1273,6 +1738,20 @@ pub const LirLower = struct {
     // =================================================================
     // Mutable refs (legacy rep: address as i64)
     // =================================================================
+
+    fn lowerComptimeExpr(self: *LirLower, inner: hir.HirId) LowerError!lir.LocalId {
+        const inner_expr = self.exprs[inner];
+        if (inner_expr.kind == .global) {
+            const name = inner_expr.kind.global;
+            const g = self.globals.get(name) orelse return error.UndefinedGlobal;
+            if (g.kind == .user_fn and g.arity == 0) {
+                const sig = self.fn_sigs.get(name).?;
+                const fn_local = try self.emit(.{ .fn_ref = name }, .{ .opaque_type = {} });
+                return self.emit(.{ .call = .{ .func = fn_local, .args = &.{}, .fn_type = sig } }, sig.returns);
+            }
+        }
+        return self.lowerExpr(inner);
+    }
 
     fn lowerRef(self: *LirLower, inner: hir.HirId) LowerError!lir.LocalId {
         const v = try self.lowerExpr(inner);

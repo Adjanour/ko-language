@@ -3,10 +3,21 @@ const Io = std.Io;
 const linux = std.os.linux;
 const llvm = @import("llvm");
 const core = llvm.core;
+const types = llvm.types;
+const engine = llvm.engine;
+const stdlib = @import("stdlib.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
+const hir_lower = @import("hir_lower.zig");
+const hir_fold = @import("hir_fold.zig");
+const hir_dce = @import("hir_dce.zig");
+const hir_beta = @import("hir_beta.zig");
+const hir_let_simpl = @import("hir_let_simpl.zig");
+const hir_known_match = @import("hir_known_match.zig");
+const lir_lower = @import("lir_lower.zig");
+const codegen_lir = @import("codegen_lir.zig");
 const repl_mod = @import("repl.zig");
 const module_loader_mod = @import("module_loader.zig");
 
@@ -37,6 +48,8 @@ fn printHelp(io: Io) void {
         \\Options:
         \\  -h, --help       Show this help
         \\  -v, --version    Show version
+        \\  --use-lir        Use experimental HIR→LIR→LLVM pipeline
+        \\                   (run/--dump-ir/--emit-ir only)
         \\
     , .{VERSION}) catch {};
     w.interface.flush() catch {};
@@ -100,6 +113,26 @@ fn reportHelp(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []co
     w.interface.print(fmt, args) catch {};
     w.interface.print("\n", .{}) catch {};
     w.interface.flush() catch {};
+}
+
+fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionEngineRef) void {
+    const result_names = [_][*:0]const u8{
+        "ko_result_is_ok", "ko_result_is_err", "ko_result_unwrap",
+        "ko_result_map", "ko_result_fold", "ko_result_and_then",
+    };
+    const result_ptrs = [_]*const anyopaque{
+        @ptrCast(&stdlib.ko_result_is_ok),
+        @ptrCast(&stdlib.ko_result_is_err),
+        @ptrCast(&stdlib.ko_result_unwrap),
+        @ptrCast(&stdlib.ko_result_map),
+        @ptrCast(&stdlib.ko_result_fold),
+        @ptrCast(&stdlib.ko_result_and_then),
+    };
+    for (result_names, result_ptrs) |name, impl| {
+        if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(impl));
+        }
+    }
 }
 
 fn printSourceLine(io: Io, w: anytype, filename: []const u8, loc: parser.Loc) void {
@@ -262,7 +295,72 @@ pub fn main(init: std.process.Init) !void {
     };
     const typecheck_time = nowNs() - timer - parse_time;
 
-    // Codegen
+    // Experimental HIR → LIR → LLVM pipeline (--use-lir)
+    if (use_lir) {
+        var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
+        defer hl.deinit();
+        hl.lowerProgram(&prog) catch |err| {
+            reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
+            std.process.exit(1);
+        };
+
+        // HIR optimization passes (run before LIR lowering)
+        var beta = hir_beta.HirBeta.init(init.arena.allocator(), &hl.expressions);
+        beta.run();
+        var let_simpl = hir_let_simpl.HirLetSimpl.init(init.arena.allocator(), &hl.expressions);
+        let_simpl.run();
+        var known = hir_known_match.HirKnownMatch.init(init.arena.allocator(), &hl.expressions);
+        known.run();
+        var fold = hir_fold.HirFold.init(init.arena.allocator(), &hl.expressions);
+        fold.run();
+        var dce = hir_dce.HirDce.init(init.arena.allocator(), &hl.expressions);
+        dce.run(hl.roots.items);
+
+        var ll = lir_lower.LirLower.init(init.arena.allocator(), hl.expressions.items, hl.defs.items, &inferer);
+        defer ll.deinit();
+        const lir_fns = ll.lowerProgram() catch |err| {
+            reportError(io, fname, null, "LIR lowering error: {s}", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        var lcg = codegen_lir.CodegenLir.init(init.arena.allocator(), "ko_module");
+        defer lcg.deinit();
+        lcg.declareRuntime();
+        lcg.codegenProgram(lir_fns) catch |err| {
+            reportError(io, fname, null, "LIR codegen error: {s}", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        switch (mode) {
+            .ir => core.LLVMDumpModule(lcg.module),
+            .emit_ir => {
+                const ir_str = try lcg.printToString();
+                const out_name = output orelse "output.ll";
+                const out_file = try cwd.createFile(io, out_name, .{});
+                defer out_file.close(io);
+                var out_buf: [4096]u8 = undefined;
+                var out_writer = out_file.writer(io, &out_buf);
+                try out_writer.interface.writeAll(ir_str);
+                try out_writer.interface.flush();
+                try writer.interface.print("wrote {s}\n", .{out_name});
+                try writer.interface.flush();
+            },
+            .run => {
+                lcg.module_owned_by_jit = true;
+                var jit = try codegen_mod.Jit.init(lcg.module, 0);
+                defer jit.deinit();
+                // Map Result native functions for JIT
+                mapLirJitResultFns(lcg.module, jit.engine);
+                _ = try jit.runMain();
+            },
+            .obj, .exe => {
+                reportError(io, fname, null, "--use-lir does not support AOT modes yet", .{});
+                std.process.exit(1);
+            },
+            .repl => unreachable,
+        }
+        return;
+    }
+
+    // Codegen (legacy AST→LLVM path)
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
     cg.expr_type_tags = &inferer.expr_type_tags;
@@ -272,26 +370,6 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     const codegen_time = nowNs() - timer - parse_time - typecheck_time;
-
-    if (use_lir) {
-        // HIR → LIR → LLVM path (experimental --use-lir)
-        var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
-        defer hl.deinit();
-        hl.lowerProgram(&prog) catch |err| {
-            reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
-            std.process.exit(1);
-        };
-        const ll = lir_lower.LirLower.init(init.arena.allocator(), hl.expressions.items, hl.defs.items, &inferer);
-        defer ll.deinit();
-        const lir_fns = ll.lowerProgram() catch |err| {
-            reportError(io, fname, null, "LIR lowering error: {s}", .{@errorName(err)});
-            std.process.exit(1);
-        };
-        cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module_lir");
-        // The legacy Codegen struct is reused for JIT/AOT; point to the LIR
-        // module instead of re-creating from scratch.
-        // For now, only the JIT run path uses the new codegen.
-    }
 
 
     if (mode != .run) {

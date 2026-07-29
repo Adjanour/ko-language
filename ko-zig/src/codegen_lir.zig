@@ -114,6 +114,28 @@ pub const CodegenLir = struct {
     pub fn declareRuntime(self: *CodegenLir) void {
         var scg = stdlib_codegen.StdlibCodegen.init(self.context, self.module, self.builder, self.allocator);
         stdlib_codegen.StdlibCodegen.generateAll(&scg);
+
+        const i64_ty = core.LLVMInt64TypeInContext(self.context);
+
+        // Result operations (declared as extern, mapped to native via JIT)
+        {
+            var params = [_]types.LLVMTypeRef{i64_ty};
+            const fn_ty1 = core.LLVMFunctionType(i64_ty, &params, 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_result_is_ok", fn_ty1);
+            _ = core.LLVMAddFunction(self.module, "ko_result_is_err", fn_ty1);
+        }
+        {
+            var params = [_]types.LLVMTypeRef{ i64_ty, i64_ty };
+            const fn_ty2 = core.LLVMFunctionType(i64_ty, &params, 2, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_result_unwrap", fn_ty2);
+            _ = core.LLVMAddFunction(self.module, "ko_result_map", fn_ty2);
+            _ = core.LLVMAddFunction(self.module, "ko_result_and_then", fn_ty2);
+        }
+        {
+            var params = [_]types.LLVMTypeRef{ i64_ty, i64_ty, i64_ty };
+            const fn_ty3 = core.LLVMFunctionType(i64_ty, &params, 3, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_result_fold", fn_ty3);
+        }
     }
 
     /// Verify the whole module; dumps the verifier message on failure.
