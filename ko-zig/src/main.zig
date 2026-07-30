@@ -117,16 +117,22 @@ fn reportHelp(io: Io, filename: []const u8, loc: ?parser.Loc, comptime fmt: []co
 
 fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionEngineRef) void {
     const result_names = [_][*:0]const u8{
-        "ko_result_is_ok", "ko_result_is_err", "ko_result_unwrap",
+        "ko_result_is_ok", "ko_result_is_err", "ko_result_unwrap", "ko_result_unwrap_or",
         "ko_result_map", "ko_result_fold", "ko_result_and_then",
+        "ko_panic", "ko_panic_str", "ko_assert", "ko_assert_eq",
     };
     const result_ptrs = [_]*const anyopaque{
         @ptrCast(&stdlib.ko_result_is_ok),
         @ptrCast(&stdlib.ko_result_is_err),
-        @ptrCast(&stdlib.ko_result_unwrap),
+        @ptrCast(&stdlib.ko_result_unwrap_panic),
+        @ptrCast(&stdlib.ko_result_unwrap_or),
         @ptrCast(&stdlib.ko_result_map),
         @ptrCast(&stdlib.ko_result_fold),
         @ptrCast(&stdlib.ko_result_and_then),
+        @ptrCast(&stdlib.ko_panic),
+        @ptrCast(&stdlib.ko_panic_str),
+        @ptrCast(&stdlib.ko_assert),
+        @ptrCast(&stdlib.ko_assert_eq),
     };
     for (result_names, result_ptrs) |name, impl| {
         if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {

@@ -713,6 +713,37 @@ pub const Inferer = struct {
         quantified[0] = var_id;
         try self.global.set("inspect", .{ .quantified = quantified, .body = inspect_ty });
 
+        // panic : forall a. String -> a (never returns)
+        const panic_param = try self.newType(.string);
+        const panic_result = try self.newVarType("a");
+        const panic_ty = try self.allocator.create(Type);
+        panic_ty.* = .{ .arrow = .{ .from = panic_param, .to = panic_result } };
+        const panic_var_id = panic_result.variable.id;
+        const panic_quantified = try self.allocator.alloc(usize, 1);
+        panic_quantified[0] = panic_var_id;
+        try self.global.set("panic", .{ .quantified = panic_quantified, .body = panic_ty });
+
+        // assert : Bool -> () (panics if False)
+        {
+            const bool_ty = try self.newType(.bool);
+            const unit_ty = try self.newType(.unit);
+            const assert_ty = try self.allocator.create(Type);
+            assert_ty.* = .{ .arrow = .{ .from = bool_ty, .to = unit_ty } };
+            try self.global.set("assert", .{ .quantified = &.{}, .body = assert_ty });
+        }
+        // assert_eq : forall a. a -> a -> () (panics if not equal)
+        {
+            const ra = try self.newVarType("a");
+            const ra_to_ra_to_unit = try self.allocator.create(Type);
+            const ra_to_unit = try self.allocator.create(Type);
+            ra_to_unit.* = .{ .arrow = .{ .from = ra, .to = try self.newType(.unit) } };
+            ra_to_ra_to_unit.* = .{ .arrow = .{ .from = ra, .to = ra_to_unit } };
+            const qa = ra.variable.id;
+            const q = try self.allocator.alloc(usize, 1);
+            q[0] = qa;
+            try self.global.set("assert_eq", .{ .quantified = q, .body = ra_to_ra_to_unit });
+        }
+
         // String module builtins
         const string_ty = try self.newType(.string);
         const string_to_int = try self.allocator.create(Type);
@@ -838,7 +869,25 @@ pub const Inferer = struct {
             q[1] = qb;
             try self.global.set("Result.is_err", .{ .quantified = q, .body = result_to_int });
         }
-        // Result.unwrap : forall a b. a -> Result a b -> a
+        // Result.unwrap : forall a b. Result a b -> a (panicking version)
+        {
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const result_a_b = try self.allocator.create(Type);
+            const args_a_b = try self.allocator.alloc(*Type, 2);
+            args_a_b[0] = ra;
+            args_a_b[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_a_b } };
+            const result_to_a = try self.allocator.create(Type);
+            result_to_a.* = .{ .arrow = .{ .from = result_a_b, .to = ra } };
+            const qa = ra.variable.id;
+            const qb = rb.variable.id;
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = qa;
+            q[1] = qb;
+            try self.global.set("Result.unwrap", .{ .quantified = q, .body = result_to_a });
+        }
+        // Result.unwrapOr : forall a b. a -> Result a b -> a (non-panicking version)
         {
             const ra = try self.newVarType("a");
             const rb = try self.newVarType("b");
@@ -856,7 +905,7 @@ pub const Inferer = struct {
             const q = try self.allocator.alloc(usize, 2);
             q[0] = qa;
             q[1] = qb;
-            try self.global.set("Result.unwrap", .{ .quantified = q, .body = a_to_result_to_a });
+            try self.global.set("Result.unwrapOr", .{ .quantified = q, .body = a_to_result_to_a });
         }
         // Result.map : forall a b c. (a -> b) -> Result a c -> Result b c
         {

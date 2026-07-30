@@ -24,6 +24,7 @@ fn testRuntime(source: [:0]const u8) !i64 {
     var jit = try codegen_mod.Jit.init(cg.module, 0);
     defer jit.deinit();
     cg.module_owned_by_jit = true;
+    cg.mapBuiltinsToNative(jit.engine);
     return try jit.runMain();
 }
 
@@ -1829,6 +1830,24 @@ test "runtime: edge case chained arithmetic" {
     try std.testing.expectEqual(@as(i64, 55), result);
 }
 
+test "runtime: assert passes" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  assert true
+        \\  42
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
+test "runtime: assert_eq passes" {
+    const result = try testRuntime(
+        \\fn main =
+        \\  assert_eq 42 42
+        \\  42
+    );
+    try std.testing.expectEqual(@as(i64, 42), result);
+}
+
 test "runtime: deep recursion factorial 12" {
     const result = try testRuntime(
         \\fn fact n = if n <= 1 then 1 else n * fact (n - 1)
@@ -3157,7 +3176,10 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
         engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_is_err)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_unwrap")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap_panic)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_result_unwrap_or")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap_or)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_map")) |fn_val| {
         engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_map)));
@@ -3167,6 +3189,18 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_and_then")) |fn_val| {
         engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_and_then)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_panic")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_panic)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_panic_str")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_panic_str)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_assert")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_assert)));
+    }
+    if (core.LLVMGetNamedFunction(mod, "ko_assert_eq")) |fn_val| {
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_assert_eq)));
     }
 }
 
@@ -3424,12 +3458,12 @@ test "lir_lower: match on Result" {
     ));
 }
 
-test "lir_lower: Result.unwrap" {
+test "lir_lower: Result.unwrapOr" {
     try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
         \\type Result a b = Ok a | Err b
         \\fn main =
         \\  let r = Ok 42
-        \\  Result.unwrap 0 r
+        \\  Result.unwrapOr 0 r
     ));
 }
 

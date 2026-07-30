@@ -1282,6 +1282,23 @@ pub const StdlibCodegen = struct {
         self.buildRetVoid();
     }
 
+    pub fn codegenPanic(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type() };
+        _ = self.createFunction("ko_panic", self.voidType(), &params);
+        var params_str: [1]types.LLVMTypeRef = .{self.ptrType()};
+        _ = self.createFunction("ko_panic_str", self.voidType(), &params_str);
+    }
+
+    pub fn codegenAssert(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.ptrType() };
+        _ = self.createFunction("ko_assert", self.voidType(), &params);
+    }
+
+    pub fn codegenAssertEq(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType() };
+        _ = self.createFunction("ko_assert_eq", self.voidType(), &params);
+    }
+
     // ============================================================
     // I/O functions — full LLVM IR generation
     // ============================================================
@@ -1913,6 +1930,9 @@ pub const StdlibCodegen = struct {
 
         self.codegenInitStack();
         self.codegenCheckStack();
+        self.codegenPanic();
+        self.codegenAssert();
+        self.codegenAssertEq();
 
         // Generate I/O functions (inspect, println_with_tag, print_with_tag)
         self.codegenInspect();

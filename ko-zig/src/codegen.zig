@@ -336,6 +336,10 @@ pub const Codegen = struct {
             _ = self.named_values.put("ko_init_stack", fn_val) catch {};
         if (core.LLVMGetNamedFunction(self.module, "ko_check_stack")) |fn_val|
             _ = self.named_values.put("ko_check_stack", fn_val) catch {};
+        if (core.LLVMGetNamedFunction(self.module, "ko_panic")) |fn_val| {
+            _ = self.named_values.put("ko_panic", fn_val) catch {};
+            _ = self.named_values.put("panic", fn_val) catch {};
+        }
 
         // Int module
         if (core.LLVMGetNamedFunction(self.module, "ko_int_to_string")) |fn_val|
@@ -440,11 +444,18 @@ pub const Codegen = struct {
             _ = self.named_values.put("Result.is_err", is_err_fn) catch {};
         }
         {
-            // Result.unwrap : a -> Result a b -> a (i64, i64 -> i64)
-            var unwrap_params: [2]types.LLVMTypeRef = .{ i64_type, i64_type };
-            const unwrap_type = core.LLVMFunctionType(i64_type, &unwrap_params, 2, 0);
+            // Result.unwrap : a -> Result a b -> a (i64, i64 -> i64) - panicking version
+            var unwrap_params: [1]types.LLVMTypeRef = .{ i64_type };
+            const unwrap_type = core.LLVMFunctionType(i64_type, &unwrap_params, 1, 0);
             const unwrap_fn = core.LLVMAddFunction(self.module, "ko_result_unwrap", unwrap_type);
             _ = self.named_values.put("Result.unwrap", unwrap_fn) catch {};
+        }
+        {
+            // Result.unwrapOr : a -> Result a b -> a (i64, i64 -> i64) - non-panicking version
+            var unwrap_or_params: [2]types.LLVMTypeRef = .{ i64_type, i64_type };
+            const unwrap_or_type = core.LLVMFunctionType(i64_type, &unwrap_or_params, 2, 0);
+            const unwrap_or_fn = core.LLVMAddFunction(self.module, "ko_result_unwrap_or", unwrap_or_type);
+            _ = self.named_values.put("Result.unwrapOr", unwrap_or_fn) catch {};
         }
         {
             // Result.map : (a -> b) -> Result a c -> Result b c (i64, i64 -> i64)
@@ -494,7 +505,10 @@ pub const Codegen = struct {
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_is_err)));
         }
         if (self.named_values.get("Result.unwrap")) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_unwrap)));
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_unwrap_panic)));
+        }
+        if (self.named_values.get("Result.unwrapOr")) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_unwrap_or)));
         }
         if (self.named_values.get("Result.map")) |fn_val| {
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_map)));
@@ -508,6 +522,10 @@ pub const Codegen = struct {
         // Map String.split to native Zig implementation
         if (self.named_values.get("String.split")) |fn_val| {
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_string_split)));
+        }
+        // Map panic to native Zig implementation
+        if (self.named_values.get("ko_panic")) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_panic)));
         }
         // All other functions (RC, stack check, math, string, int) are now
         // String functions are now generated as LLVM IR in the module — no mapping needed
@@ -659,7 +677,7 @@ pub const Codegen = struct {
                 }
                 return error.UndefinedVariable;
             },
-            .binary_op => |b| try self.codegenBinaryOp(b.op, b.left, b.right),
+            .binary_op => |b| try self.codegenBinaryOp(b.op, b.left, b.right, b.loc),
             .unary_op => |u| try self.codegenUnaryOp(u.op, u.expr),
             .fn_call => |call| try self.codegenFnCall(call),
             .if_expr => |i| try self.codegenIf(i),
@@ -689,7 +707,7 @@ pub const Codegen = struct {
         };
     }
 
-    fn codegenBinaryOp(self: *Codegen, op: parser.BinaryOp, left: *const parser.Expr, right: *const parser.Expr) Error!types.LLVMValueRef {
+    fn codegenBinaryOp(self: *Codegen, op: parser.BinaryOp, left: *const parser.Expr, right: *const parser.Expr, loc: parser.Loc) Error!types.LLVMValueRef {
         const l = try self.codegenExpr(left);
         const r = try self.codegenExpr(right);
 
@@ -727,8 +745,27 @@ pub const Codegen = struct {
             .add => core.LLVMBuildAdd(self.builder, l, r, "add"),
             .sub => core.LLVMBuildSub(self.builder, l, r, "sub"),
             .mul => core.LLVMBuildMul(self.builder, l, r, "mul"),
-            .div => core.LLVMBuildSDiv(self.builder, l, r, "sdiv"),
-            .mod => core.LLVMBuildSRem(self.builder, l, r, "srem"),
+            .div, .mod => blk: {
+                // Check for division by zero
+                const i64_type_val = core.LLVMInt64TypeInContext(self.context);
+                const zero = core.LLVMConstInt(i64_type_val, 0, 0);
+                const is_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, r, zero, "is_zero");
+                const div_fn = self.named_values.get("ko_panic") orelse return error.UndefinedVariable;
+                const then_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "div_zero");
+                const else_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "div_cont");
+                _ = core.LLVMBuildCondBr(self.builder, is_zero, then_bb, else_bb);
+                // Panic block
+                core.LLVMPositionBuilderAtEnd(self.builder, then_bb);
+                const msg_ptr = try self.panicMessageWithLoc("division by zero", loc);
+                const msg_len = core.LLVMConstInt(i64_type_val, @intCast("division by zero at 0:0".len), 0);
+                var panic_args: [2]types.LLVMValueRef = .{ msg_ptr, msg_len };
+                const fn_type = core.LLVMGlobalGetValueType(div_fn);
+                _ = core.LLVMBuildCall2(self.builder, fn_type, div_fn, &panic_args, 2, "");
+                _ = core.LLVMBuildUnreachable(self.builder);
+                // Continue block
+                core.LLVMPositionBuilderAtEnd(self.builder, else_bb);
+                break :blk if (op == .div) core.LLVMBuildSDiv(self.builder, l, r, "sdiv") else core.LLVMBuildSRem(self.builder, l, r, "srem");
+            },
             .eq, .neq, .lt, .lte, .gt, .gte => blk: {
                 const cmp = core.LLVMBuildICmp(self.builder, self.intPredicate(op), l, r, "cmp");
                 break :blk core.LLVMBuildZExt(self.builder, cmp, core.LLVMInt64TypeInContext(self.context), "bool_ext");
@@ -869,6 +906,13 @@ pub const Codegen = struct {
         self.trackHeapAlloc(result);
         _ = core.LLVMBuildStore(self.builder, val, raw_ptr);
         return result;
+    }
+
+    /// Format a panic message with source location: "message at line:col"
+    fn panicMessageWithLoc(self: *Codegen, msg: []const u8, loc: parser.Loc) !types.LLVMValueRef {
+        if (loc.line == 0) return self.globalStringConstant(msg);
+        const formatted = std.fmt.allocPrint(self.allocator, "{s} at {d}:{d}", .{ msg, loc.line, loc.col }) catch return self.globalStringConstant(msg);
+        return self.globalStringConstant(formatted);
     }
 
     /// Create a global string constant and return a pointer to it as LLVMValueRef
@@ -1281,6 +1325,79 @@ pub const Codegen = struct {
                         return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 5, "inspect_call");
                     }
                 }
+            }
+        }
+
+        // assert, assert_eq, and panic builtins (inline codegen)
+        if (call.func.* == .identifier) {
+            const name = call.func.identifier.name;
+            if (std.mem.eql(u8, name, "assert") and call.args.len == 1) {
+                const arg_val = try self.codegenExpr(call.args[0]);
+                const one = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 1, 0);
+                const is_true = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, arg_val, one, "is_true");
+                const panic_fn = self.named_values.get("ko_panic") orelse return error.UndefinedVariable;
+                const then_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "assert_fail");
+                const else_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "assert_cont");
+                _ = core.LLVMBuildCondBr(self.builder, is_true, else_bb, then_bb);
+                // Panic block
+                core.LLVMPositionBuilderAtEnd(self.builder, then_bb);
+                const msg_ptr = try self.panicMessageWithLoc("assertion failed", call.loc);
+                const msg_len = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast("assertion failed at 0:0".len), 0);
+                var panic_args: [2]types.LLVMValueRef = .{ msg_ptr, msg_len };
+                const fn_type = core.LLVMGlobalGetValueType(panic_fn);
+                _ = core.LLVMBuildCall2(self.builder, fn_type, panic_fn, &panic_args, 2, "");
+                _ = core.LLVMBuildUnreachable(self.builder);
+                // Continue block
+                core.LLVMPositionBuilderAtEnd(self.builder, else_bb);
+                return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0); // return ()
+            }
+            if (std.mem.eql(u8, name, "assert_eq") and call.args.len == 2) {
+                const lhs = try self.codegenExpr(call.args[0]);
+                const rhs = try self.codegenExpr(call.args[1]);
+                const is_eq = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, lhs, rhs, "eq");
+                const panic_fn = self.named_values.get("ko_panic") orelse return error.UndefinedVariable;
+                const then_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "asserteq_ok");
+                const else_bb = core.LLVMAppendBasicBlockInContext(self.context, self.current_fn_val.?, "asserteq_fail");
+                _ = core.LLVMBuildCondBr(self.builder, is_eq, then_bb, else_bb);
+                // Fail block
+                core.LLVMPositionBuilderAtEnd(self.builder, else_bb);
+                const msg_ptr = try self.panicMessageWithLoc("assertion failed: values not equal", call.loc);
+                const msg_len = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast("assertion failed: values not equal at 0:0".len), 0);
+                var panic_args: [2]types.LLVMValueRef = .{ msg_ptr, msg_len };
+                const fn_type = core.LLVMGlobalGetValueType(panic_fn);
+                _ = core.LLVMBuildCall2(self.builder, fn_type, panic_fn, &panic_args, 2, "");
+                _ = core.LLVMBuildUnreachable(self.builder);
+                // OK block
+                core.LLVMPositionBuilderAtEnd(self.builder, then_bb);
+                return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0); // return ()
+            }
+            // panic(msg) builtin: extract raw ptr+len from string arg, call ko_panic
+            if (std.mem.eql(u8, name, "panic") and call.args.len == 1) {
+                _ = try self.codegenExpr(call.args[0]);
+                // If the arg is a string literal, use panicMessageWithLoc for source location
+                if (call.args[0].* == .string_literal) {
+                    const raw = call.args[0].string_literal;
+                    const inner = if (raw.len >= 2 and raw[0] == '"' and raw[raw.len - 1] == '"')
+                        raw[1 .. raw.len - 1]
+                    else
+                        raw;
+                    const msg_ptr = try self.panicMessageWithLoc(inner, call.loc);
+                    const msg_len = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(inner.len), 0);
+                    const panic_fn = self.named_values.get("ko_panic") orelse return error.UndefinedVariable;
+                    var panic_args: [2]types.LLVMValueRef = .{ msg_ptr, msg_len };
+                    const fn_type = core.LLVMGlobalGetValueType(panic_fn);
+                    _ = core.LLVMBuildCall2(self.builder, fn_type, panic_fn, &panic_args, 2, "");
+                    _ = core.LLVMBuildUnreachable(self.builder);
+                    return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
+                }
+                // Non-literal string: call ko_panic with the raw pointer value and 0 length
+                const panic_fn = self.named_values.get("ko_panic") orelse return error.UndefinedVariable;
+                const zero_len = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
+                var panic_args: [2]types.LLVMValueRef = .{ try self.codegenExpr(call.args[0]), zero_len };
+                const fn_type = core.LLVMGlobalGetValueType(panic_fn);
+                _ = core.LLVMBuildCall2(self.builder, fn_type, panic_fn, &panic_args, 2, "");
+                _ = core.LLVMBuildUnreachable(self.builder);
+                return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
             }
         }
 
@@ -2060,7 +2177,10 @@ pub const Codegen = struct {
         }
 
         // Codegen body
+        const prev_fn_val = self.current_fn_val;
+        self.current_fn_val = func;
         const body_val = try self.codegenExpr(body);
+        self.current_fn_val = prev_fn_val;
         _ = core.LLVMBuildRet(self.builder, body_val);
 
         // Restore builder

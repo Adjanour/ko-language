@@ -379,7 +379,8 @@ String.split s sep   # String -> String -> List String
 ```ko
 Result.is_ok r       # Result a b -> Bool
 Result.is_err r      # Result a b -> Bool
-Result.unwrap d r    # a -> Result a b -> a
+Result.unwrap r      # Result a b -> a  (panics on Err)
+Result.unwrapOr d r  # a -> Result a b -> a
 Result.map f r       # (a -> c) -> Result a b -> Result c b
 Result.fold f g r    # (a -> c) -> (b -> c) -> Result a b -> c
 Result.and_then f r  # (a -> Result c b) -> Result a b -> Result c b

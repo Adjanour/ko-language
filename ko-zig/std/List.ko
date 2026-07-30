@@ -4,11 +4,11 @@ type List a = Cons a (List a) | Nil
 
 pub fn head xs = match xs
   | Cons x _ => x
-  | Nil => 0
+  | Nil => panic "head: empty list"
 
 pub fn tail xs = match xs
   | Cons _ rest => rest
-  | Nil => Nil
+  | Nil => panic "tail: empty list"
 
 pub fn length xs = match xs
   | Cons _ rest => 1 + length rest

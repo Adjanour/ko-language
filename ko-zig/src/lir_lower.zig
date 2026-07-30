@@ -177,6 +177,14 @@ pub const LirLower = struct {
         return id;
     }
 
+    fn emitWithSpan(self: *LirLower, value: lir.LirValue, ty: lir.LirType, span: hir.SourceSpan) LowerError!lir.LocalId {
+        const id = try self.newLocal(ty);
+        try self.state.blocks.items[self.state.current].body.append(self.allocator, .{
+            .assign = .{ .dest = id, .value = value, .span = span },
+        });
+        return id;
+    }
+
     fn emitEffect(self: *LirLower, value: lir.LirValue) LowerError!void {
         try self.state.blocks.items[self.state.current].body.append(self.allocator, .{ .effect = value });
     }
@@ -439,6 +447,10 @@ pub const LirLower = struct {
         try self.globals.put("println", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("print", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("inspect", .{ .arity = 1, .kind = .std_special });
+        // Panic/assert builtins
+        try self.globals.put("panic", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("assert", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("assert_eq", .{ .arity = 2, .kind = .std_special });
         // Direct stdlib mappings (subset; extend as needed).
         const entries = [_][2][]const u8{
             .{ "String.length", "ko_string_length" },
@@ -465,6 +477,7 @@ pub const LirLower = struct {
             .{ "Result.is_ok", "ko_result_is_ok" },
             .{ "Result.is_err", "ko_result_is_err" },
             .{ "Result.unwrap", "ko_result_unwrap" },
+            .{ "Result.unwrapOr", "ko_result_unwrap_or" },
             .{ "Result.map", "ko_result_map" },
             .{ "Result.fold", "ko_result_fold" },
             .{ "Result.and_then", "ko_result_and_then" },
@@ -642,14 +655,14 @@ pub const LirLower = struct {
         std.mem.reverse(hir.HirId, rev_args.items);
         const head_expr = self.exprs[head];
         switch (head_expr.kind) {
-            .global => |name| return self.lowerGlobalCall(name, rev_args.items, self.exprs[id].ty),
+            .global => |name| return self.lowerGlobalCall(name, rev_args.items, self.exprs[id].ty, self.exprs[id].span),
             .constructor => |c| return self.lowerConstructorApply(c.ctor_name, rev_args.items),
             .record_access => |ra| {
                 // Module fn call (`String.length x`): resolve to a global.
                 if (self.exprs[ra.record].kind == .constructor) {
                     const ns = self.exprs[ra.record].kind.constructor.ctor_name;
                     const full = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns, ra.field });
-                    if (self.globals.contains(full)) return self.lowerGlobalCall(full, rev_args.items, self.exprs[id].ty);
+                    if (self.globals.contains(full)) return self.lowerGlobalCall(full, rev_args.items, self.exprs[id].ty, self.exprs[id].span);
                 }
                 return self.lowerClosureCall(head, rev_args.items);
             },
@@ -657,13 +670,18 @@ pub const LirLower = struct {
         }
     }
 
-    fn lowerGlobalCall(self: *LirLower, name: []const u8, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+    fn lowerGlobalCall(self: *LirLower, name: []const u8, args: []const hir.HirId, result_hir_ty: *const typecheck.Type, span: hir.SourceSpan) LowerError!lir.LocalId {
         const g = self.globals.get(name) orelse {
             std.debug.print("lir_lower: undefined global '{s}'\n", .{name});
             return error.UndefinedGlobal;
         };
         switch (g.kind) {
-            .std_special => return self.lowerStdPrint(name, args),
+            .std_special => {
+                if (std.mem.eql(u8, name, "panic")) return self.lowerPanic(args, span);
+                if (std.mem.eql(u8, name, "assert")) return self.lowerAssert(args, span);
+                if (std.mem.eql(u8, name, "assert_eq")) return self.lowerAssertEq(args, span);
+                return self.lowerStdPrint(name, args);
+            },
             .std_fn => return self.lowerStdFnCall(name, args, result_hir_ty),
             .ctor => return self.lowerConstructorApply(name, args),
             .user_fn => {
@@ -742,7 +760,8 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_int_isqrt")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_is_ok")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_is_err")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
-            if (std.mem.eql(u8, runtime, "ko_result_unwrap")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_unwrap")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_result_unwrap_or")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_map")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_fold")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_and_then")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
@@ -835,6 +854,82 @@ pub const LirLower = struct {
             .args = call_args,
             .fn_type = .{ .params = param_tys, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
+    }
+
+    /// `panic(msg)` — call ko_panic_str with the string's raw ptr.
+    /// Formats the message with source location: "msg at line:col"
+    fn lowerPanic(self: *LirLower, args: []const hir.HirId, span: hir.SourceSpan) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const arg = args[0];
+        const v = try self.lowerExpr(arg);
+        // Format message with source location if it's a string literal
+        var final_v = v;
+        if (self.exprs[arg].kind == .string) {
+            const raw_str = self.exprs[arg].kind.string;
+            const formatted = std.fmt.allocPrint(self.allocator, "{s} at {d}:{d}", .{
+                raw_str,
+                span.line,
+                span.col,
+            }) catch return error.OutOfMemory;
+            final_v = try self.emit(.{ .string = .{ .ptr = formatted, .len = formatted.len } }, .{ .string = {} });
+        }
+        const fn_local = try self.emit(.{ .fn_ref = "ko_panic_str" }, .{ .opaque_type = {} });
+        const call_args = try self.dupeIds(&.{final_v});
+        const param_tys = try self.allocator.alloc(lir.LirType, 1);
+        param_tys[0] = .{ .opaque_type = {} };
+        _ = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = call_args,
+            .fn_type = .{ .params = param_tys, .returns = .{ .unit = {} } },
+        } }, .{ .unit = {} });
+        // panic never returns; return a dummy value
+        return self.emit(.{ .int = 0 }, .{ .int = {} });
+    }
+
+    /// `assert(cond)` — call ko_assert with the bool value and formatted message.
+    fn lowerAssert(self: *LirLower, args: []const hir.HirId, span: hir.SourceSpan) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const v = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const msg = std.fmt.allocPrint(self.allocator, "assertion failed at {d}:{d}", .{
+            span.line,
+            span.col,
+        }) catch return error.OutOfMemory;
+        const msg_v = try self.emit(.{ .string = .{ .ptr = msg, .len = msg.len } }, .{ .string = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_assert" }, .{ .opaque_type = {} });
+        const call_args = try self.dupeIds(&.{ v, msg_v });
+        const param_tys = try self.allocator.alloc(lir.LirType, 2);
+        param_tys[0] = .{ .int = {} };
+        param_tys[1] = .{ .opaque_type = {} };
+        _ = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = call_args,
+            .fn_type = .{ .params = param_tys, .returns = .{ .unit = {} } },
+        } }, .{ .unit = {} });
+        return self.emit(.{ .int = 0 }, .{ .int = {} });
+    }
+
+    /// `assert_eq(a, b)` — call ko_assert_eq with both values and formatted message.
+    fn lowerAssertEq(self: *LirLower, args: []const hir.HirId, span: hir.SourceSpan) LowerError!lir.LocalId {
+        if (args.len != 2) return error.ArityMismatch;
+        const a = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const b = try self.coerce(try self.lowerExpr(args[1]), .{ .int = {} });
+        const msg = std.fmt.allocPrint(self.allocator, "assertion failed: values not equal at {d}:{d}", .{
+            span.line,
+            span.col,
+        }) catch return error.OutOfMemory;
+        const msg_v = try self.emit(.{ .string = .{ .ptr = msg, .len = msg.len } }, .{ .string = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_assert_eq" }, .{ .opaque_type = {} });
+        const call_args = try self.dupeIds(&.{ a, b, msg_v });
+        const param_tys = try self.allocator.alloc(lir.LirType, 3);
+        param_tys[0] = .{ .int = {} };
+        param_tys[1] = .{ .int = {} };
+        param_tys[2] = .{ .opaque_type = {} };
+        _ = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = call_args,
+            .fn_type = .{ .params = param_tys, .returns = .{ .unit = {} } },
+        } }, .{ .unit = {} });
+        return self.emit(.{ .int = 0 }, .{ .int = {} });
     }
 
     fn ctorNameOf(self: *LirLower, id: hir.HirId) ?[]const u8 {

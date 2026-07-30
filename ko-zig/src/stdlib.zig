@@ -309,6 +309,57 @@ pub fn ko_result_unwrap(default: i64, result: i64) callconv(.c) i64 {
     return if (resultTag(result) == .ok) resultValue(result) else default;
 }
 
+// ko_result_unwrap_or: Return Ok value, or default if Err (non-panicking)
+pub fn ko_result_unwrap_or(default: i64, result: i64) callconv(.c) i64 {
+    return if (resultTag(result) == .ok) resultValue(result) else default;
+}
+
+// ko_panic: Panic with a message and abort
+pub fn ko_panic(msg_ptr: [*]const u8, msg_len: i64) callconv(.c) void {
+    const stderr_fd = 2;
+    const prefix = "ko: panic: ";
+    if (comptime @import("builtin").os.tag == .linux) {
+        _ = std.os.linux.write(stderr_fd, prefix.ptr, prefix.len);
+        _ = std.os.linux.write(stderr_fd, msg_ptr, @intCast(msg_len));
+        _ = std.os.linux.write(stderr_fd, "\n", 1);
+    } else {
+        _ = std.c.write(stderr_fd, prefix.ptr, prefix.len);
+        _ = std.c.write(stderr_fd, msg_ptr, @intCast(msg_len));
+        _ = std.c.write(stderr_fd, "\n", 1);
+    }
+    std.c.abort();
+}
+
+// ko_panic_str: Panic with a message (null-terminated ptr) and abort
+pub fn ko_panic_str(msg_ptr: [*:0]const u8) callconv(.c) void {
+    const len: i64 = @intCast(std.mem.len(msg_ptr));
+    ko_panic(msg_ptr, len);
+}
+
+// ko_assert: Panic if the bool is false, with custom message
+pub fn ko_assert(val: i64, msg_ptr: [*:0]const u8) callconv(.c) void {
+    if (val == 0) {
+        const len: i64 = @intCast(std.mem.len(msg_ptr));
+        ko_panic(msg_ptr, len);
+    }
+}
+
+// ko_assert_eq: Panic if two values are not equal, with custom message
+pub fn ko_assert_eq(a: i64, b: i64, msg_ptr: [*:0]const u8) callconv(.c) void {
+    if (a != b) {
+        const len: i64 = @intCast(std.mem.len(msg_ptr));
+        ko_panic(msg_ptr, len);
+    }
+}
+
+// ko_result_unwrap_panic: Return Ok value, or panic if Err
+pub fn ko_result_unwrap_panic(result: i64) callconv(.c) i64 {
+    if (resultTag(result) == .ok) return resultValue(result);
+    const msg = "unwrap: Err value";
+    ko_panic(msg.ptr, @intCast(msg.len));
+    unreachable;
+}
+
 pub fn ko_result_tag(result: i64) callconv(.c) i64 {
     return @intFromEnum(resultTag(result));
 }

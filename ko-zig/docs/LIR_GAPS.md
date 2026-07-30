@@ -75,4 +75,12 @@ was stale — `Int.pow`, `Int.gcd`, etc. work correctly under `--use-lir`.
 - `lowerStdPrint` now computes arity from type info (tuple len, constructor args, record fields)
 - Fixed `LLVMArrayType` GEP element type (resolved 119 test crashes)
 - Record display: added `variable_types` lookup for record names and arity
-- All 245/245 tests pass; 40/42 .ko files pass under `--use-lir`
+- All 244/245 tests pass (1 pre-existing LLVM JIT crash: `list filter and sum`)
+- 40/42 .ko files pass under `--use-lir`
+
+### Error Handling Phase 1 — Fixed 2026-07-28
+- Added `panic(msg)` builtin: `ko_panic` in `stdlib.zig`, declared in codegen + LIR codegen
+- Division by zero guard: legacy codegen (`codegen.zig`) generates zero check + `panic("division by zero")`
+- Renamed `Result.unwrap` → panicking (1 param, calls `panic` on Err)
+- Added `Result.unwrapOr` → non-panicking (2 params, returns default on Err)
+- `List.head`/`List.tail` now panic on Nil instead of returning 0/Nil

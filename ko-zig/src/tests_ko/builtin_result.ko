@@ -21,8 +21,8 @@ fn main =
   println (Result.is_err r2)
 
   let default = 0
-  println (Result.unwrap default r1)
-  println (Result.unwrap default r2)
+  println (Result.unwrapOr default r1)
+  println (Result.unwrapOr default r2)
 
   let doubled = Result.map (\x -> x * 2) r1
   showResult doubled

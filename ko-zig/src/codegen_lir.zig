@@ -74,6 +74,16 @@ pub const CodegenLir = struct {
     pending_tramps: std.ArrayList(Trampoline),
     module_owned_by_jit: bool = false,
 
+    fn globalStringConstant(self: *CodegenLir, str: [*:0]const u8) types.LLVMValueRef {
+        const str_val = core.LLVMConstStringInContext(self.context, str, @intCast(std.mem.span(str).len), 0);
+        const global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(str_val), "str");
+        core.LLVMSetInitializer(global, str_val);
+        core.LLVMSetGlobalConstant(global, 1);
+        core.LLVMSetLinkage(global, .LLVMPrivateLinkage);
+        var indices: [1]types.LLVMValueRef = .{core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0)};
+        return core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), global, &indices, 1, "str_ptr");
+    }
+
     pub fn init(allocator: std.mem.Allocator, module_name: [*:0]const u8) CodegenLir {
         const ctx = core.LLVMContextCreate();
         const mod = core.LLVMModuleCreateWithNameInContext(module_name, ctx);
@@ -125,9 +135,15 @@ pub const CodegenLir = struct {
             _ = core.LLVMAddFunction(self.module, "ko_result_is_err", fn_ty1);
         }
         {
+            // ko_result_unwrap: panicking version (1 param)
+            var params1 = [_]types.LLVMTypeRef{ i64_ty };
+            const fn_ty1_unwrap = core.LLVMFunctionType(i64_ty, &params1, 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_result_unwrap", fn_ty1_unwrap);
+        }
+        {
             var params = [_]types.LLVMTypeRef{ i64_ty, i64_ty };
             const fn_ty2 = core.LLVMFunctionType(i64_ty, &params, 2, 0);
-            _ = core.LLVMAddFunction(self.module, "ko_result_unwrap", fn_ty2);
+            _ = core.LLVMAddFunction(self.module, "ko_result_unwrap_or", fn_ty2);
             _ = core.LLVMAddFunction(self.module, "ko_result_map", fn_ty2);
             _ = core.LLVMAddFunction(self.module, "ko_result_and_then", fn_ty2);
         }

@@ -30,6 +30,7 @@ pub const LirStmt = union(enum) {
 pub const AssignStmt = struct {
     dest: LocalId,
     value: LirValue,
+    span: ?hir.SourceSpan = null,
 };
 
 pub const StoreStmt = struct {

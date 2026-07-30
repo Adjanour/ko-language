@@ -499,7 +499,8 @@ main.zig → parser.zig → lexer.zig
 - `True`, `False` — Bool constructors
 - `Result.is_ok r` — returns `True` if Ok, `False` if Err
 - `Result.is_err r` — returns `True` if Err, `False` if Ok
-- `Result.unwrap default r` — returns Ok value, or `default` if Err
+- `Result.unwrap d r` — panicking version: returns Ok value, or panics if Err
+- `Result.unwrapOr d r` — returns Ok value, or `d` if Err
 - `Result.map f r` — applies `f` to Ok value, returns new Result
 - `Result.fold ok_fn err_fn r` — applies `ok_fn` to Ok value, `err_fn` to Err value
 - `Result.and_then f r` — applies `f` to Ok value (f must return a Result)
