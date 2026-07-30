@@ -1,6 +1,7 @@
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
+const Io = std.Io;
 const llvm = @import("llvm");
 const llvm_engine = llvm.engine;
 const parser = @import("parser.zig");
@@ -83,17 +84,83 @@ pub const Repl = struct {
     allocator: std.mem.Allocator,
     accumulated_source: std.ArrayList(u8),
     eval_counter: usize,
+    history: std.ArrayList([]const u8),
+    history_index: ?usize = null,
+    history_file_path: []const u8,
 
     pub fn init(allocator: std.mem.Allocator) Repl {
-        return .{
+        const history_path = std.fmt.allocPrint(allocator, "/tmp/.ko_history_{d}", .{@as(u32, @intCast(std.c.getuid()))}) catch "/tmp/.ko_history";
+        var r = Repl{
             .allocator = allocator,
             .accumulated_source = std.ArrayList(u8).empty,
             .eval_counter = 0,
+            .history = std.ArrayList([]const u8).empty,
+            .history_file_path = history_path,
         };
+        r.loadHistory() catch {};
+        return r;
     }
 
     pub fn deinit(self: *Repl) void {
+        self.saveHistory() catch {};
         self.accumulated_source.deinit(self.allocator);
+        for (self.history.items) |h| self.allocator.free(h);
+        self.history.deinit(self.allocator);
+        self.allocator.free(self.history_file_path);
+    }
+
+    fn loadHistory(self: *Repl) !void {
+        // Use Io for file operations
+        var threaded: Io.Threaded = .init(self.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = Io.Dir.cwd();
+        const file = cwd.openFile(io, self.history_file_path, .{}) catch return;
+        defer file.close(io);
+
+        var file_buffer: [4096]u8 = undefined;
+        var reader = file.reader(io, &file_buffer);
+        const content = try reader.interface.allocRemainingAlignedSentinel(
+            self.allocator,
+            .unlimited,
+            @enumFromInt(0),
+            0,
+        );
+        defer self.allocator.free(content);
+
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line| {
+            if (line.len > 0) {
+                const owned = try self.allocator.dupe(u8, line);
+                try self.history.append(self.allocator, owned);
+            }
+        }
+    }
+
+    fn saveHistory(self: *Repl) !void {
+        var threaded: Io.Threaded = .init(self.allocator, .{});
+        defer threaded.deinit();
+        const io = threaded.io();
+        const cwd = Io.Dir.cwd();
+        const file = try cwd.createFile(io, self.history_file_path, .{});
+        defer file.close(io);
+
+        var file_buffer: [4096]u8 = undefined;
+        var writer = file.writer(io, &file_buffer);
+        for (self.history.items) |h| {
+            try writer.interface.print("{s}\n", .{h});
+        }
+        try writer.interface.flush();
+    }
+
+    fn addToHistory(self: *Repl, line: []const u8) !void {
+        // Don't add duplicate of last entry
+        if (self.history.items.len > 0) {
+            const last = self.history.items[self.history.items.len - 1];
+            if (std.mem.eql(u8, last, line)) return;
+        }
+        const owned = try self.allocator.dupe(u8, line);
+        try self.history.append(self.allocator, owned);
     }
 
     pub fn run(self: *Repl) !void {
@@ -102,7 +169,7 @@ pub const Repl = struct {
 
         try printStr(stdout_fd, "Kō REPL v0.3.0\n", .{});
         try printStr(stdout_fd, "Type expressions to evaluate, definitions to bind.\n", .{});
-        try printStr(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :help\n\n", .{});
+        try printStr(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :history, :help\n\n", .{});
 
         var line_buf: [4096]u8 = undefined;
         while (true) {
@@ -125,6 +192,7 @@ pub const Repl = struct {
                 continue;
             }
 
+            self.addToHistory(line) catch {};
             self.evalInput(line, stdout_fd) catch |err| {
                 try printStr(stdout_fd, "Error: {}\n", .{err});
             };
@@ -226,6 +294,8 @@ pub const Repl = struct {
             try printStr(stdout_fd, "  :type <expr>    Show the type of an expression\n", .{});
             try printStr(stdout_fd, "  :env            Show accumulated definitions\n", .{});
             try printStr(stdout_fd, "  :reset          Clear accumulated source\n", .{});
+            try printStr(stdout_fd, "  :history        Show input history\n", .{});
+            try printStr(stdout_fd, "  :load <file>    Load a .ko file into the session\n", .{});
             try printStr(stdout_fd, "  :help, :h       Show this help\n", .{});
         } else if (std.mem.eql(u8, cmd, ":env")) {
             if (self.accumulated_source.items.len == 0) {
@@ -237,6 +307,42 @@ pub const Repl = struct {
             self.accumulated_source.clearRetainingCapacity();
             self.eval_counter = 0;
             try printStr(stdout_fd, "Reset.\n", .{});
+        } else if (std.mem.eql(u8, cmd, ":history")) {
+            if (self.history.items.len == 0) {
+                try printStr(stdout_fd, "(no history)\n", .{});
+            } else {
+                for (self.history.items, 0..) |h, i| {
+                    try printStr(stdout_fd, "  {d}: {s}\n", .{ i + 1, h });
+                }
+            }
+        } else if (std.mem.startsWith(u8, cmd, ":load ")) {
+            const filename = cmd[6..];
+            if (filename.len == 0) {
+                try printStr(stdout_fd, "Usage: :load <file.ko>\n", .{});
+                return;
+            }
+            // Read file using raw Linux syscalls
+            const fd: i32 = @intCast(linux.open(@ptrCast(filename.ptr), .{}, 0));
+            if (fd < 0) {
+                try printStr(stdout_fd, "Error opening file\n", .{});
+                return;
+            }
+            defer _ = linux.close(fd);
+            var file_buf: [65536]u8 = undefined;
+            const buf_ptr: [*]u8 = @ptrCast(&file_buf);
+            const n: i32 = @intCast(linux.read(fd, buf_ptr, file_buf.len));
+            if (n < 0) {
+                try printStr(stdout_fd, "Error reading file\n", .{});
+                return;
+            }
+            const content = file_buf[0..@intCast(n)];
+
+            // Add to accumulated source
+            if (self.accumulated_source.items.len > 0) {
+                try self.accumulated_source.append(self.allocator, '\n');
+            }
+            try self.accumulated_source.appendSlice(self.allocator, content);
+            try printStr(stdout_fd, "Loaded {s} ({d} bytes)\n", .{ filename, n });
         } else if (std.mem.startsWith(u8, cmd, ":type ")) {
             const expr = cmd[6..];
             if (expr.len == 0) {
