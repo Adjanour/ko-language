@@ -148,6 +148,9 @@ pub const Inferer = struct {
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
+    diagnostics: ?*DiagnosticList = null,
+
+    pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
         var inferer = Inferer{
@@ -995,7 +998,26 @@ pub const Inferer = struct {
 
         // Infer top-level definitions in order.
         for (program.definitions) |def| {
-            try self.inferDefinition(def, "");
+            if (self.diagnostics) |diags| {
+                self.inferDefinition(def, "") catch |err| {
+                    // Add the error to diagnostics and continue
+                    if (self.last_error) |ec| {
+                        try diags.addErrorCtx(
+                            ec.message orelse @errorName(err),
+                            ec.loc,
+                            ec.note,
+                            ec.help,
+                        );
+                    } else {
+                        try diags.addError(@errorName(err), null);
+                    }
+                    // Register a dummy type for the failed definition so
+                    // subsequent definitions don't also fail with "undefined name"
+                    self.registerDummyForFailedDef(def);
+                };
+            } else {
+                try self.inferDefinition(def, "");
+            }
         }
     }
 
@@ -1084,6 +1106,24 @@ pub const Inferer = struct {
                 for (m.definitions) |inner_def| {
                     try self.inferDefinition(inner_def, mod_prefix);
                 }
+            },
+            else => {},
+        }
+    }
+
+    fn registerDummyForFailedDef(self: *Inferer, def: parser.Definition) void {
+        // Register a dummy type for a failed definition so subsequent
+        // definitions don't fail with "undefined name"
+        switch (def) {
+            .fn_def => |f| {
+                // Already registered by predeclareDefinition, just leave it
+                _ = f;
+            },
+            .let_binding => |l| {
+                // Register as a type variable (unknown type)
+                const t = self.newVarType("err") catch return;
+                const scheme = self.generalize(&self.global, t) catch return;
+                self.global.set(l.name, scheme) catch {};
             },
             else => {},
         }

@@ -307,6 +307,7 @@ pub fn main(init: std.process.Init) !void {
     var inferer = typecheck.Inferer.init(init.arena.allocator());
     defer inferer.deinit();
     inferer.module_loader = &loader;
+    inferer.diagnostics = &diags;
     inferer.inferProgram(&prog) catch |err| {
         if (inferer.last_error) |ec| {
             try diags.addErrorCtx(
