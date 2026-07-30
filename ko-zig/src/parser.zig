@@ -60,6 +60,9 @@ pub const Parser = struct {
     allow_let_in_body: bool = false,
     pending_doc_comments: std.ArrayList([]const u8) = .empty,
     last_error: ?ErrorContext = null,
+    diagnostics: ?*DiagnosticList = null,
+
+    pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
 
     pub fn init(allocator: std.mem.Allocator, source: [:0]const u8) Error!Parser {
         var tok = lexer.Tokenizer.init(source);
@@ -245,7 +248,28 @@ pub const Parser = struct {
 
         self.skip_layout();
         if (self.current().tag == .keyword_package) {
-            const pkg = try self.parse_package();
+            const pkg = self.parse_package() catch |err| {
+                if (self.diagnostics) |diags| {
+                    try diags.addError(
+                        if (self.last_error) |ec| ec.message else @errorName(err),
+                        if (self.last_error) |ec| ec.loc else null,
+                    );
+                    self.skipToNextDef();
+                    self.skip_layout();
+                } else return err;
+                // Skip past the package declaration tokens on error
+                if (self.current().tag == .keyword_package) {
+                    _ = self.advance();
+                    while (self.current().tag != .newline and self.current().tag != .eof) _ = self.advance();
+                }
+                self.skip_layout();
+                // Return a dummy program with no definitions
+                return .{
+                    .imports = try imports.toOwnedSlice(self.allocator),
+                    .definitions = try defs.toOwnedSlice(self.allocator),
+                    .package = null,
+                };
+            };
             package = pkg.name;
             try defs.append(self.allocator, .{ .package = pkg });
             self.skip_layout();
@@ -255,90 +279,15 @@ pub const Parser = struct {
             self.skip_layout();
             if (self.current().tag == .eof) break;
 
-            if (self.current().tag == .keyword_import) {
-                try imports.append(self.allocator, try self.parse_import());
-                continue;
-            }
-
-            if (self.current().tag == .keyword_pub) {
-                _ = self.advance();
-                if (self.current().tag == .keyword_fn) {
-                    var fn_def = try self.parse_fn_def();
-                    fn_def.is_pub = true;
-                    fn_def.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .fn_def = fn_def });
-                    continue;
-                }
-                if (self.current().tag == .keyword_type) {
-                    var type_def = try self.parse_type_def();
-                    type_def.is_pub = true;
-                    type_def.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .type_def = type_def });
-                    continue;
-                }
-                if (self.current().tag == .keyword_let) {
-                    var let_def = try self.parse_let_binding();
-                    let_def.is_pub = true;
-                    let_def.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .let_binding = let_def });
-                    continue;
-                }
-                if (self.current().tag == .keyword_module) {
-                    var module_def = try self.parse_module_def();
-                    module_def.is_pub = true;
-                    try defs.append(self.allocator, .{ .module_def = module_def });
-                    continue;
-                }
-                if (self.current().tag == .identifier and self.peek(1).tag == .equal) {
-                    const name = self.slice(self.advance());
-                    _ = try self.expect(.equal);
-                    const value = try self.parse_expr();
-                    const doc = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .let_binding = .{ .name = name, .type_ann = null, .value = value, .is_pub = true, .doc_comments = doc } });
-                    continue;
-                }
-                return self.fail("expected 'fn', 'type', 'let', or definition after 'pub'", .{});
-            }
-
-            switch (self.current().tag) {
-                .keyword_import => try imports.append(self.allocator, try self.parse_import()),
-                .keyword_fn => {
-                    var f = try self.parse_fn_def();
-                    f.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .fn_def = f });
-                },
-                .keyword_type => {
-                    var t = try self.parse_type_def();
-                    t.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .type_def = t });
-                },
-                .keyword_let => {
-                    var l = try self.parse_let_binding();
-                    l.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .let_binding = l });
-                },
-                .keyword_module => {
-                    var m = try self.parse_module_def();
-                    m.doc_comments = self.collectDocComments();
-                    try defs.append(self.allocator, .{ .module_def = m });
-                },
-                .keyword_comptime => {
-                    _ = self.advance();
-                    if (self.current().tag == .keyword_fn) {
-                        var fn_def = try self.parse_fn_def();
-                        fn_def.is_comptime = true;
-                        fn_def.doc_comments = self.collectDocComments();
-                        try defs.append(self.allocator, .{ .fn_def = fn_def });
-                        continue;
-                    }
-                    return self.fail("expected 'fn' after 'comptime'", .{});
-                },
-                .identifier, .number, .string, .char, .keyword_true, .keyword_false,
-                .lparen, .keyword_if, .keyword_match, .backslash, .keyword_ref, .minus, .keyword_not => {
-                    try trailing.append(self.allocator, try self.parse_expr());
-                },
-                else => return self.fail("unexpected token at top level", .{}),
-            }
+            self.parseTopLevelDef(&imports, &defs, &trailing) catch |err| {
+                if (self.diagnostics) |diags| {
+                    try diags.addError(
+                        if (self.last_error) |ec| ec.message else @errorName(err),
+                        if (self.last_error) |ec| ec.loc else null,
+                    );
+                    self.skipToNextDef();
+                } else return err;
+            };
             self.skip_layout();
         }
 
@@ -370,6 +319,121 @@ pub const Parser = struct {
             else => {},
         };
         return false;
+    }
+
+    fn parseTopLevelDef(self: *Parser, imports: anytype, defs: anytype, trailing: anytype) Error!void {
+        if (self.current().tag == .keyword_import) {
+            try imports.append(self.allocator, try self.parse_import());
+            return;
+        }
+
+        if (self.current().tag == .keyword_pub) {
+            _ = self.advance();
+            if (self.current().tag == .keyword_fn) {
+                var fn_def = try self.parse_fn_def();
+                fn_def.is_pub = true;
+                fn_def.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .fn_def = fn_def });
+                return;
+            }
+            if (self.current().tag == .keyword_type) {
+                var type_def = try self.parse_type_def();
+                type_def.is_pub = true;
+                type_def.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .type_def = type_def });
+                return;
+            }
+            if (self.current().tag == .keyword_let) {
+                var let_def = try self.parse_let_binding();
+                let_def.is_pub = true;
+                let_def.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .let_binding = let_def });
+                return;
+            }
+            if (self.current().tag == .keyword_module) {
+                var module_def = try self.parse_module_def();
+                module_def.is_pub = true;
+                try defs.append(self.allocator, .{ .module_def = module_def });
+                return;
+            }
+            if (self.current().tag == .identifier and self.peek(1).tag == .equal) {
+                const name = self.slice(self.advance());
+                _ = try self.expect(.equal);
+                const value = try self.parse_expr();
+                const doc = self.collectDocComments();
+                try defs.append(self.allocator, .{ .let_binding = .{ .name = name, .type_ann = null, .value = value, .is_pub = true, .doc_comments = doc } });
+                return;
+            }
+            return self.fail("expected 'fn', 'type', 'let', or definition after 'pub'", .{});
+        }
+
+        switch (self.current().tag) {
+            .keyword_import => try imports.append(self.allocator, try self.parse_import()),
+            .keyword_fn => {
+                var f = try self.parse_fn_def();
+                f.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .fn_def = f });
+            },
+            .keyword_type => {
+                var t = try self.parse_type_def();
+                t.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .type_def = t });
+            },
+            .keyword_let => {
+                var l = try self.parse_let_binding();
+                l.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .let_binding = l });
+            },
+            .keyword_module => {
+                var m = try self.parse_module_def();
+                m.doc_comments = self.collectDocComments();
+                try defs.append(self.allocator, .{ .module_def = m });
+            },
+            .keyword_comptime => {
+                _ = self.advance();
+                if (self.current().tag == .keyword_fn) {
+                    var fn_def = try self.parse_fn_def();
+                    fn_def.is_comptime = true;
+                    fn_def.doc_comments = self.collectDocComments();
+                    try defs.append(self.allocator, .{ .fn_def = fn_def });
+                    return;
+                }
+                return self.fail("expected 'fn' after 'comptime'", .{});
+            },
+            .identifier, .number, .string, .char, .keyword_true, .keyword_false,
+            .lparen, .keyword_if, .keyword_match, .backslash, .keyword_ref, .minus, .keyword_not => {
+                try trailing.append(self.allocator, try self.parse_expr());
+            },
+            else => return self.fail("unexpected token at top level", .{}),
+        }
+    }
+
+    fn skipToNextDef(self: *Parser) void {
+        // Skip tokens until we reach the next top-level definition boundary
+        while (self.current().tag != .eof) {
+            switch (self.current().tag) {
+                .keyword_fn, .keyword_type, .keyword_let, .keyword_module,
+                .keyword_import, .keyword_pub, .keyword_comptime,
+                => return,
+                .newline => {
+                    _ = self.advance();
+                    // After a newline, check if we're at a top-level def
+                    self.skip_layout();
+                    if (self.current().tag == .keyword_fn or
+                        self.current().tag == .keyword_type or
+                        self.current().tag == .keyword_let or
+                        self.current().tag == .keyword_module or
+                        self.current().tag == .keyword_import or
+                        self.current().tag == .keyword_pub or
+                        self.current().tag == .keyword_comptime or
+                        self.current().tag == .eof)
+                    {
+                        return;
+                    }
+                },
+                else => _ = self.advance(),
+            }
+        }
     }
 
     // =========================================================================

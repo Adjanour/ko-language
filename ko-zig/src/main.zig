@@ -20,8 +20,9 @@ const lir_lower = @import("lir_lower.zig");
 const codegen_lir = @import("codegen_lir.zig");
 const repl_mod = @import("repl.zig");
 const module_loader_mod = @import("module_loader.zig");
+const diagnostics_mod = @import("diagnostics.zig");
 
-const VERSION = "0.2.1-alpha";
+const VERSION = "0.3.0-alpha";
 
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
@@ -39,6 +40,7 @@ fn printHelp(io: Io) void {
         \\
         \\Usage:
         \\  ko <file.ko>                Run program
+        \\  ko --check <file.ko>        Type-check only (no codegen)
         \\  ko --repl                   Start interactive REPL
         \\  ko --dump-ir <file.ko>      Show generated LLVM IR
         \\  ko --emit-ir <out> <file>   Write LLVM IR to file
@@ -192,7 +194,7 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next(); // skip program name
 
-    var mode: enum { run, ir, obj, exe, emit_ir, repl } = .run;
+    var mode: enum { run, ir, obj, exe, emit_ir, repl, check } = .run;
     var filename: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
@@ -219,6 +221,10 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--emit-ir")) {
             mode = .emit_ir;
             output = args.next();
+        } else if (std.mem.eql(u8, arg, "--check")) {
+            mode = .check;
+        } else if (std.mem.eql(u8, arg, "--warn")) {
+            // TODO: warning flags (--warn-unused, --warn-shadow, etc.)
         } else if (filename == null) {
             filename = arg;
         }
@@ -261,18 +267,34 @@ pub fn main(init: std.process.Init) !void {
 
     const timer = nowNs();
 
-    // Parse
+    // Create diagnostic list for error accumulation
+    var diags = diagnostics_mod.DiagnosticList.init(init.arena.allocator());
+    defer diags.deinit();
+
+    // Parse (with error recovery when diagnostics available)
     var p = try parser.Parser.init(init.arena.allocator(), source);
     defer p.deinit();
-    const prog = p.parse_program() catch |err| {
+    p.diagnostics = &diags;
+    const prog = p.parse_program() catch |err| blk: {
         if (p.last_error) |ec| {
-            reportError(io, fname, ec.loc, "{s}", .{ec.message});
+            try diags.addError(ec.message, ec.loc);
         } else {
-            reportError(io, fname, null, "parse error: {s}", .{@errorName(err)});
+            try diags.addError(@errorName(err), null);
         }
-        std.process.exit(1);
+        // Return a dummy program so we can emit diagnostics below
+        break :blk parser.Program{
+            .imports = &.{},
+            .definitions = &.{},
+            .package = null,
+        };
     };
     const parse_time = nowNs() - timer;
+
+    // If we have parse errors, emit them and exit
+    if (diags.has_errors) {
+        diags.emitAll(io, fname, source);
+        std.process.exit(1);
+    }
 
     // Typecheck
     // Extract base directory from filename for module resolution
@@ -287,19 +309,28 @@ pub fn main(init: std.process.Init) !void {
     inferer.module_loader = &loader;
     inferer.inferProgram(&prog) catch |err| {
         if (inferer.last_error) |ec| {
-            reportError(io, fname, ec.loc, "{s}", .{ec.message orelse @errorName(err)});
-            if (ec.note) |note| {
-                reportNote(io, fname, ec.loc, "{s}", .{note});
-            }
-            if (ec.help) |help| {
-                reportHelp(io, fname, ec.loc, "{s}", .{help});
-            }
+            try diags.addErrorCtx(
+                ec.message orelse @errorName(err),
+                ec.loc,
+                ec.note,
+                ec.help,
+            );
         } else {
-            reportError(io, fname, null, "type error: {s}", .{@errorName(err)});
+            try diags.addError(@errorName(err), null);
         }
-        std.process.exit(1);
     };
     const typecheck_time = nowNs() - timer - parse_time;
+
+    // If we have errors, emit them and exit
+    if (diags.has_errors) {
+        diags.emitAll(io, fname, source);
+        std.process.exit(1);
+    }
+
+    // --check mode: type-check only, no codegen
+    if (mode == .check) {
+        return;
+    }
 
     // Experimental HIR → LIR → LLVM pipeline (--use-lir)
     if (use_lir) {
@@ -361,7 +392,7 @@ pub fn main(init: std.process.Init) !void {
                 reportError(io, fname, null, "--use-lir does not support AOT modes yet", .{});
                 std.process.exit(1);
             },
-            .repl => unreachable,
+            .check, .repl => unreachable,
         }
         return;
     }
@@ -492,7 +523,7 @@ pub fn main(init: std.process.Init) !void {
             try writer.interface.print("wrote {s}\n", .{out_name});
             try writer.interface.flush();
         },
-        .repl => unreachable, // handled earlier
+        .repl, .check => unreachable, // handled earlier
     }
 }
 
