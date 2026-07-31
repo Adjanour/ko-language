@@ -633,10 +633,47 @@ ko --emit-exe out file.ko
 
 ---
 
+## Known Issues
+
+### Parser
+
+- **Negative numbers as args**: `f -3` must be `f (-3)` (GitHub #17)
+- **Multi-line pipe**: `|>` doesn't work across lines (GitHub #18)
+- **`let` in non-indented blocks**: parser may consume next def as body
+
+### Typechecker
+
+- **Imported type propagation**: Types from imported modules show as type variables
+- **Multi-line closures with free variables**: LLVM codegen errors
+
+### Codegen
+
+- **Let-bound constructor display**: Shows raw pointers (element-level type tags lost at LLVM IR level)
+- **List element printing**: Non-integer list elements print as raw pointers (tag=100)
+
+### LIR Pipeline
+
+- **Module/import system**: Not implemented — `module_def.ko` and `module_import.ko` fail
+- **Division by zero guard**: Not implemented in LIR codegen (control flow issue)
+
+---
+
+## String Design
+
+Strings are `i8*` (null-terminated) at LLVM level. Operations use C library functions.
+
+**Known limitations:**
+- No UTF-8 awareness — `String.length` counts bytes, not code points
+- `String.toUpperCase` uses C `toupper` (ASCII-only)
+- `String.split` LLVM IR body is empty (only Zig JIT fallback works)
+- No efficient building — every `String.append` allocates + copies (O(n²))
+
+**Design goals:** UTF-8 by default, length-prefixed internally, efficient building, comptime/runtime parity.
+
+---
+
 ## See Also
 
 - [Codegen](CODEGEN.md) — how LLVM IR generation works
-- [Typechecking](TYPECHECKING.md) — how Hindley-Milner type inference works
-- [Theory](THEORY.md) — theoretical foundations and references
-- [Status](STATUS.md) — current state and completed work
-- [Known Issues](KNOWN_ISSUES.md) — bugs and limitations
+- [Language Reference](LANGUAGE_REFERENCE.md) — syntax and semantics
+- [Tutorial](TUTORIAL.md) — getting started guide
