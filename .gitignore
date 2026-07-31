@@ -19,13 +19,14 @@ ko-zig/zig-pkg/
 # Research papers (kept locally, not in git)
 ko-zig/docs/*.pdf
 
+# Node dependencies (any package's node_modules, anywhere in the repo)
+node_modules/
+
 # VS Code extension
 vscode-ko/ko-language-*.vsix
-vscode-ko/node_modules/
 
 # Tree-sitter
 tree-sitter-ko/src/
-tree-sitter-ko/node_modules/
 tree-sitter-ko/package-lock.json
 
 # Editor/OS
