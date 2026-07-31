@@ -14,6 +14,45 @@ fn flushStdout() void {
     _ = fflush(null);
 }
 
+const termios = extern struct {
+    iflag: u32,
+    oflag: u32,
+    cflag: u32,
+    lflag: u32,
+    line: u8,
+    cc: [32]u8,
+    ispeed: u32,
+    ospeed: u32,
+};
+
+extern "c" fn tcgetattr(fd: c_int, t: *termios) c_int;
+extern "c" fn tcsetattr(fd: c_int, action: c_int, t: *const termios) c_int;
+
+const TCGETATTR = 0x5401;
+const TCSETATTR = 0x5403;
+const TCSANOW = 0;
+
+const ICANON: u32 = 0o000002;
+const ECHO: u32 = 0o000010;
+
+fn enableRawMode(fd: posix.fd_t) void {
+    var old: termios = undefined;
+    _ = tcgetattr(@intCast(fd), &old);
+    var raw = old;
+    raw.lflag &= ~ICANON;
+    raw.lflag &= ~ECHO;
+    _ = tcsetattr(@intCast(fd), TCSANOW, &raw);
+}
+
+fn disableRawMode(fd: posix.fd_t) void {
+    var old: termios = undefined;
+    _ = tcgetattr(@intCast(fd), &old);
+    var raw = old;
+    raw.lflag |= ICANON;
+    raw.lflag |= ECHO;
+    _ = tcsetattr(@intCast(fd), TCSANOW, &raw);
+}
+
 fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
     return posix.read(fd, buf) catch |err| switch (err) {
         error.InputOutput => return error.ReadFailed,
@@ -193,6 +232,10 @@ pub const Repl = struct {
     pub fn run(self: *Repl) !void {
         const stdout_fd: posix.fd_t = posix.STDOUT_FILENO;
         const stdin_fd: posix.fd_t = posix.STDIN_FILENO;
+
+        // Enable raw mode for escape sequence handling
+        enableRawMode(stdin_fd);
+        defer disableRawMode(stdin_fd);
 
         try printStr(stdout_fd, "Kō REPL v0.3.0\n", .{});
         try printStr(stdout_fd, "Type expressions to evaluate, definitions to bind.\n", .{});
@@ -406,43 +449,26 @@ pub const Repl = struct {
             // Handle escape sequences (arrow keys, etc.)
             if (ch == '\x1b') {
                 // Read next char (should be '[')
-                var seq_buf: [2]u8 = undefined;
+                var seq_buf: [1]u8 = undefined;
                 const seq_n = rawRead(fd, &seq_buf) catch 0;
-                if (seq_n == 2 and seq_buf[0] == '[') {
-                    const key = seq_buf[1];
-                    if (key == 'A') {
-                        // Up arrow - previous history
-                        if (self.history.items.len > 0) {
-                            const new_idx = if (self.history_index) |idx|
-                                if (idx > 0) idx - 1 else 0
-                            else
-                                self.history.items.len - 1;
+                if (seq_n == 1 and seq_buf[0] == '[') {
+                    // Read the key character
+                    var key_buf: [1]u8 = undefined;
+                    const key_n = rawRead(fd, &key_buf) catch 0;
+                    if (key_n == 1) {
+                        const key = key_buf[0];
+                        if (key == 'A') {
+                            // Up arrow - previous history
+                            if (self.history.items.len > 0) {
+                                const new_idx = if (self.history_index) |idx|
+                                    if (idx > 0) idx - 1 else 0
+                                else
+                                    self.history.items.len - 1;
 
-                            self.history_index = new_idx;
-                            const hist_item = self.history.items[new_idx];
-
-                            // Clear current line and replace with history
-                            line_len = 0;
-                            if (hist_item.len <= line_buf.len) {
-                                for (hist_item, 0..) |c, i| {
-                                    line_buf[i] = c;
-                                }
-                                line_len = hist_item.len;
-                            }
-
-                            // Clear and redraw line
-                            try printStr(stdout_fd, "\r\x1b[K", .{});
-                            try printStr(stdout_fd, "ko> ", .{});
-                            try writeAll(stdout_fd, line_buf[0..line_len]);
-                        }
-                    } else if (key == 'B') {
-                        // Down arrow - next history
-                        if (self.history_index) |idx| {
-                            if (idx < self.history.items.len - 1) {
-                                const new_idx = idx + 1;
                                 self.history_index = new_idx;
                                 const hist_item = self.history.items[new_idx];
 
+                                // Clear current line and replace with history
                                 line_len = 0;
                                 if (hist_item.len <= line_buf.len) {
                                     for (hist_item, 0..) |c, i| {
@@ -450,16 +476,38 @@ pub const Repl = struct {
                                     }
                                     line_len = hist_item.len;
                                 }
-                            } else {
-                                // At end of history, clear line
-                                self.history_index = null;
-                                line_len = 0;
-                            }
 
-                            // Clear and redraw line
-                            try printStr(stdout_fd, "\r\x1b[K", .{});
-                            try printStr(stdout_fd, "ko> ", .{});
-                            try writeAll(stdout_fd, line_buf[0..line_len]);
+                                // Clear and redraw line
+                                try printStr(stdout_fd, "\r\x1b[K", .{});
+                                try printStr(stdout_fd, "ko> ", .{});
+                                try writeAll(stdout_fd, line_buf[0..line_len]);
+                            }
+                        } else if (key == 'B') {
+                            // Down arrow - next history
+                            if (self.history_index) |idx| {
+                                if (idx < self.history.items.len - 1) {
+                                    const new_idx = idx + 1;
+                                    self.history_index = new_idx;
+                                    const hist_item = self.history.items[new_idx];
+
+                                    line_len = 0;
+                                    if (hist_item.len <= line_buf.len) {
+                                        for (hist_item, 0..) |c, i| {
+                                            line_buf[i] = c;
+                                        }
+                                        line_len = hist_item.len;
+                                    }
+                                } else {
+                                    // At end of history, clear line
+                                    self.history_index = null;
+                                    line_len = 0;
+                                }
+
+                                // Clear and redraw line
+                                try printStr(stdout_fd, "\r\x1b[K", .{});
+                                try printStr(stdout_fd, "ko> ", .{});
+                                try writeAll(stdout_fd, line_buf[0..line_len]);
+                            }
                         }
                     }
                 }
