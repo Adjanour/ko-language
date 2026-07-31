@@ -28,6 +28,67 @@ pub const HirDef = union(enum) {
     type_def: HirTypeDef,
 };
 
+/// Shift every HirId embedded in an expression's payload by `offset`.
+/// Needed when splicing a module's expression list (whose ids are locally
+/// 0-based) into another list at a nonzero starting position.
+fn offsetExprIds(e: *hir.HirExpr, offset: usize) void {
+    e.id += offset;
+    switch (e.kind) {
+        .lambda => |*l| l.body += offset,
+        .apply => |*a| {
+            a.func += offset;
+            a.arg += offset;
+        },
+        .let => |*l| {
+            l.value += offset;
+            l.body += offset;
+        },
+        .let_rec => |*lr| {
+            const bindings = @constCast(lr.bindings);
+            for (bindings) |*b| b.value += offset;
+            lr.body += offset;
+        },
+        .if_ => |*i| {
+            i.cond += offset;
+            i.then += offset;
+            i.else_ += offset;
+        },
+        .match => |*m| {
+            m.scrutinee += offset;
+            const arms = @constCast(m.arms);
+            for (arms) |*arm| {
+                if (arm.guard) |g| arm.guard = g + offset;
+                arm.body += offset;
+            }
+        },
+        .record => |*r| {
+            const fields = @constCast(r.fields);
+            for (fields) |*f| f.value += offset;
+        },
+        .record_access => |*ra| ra.record += offset,
+        .tuple => |*t| {
+            const elems = @constCast(t.elements);
+            for (elems) |*el| el.* += offset;
+        },
+        .constructor => |*c| {
+            const args = @constCast(c.args);
+            for (args) |*a| a.* += offset;
+        },
+        .ref => |*r| r.* += offset,
+        .deref => |*d| d.* += offset,
+        .assign => |*a| {
+            a.target += offset;
+            a.value += offset;
+        },
+        .comptime_expr => |*c| c.* += offset,
+        .primop => |*p| {
+            const args = @constCast(p.args);
+            for (args) |*a| a.* += offset;
+        },
+        .int, .float, .bool, .char, .string, .local, .global => {},
+    }
+}
+
 pub const HirLower = struct {
     allocator: std.mem.Allocator,
     inferer: *typecheck.Inferer,
@@ -62,6 +123,106 @@ pub const HirLower = struct {
     }
 
     pub fn lowerProgram(self: *HirLower, program: *const ast.Program) !void {
+        // Process imports — register imported function definitions
+        // The typechecker already registered their types; we just need their bodies in HIR.
+        if (self.inferer.module_loader) |loader| {
+            for (program.imports) |imp| {
+                const mod = loader.loadModule(imp.path) catch |err| {
+                    std.log.err("Failed to load module: {}", .{err});
+                    continue;
+                } orelse {
+                    std.log.err("Module not found: {s}", .{std.mem.join(self.allocator, "/", imp.path) catch "unknown"});
+                    continue;
+                };
+                const module_name = imp.alias orelse imp.path[imp.path.len - 1];
+
+                // Parse the imported module
+                var imp_parser = try @import("parser.zig").Parser.init(self.allocator, mod.source);
+                defer imp_parser.deinit();
+                const imp_prog = imp_parser.parse_program() catch |err| {
+                    std.log.err("Failed to parse imported module '{s}': {}", .{ module_name, err });
+                    continue;
+                };
+
+                // Create a fresh inferer for the imported module to get type info
+                var imp_inferer = try self.allocator.create(typecheck.Inferer);
+                imp_inferer.* = typecheck.Inferer.init(self.allocator);
+                imp_inferer.module_loader = loader;
+                imp_inferer.inferProgram(&imp_prog) catch |err| {
+                    std.log.err("Failed to typecheck imported module '{s}': {}", .{ module_name, err });
+                    self.allocator.destroy(imp_inferer);
+                    continue;
+                };
+
+                // Create a fresh HIR lower for the imported module
+                var imp_hl = HirLower.init(self.allocator, imp_inferer);
+                defer imp_hl.deinit();
+
+                for (imp_prog.definitions) |def| {
+                    switch (def) {
+                        .fn_def => |fd| {
+                            // Lower ALL functions (helpers may be called by selected ones)
+                            // Use qualified name so they don't collide with main program
+                            const prefixed_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, fd.name });
+                            var fd_copy = fd;
+                            fd_copy.name = prefixed_name;
+                            try imp_hl.lowerDefinition(&.{ .fn_def = fd_copy });
+
+                            // Also register with unqualified name for intra-module calls
+                            if (!std.mem.eql(u8, fd.name, prefixed_name)) {
+                                const fd_unqual = fd;
+                                try imp_hl.lowerDefinition(&.{ .fn_def = fd_unqual });
+                            }
+                        },
+                        .type_def => |td| {
+                            const prefixed_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, td.name });
+                            var td_copy = td;
+                            td_copy.name = prefixed_name;
+                            try imp_hl.lowerDefinition(&.{ .type_def = td_copy });
+                        },
+                        else => {},
+                    }
+                }
+
+                // Copy imported expressions and definitions into the main HIR.
+                // The imported HirLower numbered its expressions from 0; shift
+                // every id (both the array position and every HirId embedded
+                // inside each expression's payload) by expr_offset so they
+                // remain valid once appended after whatever's already here.
+                const expr_offset = self.expressions.items.len;
+                for (imp_hl.expressions.items) |e| {
+                    var e_copy = e;
+                    offsetExprIds(&e_copy, expr_offset);
+                    try self.expressions.append(self.allocator, e_copy);
+                }
+                // Keep self.next_id in sync so the main program's own
+                // subsequent allocExpr calls don't reuse positions we just filled.
+                self.next_id = self.expressions.items.len;
+                for (imp_hl.defs.items) |d| {
+                    // Adjust root IDs to account for expression offset
+                    var adjusted_def = d;
+                    switch (adjusted_def) {
+                        .fn_def => |*fd| {
+                            fd.root += expr_offset;
+                        },
+                        .let_binding => |*lb| {
+                            lb.root += expr_offset;
+                        },
+                        else => {},
+                    }
+                    try self.defs.append(self.allocator, adjusted_def);
+                }
+
+                // Copy imported inferer's global entries to main inferer
+                var glob_iter = imp_inferer.global.bindings.iterator();
+                while (glob_iter.next()) |entry| {
+                    try self.inferer.global.set(entry.key_ptr.*, entry.value_ptr.*);
+                }
+
+                self.allocator.destroy(imp_inferer);
+            }
+        }
+
         for (program.definitions) |def| {
             const before = self.expressions.items.len;
             try self.lowerDefinition(&def);
@@ -129,7 +290,94 @@ pub const HirLower = struct {
             },
             .import => {},
             .package => {},
-            .module_def => {},
+            .module_def => |m| {
+                // Process module definitions with qualified names
+                for (m.definitions) |inner_def| {
+                    try self.lowerDefinitionWithPrefix(&inner_def, m.name);
+                }
+            },
+        }
+    }
+
+    fn lowerDefinitionWithPrefix(self: *HirLower, def: *const ast.Definition, prefix: []const u8) !void {
+        switch (def.*) {
+            .fn_def => |fd| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, fd.name })
+                else
+                    fd.name;
+                self.pushScope();
+                defer self.popScope();
+                var param_ids: std.ArrayList(hir.LocalVarId) = .empty;
+                defer param_ids.deinit(self.allocator);
+                for (fd.params) |p| {
+                    const name = switch (p.pattern) {
+                        .identifier => |n| n,
+                        else => @panic("unexpected param pattern"),
+                    };
+                    const id = try self.newLocal(name);
+                    try param_ids.append(self.allocator, id);
+                }
+                const body_id = try self.lowerExpr(fd.body);
+                const fd_ty = self.inferer.expr_types.get(fd.body) orelse @panic("fn body type not found");
+                const root = try self.allocExpr(.{
+                    .lambda = .{
+                        .params = try param_ids.toOwnedSlice(self.allocator),
+                        .body = body_id,
+                        .captures = &.{},
+                    },
+                }, fd_ty, fd.body);
+                try self.defs.append(self.allocator, .{ .fn_def = .{
+                    .name = prefixed_name,
+                    .root = root,
+                    .arity = fd.params.len,
+                } });
+            },
+            .type_def => |td| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, td.name })
+                else
+                    td.name;
+                var ctors: std.ArrayList(HirCtorDecl) = .empty;
+                defer ctors.deinit(self.allocator);
+                switch (td.body) {
+                    .sum => |cs| {
+                        for (cs) |c| {
+                            try ctors.append(self.allocator, .{ .name = c.name, .arity = c.params.len });
+                        }
+                    },
+                    .record => {},
+                }
+                try self.defs.append(self.allocator, .{ .type_def = .{
+                    .name = prefixed_name,
+                    .ctors = try ctors.toOwnedSlice(self.allocator),
+                } });
+            },
+            .module_def => |m| {
+                const mod_prefix = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, m.name })
+                else
+                    m.name;
+                for (m.definitions) |inner_def| {
+                    try self.lowerDefinitionWithPrefix(&inner_def, mod_prefix);
+                }
+            },
+            .let_binding => |lb| {
+                const prefixed_name = if (prefix.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ prefix, lb.name })
+                else
+                    lb.name;
+                const val_id = try self.lowerExpr(lb.value);
+                const lb_ty = self.inferer.expr_types.get(lb.value) orelse
+                    @panic("let binding type not found");
+                const root = try self.allocExpr(.{ .let = .{ .name = 0, .value = val_id, .body = 0 } }, lb_ty, lb.value);
+                try self.defs.append(self.allocator, .{ .let_binding = .{
+                    .name = prefixed_name,
+                    .root = root,
+                } });
+            },
+            .import => {},
+            .package => {},
         }
     }
 

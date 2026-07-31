@@ -610,6 +610,15 @@ pub const LirLower = struct {
                 const bb = try self.coerce(b, .{ .bool = {} });
                 return self.emit(.{ .primop = .{ .op = p.op, .args = try self.dupeIds(&.{ ba, bb }) } }, .{ .bool = {} });
             },
+            .div, .rem => {
+                // Integer div/rem: emit zero-check with panic path.
+                // Float div/rem: emit a plain primop (IEEE 754 handles inf/nan).
+                const ty = self.localType(a);
+                if (ty == .float) {
+                    return self.emit(.{ .primop = .{ .op = p.op, .args = try self.dupeIds(&.{ a, b }) } }, ty);
+                }
+                return self.lowerDivCheck(a, b, p.op == .rem, ty);
+            },
             else => {},
         }
         return self.emitPrimop2(p.op, a, b);
@@ -637,6 +646,45 @@ pub const LirLower = struct {
         const result = try self.newLocal(self.localType(t));
         try self.startBlockWithId(merge_id, try self.dupeIds(&.{result}));
         return result;
+    }
+
+    /// Lower integer div/rem with a runtime zero-check and panic.
+    fn lowerDivCheck(self: *LirLower, lhs: lir.LocalId, rhs: lir.LocalId, is_mod: bool, ty: lir.LirType) LowerError!lir.LocalId {
+        const zero = try self.emit(.{ .int = 0 }, .{ .int = {} });
+        const is_zero = try self.emit(.{ .primop = .{ .op = .eq, .args = try self.dupeIds(&.{ rhs, zero }) } }, .{ .bool = {} });
+
+        const panic_id = self.rid();
+        const cont_id = self.rid();
+        const merge_id = self.rid();
+
+        self.terminateCurrent(.{ .cond_br = .{
+            .cond = is_zero,
+            .then = .{ .target = panic_id },
+            .else_ = .{ .target = cont_id },
+        } });
+
+        // Panic block: call ko_panic_str then unreachable
+        try self.startBlockWithId(panic_id, &.{});
+        const msg = try self.emit(.{ .string = .{ .ptr = "division by zero", .len = "division by zero".len } }, .{ .string = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_panic_str" }, .{ .opaque_type = {} });
+        const param_tys = try self.allocator.alloc(lir.LirType, 1);
+        param_tys[0] = .{ .opaque_type = {} };
+        _ = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{msg}),
+            .fn_type = .{ .params = param_tys, .returns = .{ .unit = {} } },
+        } }, .{ .unit = {} });
+        self.terminateCurrent(.{ .unreachable_ = {} });
+
+        // Continue block: perform the actual division
+        try self.startBlockWithId(cont_id, &.{});
+        const div_result = try self.emit(.{ .primop = .{ .op = if (is_mod) .rem else .div, .args = try self.dupeIds(&.{ lhs, rhs }) } }, ty);
+
+        const merge_result = try self.newLocal(ty);
+        self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{div_result}) } });
+
+        try self.startBlockWithId(merge_id, try self.dupeIds(&.{merge_result}));
+        return merge_result;
     }
 
     // =================================================================

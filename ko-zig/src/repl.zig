@@ -242,8 +242,14 @@ pub const Repl = struct {
         try printStr(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :history, :help\n\n", .{});
 
         var line_buf: [4096]u8 = undefined;
+        var multi_line_buf: [65536]u8 = undefined;
+        var multi_line_len: usize = 0;
+        var bracket_depth: i32 = 0;
+
         while (true) {
-            try printStr(stdout_fd, "ko> ", .{});
+            const prompt = if (bracket_depth > 0) "... " else "ko> ";
+            try writeAll(stdout_fd, prompt);
+
             const line = self.readLineWithCompletion(stdin_fd, &line_buf, stdout_fd) catch |err| {
                 if (err == error.ConnectionClosed) {
                     try printStr(stdout_fd, "\nBye!\n", .{});
@@ -253,17 +259,59 @@ pub const Repl = struct {
                 continue;
             };
 
-            if (line.len == 0) continue;
+            // Track bracket depth for multi-line input
+            for (line) |ch| {
+                if (ch == '(' or ch == '{' or ch == '[') {
+                    bracket_depth += 1;
+                } else if (ch == ')' or ch == '}' or ch == ']') {
+                    bracket_depth -= 1;
+                }
+            }
 
-            if (std.mem.startsWith(u8, line, ":")) {
-                self.handleCommand(line, stdout_fd) catch |err| {
+            // Also check if line ends with = (incomplete definition)
+            const trimmed_line = std.mem.trimEnd(u8, line, " \t");
+            const ends_with_equals = trimmed_line.len > 0 and trimmed_line[trimmed_line.len - 1] == '=';
+
+            // Accumulate multi-line input
+            if (multi_line_len > 0) {
+                // Add newline between lines
+                if (multi_line_len < multi_line_buf.len) {
+                    multi_line_buf[multi_line_len] = '\n';
+                    multi_line_len += 1;
+                }
+            }
+            const line_to_add = if (multi_line_len + line.len <= multi_line_buf.len)
+                line
+            else
+                line[0 .. multi_line_buf.len - multi_line_len];
+            for (line_to_add, 0..) |ch, i| {
+                multi_line_buf[multi_line_len + i] = ch;
+            }
+            multi_line_len += line_to_add.len;
+
+            // Continue reading if brackets are unclosed or line ends with =
+            if (bracket_depth > 0 or ends_with_equals) {
+                continue;
+            }
+
+            // Get the complete input
+            const input = multi_line_buf[0..multi_line_len];
+
+            // Reset multi-line buffer
+            multi_line_len = 0;
+            bracket_depth = 0;
+
+            if (input.len == 0) continue;
+
+            if (std.mem.startsWith(u8, input, ":")) {
+                self.handleCommand(input, stdout_fd) catch |err| {
                     try printStr(stdout_fd, "Error: {}\n", .{err});
                 };
                 continue;
             }
 
-            self.addToHistory(line) catch {};
-            self.evalInput(line, stdout_fd) catch |err| {
+            self.addToHistory(input) catch {};
+            self.evalInput(input, stdout_fd) catch |err| {
                 try printStr(stdout_fd, "Error: {}\n", .{err});
             };
         }
@@ -604,15 +652,30 @@ pub const Repl = struct {
 
             if (self.accumulated_source.items.len > 0) {
                 var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
+                var in_fn_body = false;
                 while (lines.next()) |line| {
                     const trimmed_line = std.mem.trimStart(u8, line, " \t");
-                    if (trimmed_line.len == 0) continue;
+                    if (trimmed_line.len == 0) {
+                        in_fn_body = false;
+                        continue;
+                    }
                     if (std.mem.startsWith(u8, trimmed_line, "fn ") or
                         std.mem.startsWith(u8, trimmed_line, "type "))
                     {
                         try fn_defs.appendSlice(self.allocator, line);
                         try fn_defs.append(self.allocator, '\n');
-                    } else if (trimmed_line.len > 0) {
+                        // Check if fn def ends with = (body on next lines)
+                        const trimmed_end = std.mem.trimEnd(u8, trimmed_line, " \t");
+                        in_fn_body = trimmed_end.len > 0 and trimmed_end[trimmed_end.len - 1] == '=';
+                    } else if (in_fn_body) {
+                        // Continuation of multi-line fn body — keep with fn_defs
+                        try fn_defs.appendSlice(self.allocator, line);
+                        try fn_defs.append(self.allocator, '\n');
+                        // If this line doesn't look indented anymore, stop fn body
+                        if (line.len > 0 and line[0] != ' ' and line[0] != '\t') {
+                            in_fn_body = false;
+                        }
+                    } else {
                         // let bindings and other defs go inside eval fn body
                         try let_bindings.appendSlice(self.allocator, "  ");
                         try let_bindings.appendSlice(self.allocator, line);
@@ -645,6 +708,7 @@ pub const Repl = struct {
             cg.module_owned_by_jit = true;
             cg.quiet = true;
             cg.expr_type_tags = &inferer.expr_type_tags;
+            cg.param_arity = &inferer.param_arity;
             try cg.codegenProgram(prog);
 
             var jit = try codegen_mod.Jit.init(cg.module, 0);
@@ -658,49 +722,58 @@ pub const Repl = struct {
             }
 
             const eval_fn: *const fn () callconv(.c) i64 = @ptrFromInt(fn_addr);
-            const result = eval_fn();
 
-            // Flush C stdout buffer (println/print use C printf)
-            flushStdout();
-
-            // Suppress return value display for side-effecting functions
+            // Check if this is a side-effect expression (before calling the function)
             const trimmed_input = std.mem.trimStart(u8, input, " \t");
             const is_side_effect = blk: {
-                // Check if input starts with println, print, inspect, or any assignment
                 if (std.mem.startsWith(u8, trimmed_input, "println")) break :blk true;
                 if (std.mem.startsWith(u8, trimmed_input, "print ")) break :blk true;
                 if (std.mem.startsWith(u8, trimmed_input, "inspect")) break :blk true;
                 if (std.mem.startsWith(u8, trimmed_input, "panic")) break :blk true;
                 if (std.mem.startsWith(u8, trimmed_input, "assert")) break :blk true;
-                // Check for assignment (:=)
                 for (trimmed_input, 0..) |ch, i| {
                     if (ch == ':' and i + 1 < trimmed_input.len and trimmed_input[i + 1] == '=') break :blk true;
                 }
                 break :blk false;
             };
 
+            // Add newline before side-effect output for cleaner display
+            if (is_side_effect) {
+                try writeAll(stdout_fd, "\n");
+            }
+            const result = eval_fn();
+
+            // Flush C stdout buffer (println/print use C printf)
+            flushStdout();
+
             if (!is_side_effect) {
-                try printStr(stdout_fd, "= {d}\n", .{result});
-            } else {
-                // Add newline after side-effect output (print/println don't end with \n)
+                try printStr(stdout_fd, "\n= {d}\n\n", .{result});
+            } else if (std.mem.startsWith(u8, trimmed_input, "inspect")) {
+                // inspect doesn't add \n — add one for clean display
+                try printStr(stdout_fd, "\n", .{});
+            } else if (std.mem.startsWith(u8, trimmed_input, "print ")) {
+                // print (not println) doesn't end with \n — add one
                 try printStr(stdout_fd, "\n", .{});
             }
+            // println already adds its own \n, no extra needed
         }
     }
 
     fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: posix.fd_t) !void {
-        if (std.mem.eql(u8, cmd, ":quit") or std.mem.eql(u8, cmd, ":q")) {
+        if (std.mem.eql(u8, cmd, ":quit") or std.mem.eql(u8, cmd, ":q") or std.mem.eql(u8, cmd, ":exit")) {
             try printStr(stdout_fd, "Bye!\n", .{});
             std.process.exit(0);
         } else if (std.mem.eql(u8, cmd, ":help") or std.mem.eql(u8, cmd, ":h")) {
             try printStr(stdout_fd, "Commands:\n", .{});
-            try printStr(stdout_fd, "  :quit, :q       Exit the REPL\n", .{});
-            try printStr(stdout_fd, "  :type <expr>    Show the type of an expression\n", .{});
-            try printStr(stdout_fd, "  :env            Show accumulated definitions\n", .{});
-            try printStr(stdout_fd, "  :reset          Clear accumulated source\n", .{});
-            try printStr(stdout_fd, "  :history        Show input history\n", .{});
-            try printStr(stdout_fd, "  :load <file>    Load a .ko file into the session\n", .{});
-            try printStr(stdout_fd, "  :help, :h       Show this help\n", .{});
+            try printStr(stdout_fd, "  :quit, :q, :exit  Exit the REPL\n", .{});
+            try printStr(stdout_fd, "  :type <expr>      Show the type of an expression\n", .{});
+            try printStr(stdout_fd, "  :env              Show accumulated definitions\n", .{});
+            try printStr(stdout_fd, "  :reset            Clear accumulated source\n", .{});
+            try printStr(stdout_fd, "  :history          Show input history\n", .{});
+            try printStr(stdout_fd, "  :load <file>      Load a .ko file into the session\n", .{});
+            try printStr(stdout_fd, "  :help, :h         Show this help\n", .{});
+            try printStr(stdout_fd, "\nMulti-line input:\n", .{});
+            try printStr(stdout_fd, "  Unclosed brackets/parens continue to next line (shown as '... ')\n", .{});
         } else if (std.mem.eql(u8, cmd, ":env")) {
             if (self.accumulated_source.items.len == 0) {
                 try printStr(stdout_fd, "(empty)\n", .{});

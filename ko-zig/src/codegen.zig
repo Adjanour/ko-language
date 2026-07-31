@@ -64,6 +64,7 @@ pub const Codegen = struct {
     variable_types: std.StringHashMap([]const u8), // variable name → record type name
     fn_types: std.StringHashMap(types.LLVMTypeRef),
     fn_arity: std.StringHashMap(u32), // function name → arity (number of params)
+    param_arity: ?*std.StringHashMap(u32) = null, // function parameter name → arity (from typechecker)
     constructor_tags: std.StringHashMap(CtorInfo),
     constructor_fns: std.StringHashMap(types.LLVMValueRef), // constructor name → wrapper fn
     record_types: std.StringHashMap(RecordInfo),
@@ -697,6 +698,14 @@ pub const Codegen = struct {
                         .list, .tuple, .constructor => false,
                     };
                     if (can_splice) break :blk self.comptimeValueToLlvm(val);
+                } else {
+                    // Comptime evaluation failed — check if it's a compile-time error (e.g., division by zero)
+                    // We re-evaluate to detect the error and emit a compile-time diagnostic
+                    if (self.detectComptimeError(inner)) |err_msg| {
+                        const loc = inner.getLoc();
+                        std.debug.print("error: {s} at {d}:{d}\n", .{ err_msg, loc.line + 1, loc.col + 1 });
+                        return error.CompileError;
+                    }
                 }
                 // Fallback: runtime evaluation
                 break :blk self.codegenExpr(inner);
@@ -1536,6 +1545,25 @@ pub const Codegen = struct {
             // Runtime dispatch: apply one arg at a time via bit-0 check.
             // Each call resolves to either a closure call or direct call.
             // The intermediate result may itself be a closure or raw fn ptr.
+            // First check if we know the arity from the typechecker (function-typed parameters)
+            if (resolved_name) |name| {
+                if (self.param_arity) |pa| {
+                    if (pa.get(name)) |arity| {
+                        if (argc >= arity) {
+                            // Known arity: call with first arity args, then apply remaining one at a time
+                            var first_args: [32]types.LLVMValueRef = undefined;
+                            for (0..@min(arity, argc)) |i| {
+                                first_args[i] = args[i];
+                            }
+                            var result = try self.codegenApplyIndirectWithArity(fn_val, &first_args, @min(arity, argc));
+                            for (@min(arity, argc)..argc) |i| {
+                                result = try self.codegenApplyIndirect(result, args[i]);
+                            }
+                            return result;
+                        }
+                    }
+                }
+            }
             {
                 var result = fn_val;
                 for (0..argc) |i| {
@@ -1740,6 +1768,10 @@ pub const Codegen = struct {
             if (let.value.* == .record_literal) {
                 try self.variable_types.put(let.name, let.value.record_literal.name);
             }
+            // Track constructor type for display (e.g., let c = Red → variable_types["c"] = "Red")
+            if (let.value.* == .constructor) {
+                try self.variable_types.put(let.name, let.value.constructor.name);
+            }
             // Track lambda arity for partial application support
             if (let.value.* == .lambda) {
                 try self.fn_arity.put(let.name, @intCast(let.value.lambda.params.len));
@@ -1821,6 +1853,46 @@ pub const Codegen = struct {
 
         // Return pointer as i64
         return result;
+    }
+
+    /// Detect compile-time errors (like division by zero) by re-evaluating the expression.
+    /// Returns an error message if the expression has a compile-time error, null otherwise.
+    fn detectComptimeError(self: *Codegen, inner: *const parser.Expr) ?[]const u8 {
+        // Walk down to find the actual binary operation
+        var expr = inner;
+        while (true) {
+            switch (expr.*) {
+                .block => |blk| {
+                    if (blk.items.len > 0) {
+                        expr = blk.items[blk.items.len - 1];
+                        continue;
+                    }
+                },
+                else => {},
+            }
+            break;
+        }
+
+        // Check for division by zero in binary operations
+        switch (expr.*) {
+            .binary_op => |bin| {
+                if (bin.op == .div or bin.op == .mod) {
+                    // Check if right operand evaluates to zero at comptime
+                    if (self.comptime_world.evaluate(bin.right)) |right_val| {
+                        const is_zero = switch (right_val) {
+                            .int => |v| v == 0,
+                            .float => |v| v == 0.0,
+                            else => false,
+                        };
+                        if (is_zero) {
+                            return if (bin.op == .div) "division by zero" else "modulo by zero";
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+        return null;
     }
 
     fn comptimeValueToLlvm(self: *Codegen, val: comptime_mod.ComptimeValue) types.LLVMValueRef {
@@ -3162,6 +3234,7 @@ pub const Codegen = struct {
         NotYetImplemented,
         UndefinedVariable,
         OutOfMemory,
+        CompileError,
     };
 };
 
@@ -3447,9 +3520,20 @@ test "jit: execute simple main" {
 // C-callable built-in implementations
 // =============================================================================
 
+// Write formatted output to stdout (not stderr) so REPL can see it
+fn sout(comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    if (comptime @import("builtin").os.tag == .linux) {
+        _ = std.os.linux.write(1, msg.ptr, msg.len);
+    } else {
+        _ = std.c.write(1, msg.ptr, msg.len);
+    }
+}
+
 fn builtin_println_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64) callconv(.c) i64 {
     _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity);
-    std.debug.print("\n", .{});
+    sout("\n", .{});
     return 0;
 }
 
@@ -3464,24 +3548,24 @@ fn builtin_print_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64
 // raw=1: user output (no quotes on strings/chars); raw=0: debug output (with quotes)
 fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64) callconv(.c) i64 {
     switch (type_tag) {
-        0 => std.debug.print("{d}", .{val}),
+        0 => sout("{d}", .{val}),
         1 => {
             const f: f64 = @bitCast(val);
-            std.debug.print("{d}", .{f});
+            sout("{d}", .{f});
         },
         2 => {
             if (val != 0) {
-                std.debug.print("True", .{});
+                sout("True", .{});
             } else {
-                std.debug.print("False", .{});
+                sout("False", .{});
             }
         },
         3 => {
             const ch: u8 = @intCast(val);
             if (raw != 0) {
-                std.debug.print("{c}", .{ch});
+                sout("{c}", .{ch});
             } else {
-                std.debug.print("'{c}'", .{ch});
+                sout("'{c}'", .{ch});
             }
         },
         4 => {
@@ -3489,30 +3573,30 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
             var len: usize = 0;
             while (ptr[len] != 0) : (len += 1) {}
             if (raw != 0) {
-                std.debug.print("{s}", .{ptr[0..len]});
+                sout("{s}", .{ptr[0..len]});
             } else {
-                std.debug.print("\"{s}\"", .{ptr[0..len]});
+                sout("\"{s}\"", .{ptr[0..len]});
             }
         },
-        5 => std.debug.print("()", .{}),
+        5 => sout("()", .{}),
         6 => {
             if (name_ptr) |name| {
                 const name_len = std.mem.len(name);
                 // Check for Nil → print []
                 if (std.mem.eql(u8, name[0..name_len], "Nil")) {
-                    std.debug.print("[]", .{});
+                    sout("[]", .{});
                 } else if (std.mem.eql(u8, name[0..name_len], "Cons")) {
                     // List sugar: print [head, rest...]
                     printConsList(val, raw);
                 } else {
                     // Print constructor name
-                    std.debug.print("{s}", .{name[0..name_len]});
+                    sout("{s}", .{name[0..name_len]});
                     // If arity > 0, print arguments
                     if (arity > 0 and val > 4096) {
                         const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
                         var i: i64 = 0;
                         while (i < arity) : (i += 1) {
-                            std.debug.print(" ", .{});
+                            sout(" ", .{});
                             _ = builtin_inspect_tag(ptr[@intCast(i + 1)], 100, null, 0, 0);
                         }
                     }
@@ -3525,50 +3609,50 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                     // Looks like a Cons cell — try list sugar
                     printConsList(val, raw);
                 } else {
-                    std.debug.print("Constructor({d})", .{val});
+                    sout("Constructor({d})", .{val});
                 }
             } else {
-                std.debug.print("Constructor({d})", .{val});
+                sout("Constructor({d})", .{val});
             }
         },
         7 => {
             if (name_ptr) |name| {
                 const name_len = std.mem.len(name);
-                std.debug.print("{s}", .{name[0..name_len]});
+                sout("{s}", .{name[0..name_len]});
                 // If arity > 0, dereference and print field values
                 if (arity > 0 and val > 4096) {
                     const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
-                    std.debug.print(" {{ ", .{});
+                    sout(" {{ ", .{});
                     var i: i64 = 0;
                     while (i < arity) : (i += 1) {
-                        if (i > 0) std.debug.print(", ", .{});
+                        if (i > 0) sout(", ", .{});
                         _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0);
                     }
-                    std.debug.print(" }}", .{});
+                    sout(" }}", .{});
                 } else {
-                    std.debug.print(" {{ ... }}", .{});
+                    sout(" {{ ... }}", .{});
                 }
             } else {
-                std.debug.print("Record({d})", .{val});
+                sout("Record({d})", .{val});
             }
         },
-        8 => std.debug.print("<fn>", .{}),
+        8 => sout("<fn>", .{}),
         9 => {
             // Tuple: dereference ptr and print each element
             if (arity > 0 and val > 4096) {
                 const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
-                std.debug.print("(", .{});
+                sout("(", .{});
                 var i: i64 = 0;
                 while (i < arity) : (i += 1) {
-                    if (i > 0) std.debug.print(", ", .{});
+                    if (i > 0) sout(", ", .{});
                     _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0);
                 }
-                std.debug.print(")", .{});
+                sout(")", .{});
             } else {
-                std.debug.print("({d})", .{val});
+                sout("({d})", .{val});
             }
         },
-        else => std.debug.print("{d}", .{val}),
+        else => sout("{d}", .{val}),
     }
     return val;
 }
@@ -3581,10 +3665,10 @@ fn printConsList(val: i64, raw: i64) void {
     if (tag != 0) return; // not Cons
     const head = ptr[1];
     const tail = ptr[2];
-    std.debug.print("[", .{});
+    sout("[", .{});
     _ = builtin_inspect_tag(head, 100, null, raw, 0);
     printConsListTail(tail, raw);
-    std.debug.print("]", .{});
+    sout("]", .{});
 }
 
 fn printConsListTail(tail: i64, raw: i64) void {
@@ -3595,7 +3679,7 @@ fn printConsListTail(tail: i64, raw: i64) void {
     if (tag != 0) return; // not Cons (boxed Nil or other)
     const head = ptr[1];
     const next_tail = ptr[2];
-    std.debug.print(", ", .{});
+    sout(", ", .{});
     _ = builtin_inspect_tag(head, 100, null, raw, 0);
     printConsListTail(next_tail, raw);
 }

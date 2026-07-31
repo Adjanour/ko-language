@@ -13,6 +13,7 @@ const codegen_mod = @import("codegen.zig");
 const hir_lower = @import("hir_lower.zig");
 const hir_fold = @import("hir_fold.zig");
 const hir_dce = @import("hir_dce.zig");
+const hir_check = @import("hir_check.zig");
 const hir_beta = @import("hir_beta.zig");
 const hir_let_simpl = @import("hir_let_simpl.zig");
 const hir_known_match = @import("hir_known_match.zig");
@@ -357,16 +358,6 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 
-    // Emit warnings (always shown, even without errors)
-    if (hasWarnings(&diags)) {
-        diags.emitAll(io, fname, source);
-    }
-
-    // Check if warnings should be treated as errors
-    if (warnings_as_errors and hasWarnings(&diags)) {
-        std.process.exit(1);
-    }
-
     // --check mode: type-check only, no codegen
     if (mode == .check) {
         return;
@@ -383,6 +374,23 @@ pub fn main(init: std.process.Init) !void {
     // HIR optimization passes
     var beta = hir_beta.HirBeta.init(init.arena.allocator(), &hl.expressions);
     beta.run();
+    // Check for compile-time errors (e.g., division by zero with literal operands)
+    // Must run BEFORE let_simpl which propagates constants
+    var check = hir_check.HirCheck.init(init.arena.allocator(), &hl.expressions, &diags);
+    check.run();
+    // Emit any compile-time errors found by HIR check
+    if (diags.has_errors) {
+        diags.emitAll(io, fname, source);
+        std.process.exit(1);
+    }
+    // Emit warnings from HIR check (e.g., redundant conditions, integer overflow)
+    if (hasWarnings(&diags)) {
+        diags.emitAll(io, fname, source);
+    }
+    // Check if warnings should be treated as errors
+    if (warnings_as_errors and hasWarnings(&diags)) {
+        std.process.exit(1);
+    }
     var let_simpl = hir_let_simpl.HirLetSimpl.init(init.arena.allocator(), &hl.expressions);
     let_simpl.run();
     var known = hir_known_match.HirKnownMatch.init(init.arena.allocator(), &hl.expressions);
@@ -463,6 +471,7 @@ pub fn main(init: std.process.Init) !void {
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
     cg.expr_type_tags = &inferer.expr_type_tags;
+    cg.param_arity = &inferer.param_arity;
     cg.module_loader = &loader;
     cg.codegenProgram(prog) catch |err| {
         reportError(io, fname, null, "codegen error: {s}", .{@errorName(err)});

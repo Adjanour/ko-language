@@ -152,6 +152,7 @@ pub const Inferer = struct {
     enabled_warnings: diagnostics_mod.WarningSet = .{},
     used_names: std.StringHashMap(void),
     bound_names: std.StringHashMap(parser.Loc),
+    param_arity: std.StringHashMap(u32), // function parameter name → arity (for function-typed params)
 
     pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
     const diagnostics_mod = @import("diagnostics.zig");
@@ -176,6 +177,7 @@ pub const Inferer = struct {
             .enabled_warnings = .{},
             .used_names = std.StringHashMap(void).init(allocator),
             .bound_names = std.StringHashMap(parser.Loc).init(allocator),
+            .param_arity = std.StringHashMap(u32).init(allocator),
         };
         // Pre-register built-in type IDs to match codegen's type_ids
         inferer.type_ids.put("Bool", 0) catch {};
@@ -207,6 +209,7 @@ pub const Inferer = struct {
         self.imported_inferers.deinit(self.allocator);
         self.used_names.deinit();
         self.bound_names.deinit();
+        self.param_arity.deinit();
     }
 
     /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
@@ -1252,6 +1255,39 @@ pub const Inferer = struct {
         if (f.return_type) |ann| {
             const ann_ty = try self.typeExprToType(ann);
             try self.unify(cur, ann_ty);
+        }
+
+        // Now that type variables are resolved, compute arities for function-typed parameters.
+        // Walk fn_type to find parameter names and their resolved types.
+        {
+            var walk_type = fn_type;
+            for (f.params) |param| {
+                switch (walk_type.*) {
+                    .arrow => |a| {
+                        if (param.pattern == .identifier) {
+                            // Resolve type variables to get the actual type
+                            var resolved = a.from;
+                            while (resolved.* == .variable) {
+                                if (resolved.variable.instance) |inst| {
+                                    resolved = inst;
+                                } else break;
+                            }
+                            // Count arrows to determine arity
+                            var arity: u32 = 0;
+                            var w = resolved;
+                            while (w.* == .arrow) {
+                                arity += 1;
+                                w = w.arrow.to;
+                            }
+                            if (arity > 0) {
+                                self.param_arity.put(param.pattern.identifier, arity) catch {};
+                            }
+                        }
+                        walk_type = a.to;
+                    },
+                    else => break,
+                }
+            }
         }
 
         // Check for unused bindings
