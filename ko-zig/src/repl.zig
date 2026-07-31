@@ -180,6 +180,8 @@ pub const Repl = struct {
         }
         const owned = try self.allocator.dupe(u8, line);
         try self.history.append(self.allocator, owned);
+        // Reset history navigation index
+        self.history_index = null;
     }
 
     pub fn run(self: *Repl) !void {
@@ -390,6 +392,69 @@ pub const Repl = struct {
                         }
                         try printStr(stdout_fd, "\nko> ", .{});
                         try writeAll(stdout_fd, line_buf[0..line_len]);
+                    }
+                }
+                continue;
+            }
+
+            // Handle escape sequences (arrow keys, etc.)
+            if (ch == '\x1b') {
+                // Read next char (should be '[')
+                var seq_buf: [2]u8 = undefined;
+                const seq_n = rawRead(fd, &seq_buf) catch 0;
+                if (seq_n == 2 and seq_buf[0] == '[') {
+                    const key = seq_buf[1];
+                    if (key == 'A') {
+                        // Up arrow - previous history
+                        if (self.history.items.len > 0) {
+                            const new_idx = if (self.history_index) |idx|
+                                if (idx > 0) idx - 1 else 0
+                            else
+                                self.history.items.len - 1;
+
+                            self.history_index = new_idx;
+                            const hist_item = self.history.items[new_idx];
+
+                            // Clear current line and replace with history
+                            line_len = 0;
+                            if (hist_item.len <= line_buf.len) {
+                                for (hist_item, 0..) |c, i| {
+                                    line_buf[i] = c;
+                                }
+                                line_len = hist_item.len;
+                            }
+
+                            // Clear and redraw line
+                            try printStr(stdout_fd, "\r\x1b[K", .{});
+                            try printStr(stdout_fd, "ko> ", .{});
+                            try writeAll(stdout_fd, line_buf[0..line_len]);
+                        }
+                    } else if (key == 'B') {
+                        // Down arrow - next history
+                        if (self.history_index) |idx| {
+                            if (idx < self.history.items.len - 1) {
+                                const new_idx = idx + 1;
+                                self.history_index = new_idx;
+                                const hist_item = self.history.items[new_idx];
+
+                                line_len = 0;
+                                if (hist_item.len <= line_buf.len) {
+                                    for (hist_item, 0..) |c, i| {
+                                        line_buf[i] = c;
+                                    }
+                                    line_len = hist_item.len;
+                                }
+                            } else {
+                                // At end of history, clear line
+                                self.history_index = null;
+                                line_len = 0;
+                            }
+
+                            // Clear and redraw line
+                            try printStr(stdout_fd, "\r\x1b[K", .{});
+                            try printStr(stdout_fd, "ko> ", .{});
+                            try writeAll(stdout_fd, line_buf[0..line_len]);
+                        }
                     }
                 }
                 continue;

@@ -18,6 +18,8 @@ const hir_let_simpl = @import("hir_let_simpl.zig");
 const hir_known_match = @import("hir_known_match.zig");
 const lir_lower = @import("lir_lower.zig");
 const codegen_lir = @import("codegen_lir.zig");
+const hir_dump = @import("hir_dump.zig");
+const lir_dump = @import("lir_dump.zig");
 const repl_mod = @import("repl.zig");
 const module_loader_mod = @import("module_loader.zig");
 const diagnostics_mod = @import("diagnostics.zig");
@@ -50,6 +52,8 @@ fn printHelp(io: Io) void {
         \\  ko --check <file.ko>        Type-check only (no codegen)
         \\  ko --repl                   Start interactive REPL
         \\  ko --dump-ir <file.ko>      Show generated LLVM IR
+        \\  ko --dump-hir <file.ko>     Show HIR (High-level IR)
+        \\  ko --dump-lir <file.ko>     Show LIR (Low-level IR) [requires --use-lir]
         \\  ko --emit-ir <out> <file>   Write LLVM IR to file
         \\  ko --emit-obj <out> <file>  Compile to object file
         \\  ko --emit-exe <out> <file>  Compile to executable
@@ -203,7 +207,7 @@ pub fn main(init: std.process.Init) !void {
     var args = std.process.Args.Iterator.init(init.minimal.args);
     _ = args.next(); // skip program name
 
-    var mode: enum { run, ir, obj, exe, emit_ir, repl, check } = .run;
+    var mode: enum { run, ir, obj, exe, emit_ir, repl, check, dump_hir, dump_lir } = .run;
     var filename: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
@@ -221,6 +225,10 @@ pub fn main(init: std.process.Init) !void {
             mode = .repl;
         } else if (std.mem.eql(u8, arg, "--dump-ir")) {
             mode = .ir;
+        } else if (std.mem.eql(u8, arg, "--dump-hir")) {
+            mode = .dump_hir;
+        } else if (std.mem.eql(u8, arg, "--dump-lir")) {
+            mode = .dump_lir;
         } else if (std.mem.eql(u8, arg, "--emit-obj")) {
             mode = .obj;
             output = args.next();
@@ -364,33 +372,55 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    // HIR lowering (needed for both --dump-hir and --use-lir paths)
+    var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
+    defer hl.deinit();
+    hl.lowerProgram(&prog) catch |err| {
+        reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
+        std.process.exit(1);
+    };
+
+    // HIR optimization passes
+    var beta = hir_beta.HirBeta.init(init.arena.allocator(), &hl.expressions);
+    beta.run();
+    var let_simpl = hir_let_simpl.HirLetSimpl.init(init.arena.allocator(), &hl.expressions);
+    let_simpl.run();
+    var known = hir_known_match.HirKnownMatch.init(init.arena.allocator(), &hl.expressions);
+    known.run();
+    var fold = hir_fold.HirFold.init(init.arena.allocator(), &hl.expressions);
+    fold.run();
+    var dce = hir_dce.HirDce.init(init.arena.allocator(), &hl.expressions);
+    dce.run(hl.roots.items);
+
+    // Dump HIR if requested
+    if (mode == .dump_hir) {
+        var hir_dump_buf = std.ArrayList(u8).empty;
+        defer hir_dump_buf.deinit(init.arena.allocator());
+        try hir_dump.dumpHir(init.arena.allocator(), &hl, &hir_dump_buf);
+        try writer.interface.writeAll(hir_dump_buf.items);
+        try writer.interface.flush();
+        return;
+    }
+
     // Experimental HIR → LIR → LLVM pipeline (--use-lir)
     if (use_lir) {
-        var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
-        defer hl.deinit();
-        hl.lowerProgram(&prog) catch |err| {
-            reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
-            std.process.exit(1);
-        };
-
-        // HIR optimization passes (run before LIR lowering)
-        var beta = hir_beta.HirBeta.init(init.arena.allocator(), &hl.expressions);
-        beta.run();
-        var let_simpl = hir_let_simpl.HirLetSimpl.init(init.arena.allocator(), &hl.expressions);
-        let_simpl.run();
-        var known = hir_known_match.HirKnownMatch.init(init.arena.allocator(), &hl.expressions);
-        known.run();
-        var fold = hir_fold.HirFold.init(init.arena.allocator(), &hl.expressions);
-        fold.run();
-        var dce = hir_dce.HirDce.init(init.arena.allocator(), &hl.expressions);
-        dce.run(hl.roots.items);
-
         var ll = lir_lower.LirLower.init(init.arena.allocator(), hl.expressions.items, hl.defs.items, &inferer);
         defer ll.deinit();
         const lir_fns = ll.lowerProgram() catch |err| {
             reportError(io, fname, null, "LIR lowering error: {s}", .{@errorName(err)});
             std.process.exit(1);
         };
+
+        // Dump LIR if requested
+        if (mode == .dump_lir) {
+            var lir_dump_buf = std.ArrayList(u8).empty;
+            defer lir_dump_buf.deinit(init.arena.allocator());
+            try lir_dump.dumpLir(init.arena.allocator(), &ll, &lir_dump_buf);
+            try writer.interface.writeAll(lir_dump_buf.items);
+            try writer.interface.flush();
+            return;
+        }
+
         var lcg = codegen_lir.CodegenLir.init(init.arena.allocator(), "ko_module");
         defer lcg.deinit();
         lcg.declareRuntime();
@@ -424,7 +454,7 @@ pub fn main(init: std.process.Init) !void {
                 reportError(io, fname, null, "--use-lir does not support AOT modes yet", .{});
                 std.process.exit(1);
             },
-            .check, .repl => unreachable,
+            .check, .repl, .dump_hir, .dump_lir => unreachable,
         }
         return;
     }
@@ -555,7 +585,7 @@ pub fn main(init: std.process.Init) !void {
             try writer.interface.print("wrote {s}\n", .{out_name});
             try writer.interface.flush();
         },
-        .repl, .check => unreachable, // handled earlier
+        .repl, .check, .dump_hir, .dump_lir => unreachable, // handled earlier
     }
 }
 
