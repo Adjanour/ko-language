@@ -8,6 +8,12 @@ const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
 
+extern "c" fn fflush(?*anyopaque) c_int;
+
+fn flushStdout() void {
+    _ = fflush(null);
+}
+
 fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
     return posix.read(fd, buf) catch |err| switch (err) {
         error.InputOutput => return error.ReadFailed,
@@ -489,7 +495,15 @@ pub const Repl = struct {
                 try source.appendSlice(self.allocator, self.accumulated_source.items);
                 try source.append(self.allocator, '\n');
             }
-            try source.appendSlice(self.allocator, input);
+
+            // Convert "let name = value" to "fn name = value" for codegen compatibility
+            const trimmed = std.mem.trimStart(u8, input, " \t");
+            if (std.mem.startsWith(u8, trimmed, "let ")) {
+                try source.appendSlice(self.allocator, "fn ");
+                try source.appendSlice(self.allocator, trimmed[4..]);
+            } else {
+                try source.appendSlice(self.allocator, input);
+            }
             try source.append(self.allocator, '\n');
 
             const source_z = try self.allocator.dupeZ(u8, source.items);
@@ -505,6 +519,8 @@ pub const Repl = struct {
             if (self.accumulated_source.items.len > 0) {
                 try self.accumulated_source.append(self.allocator, '\n');
             }
+
+            // Store as-is (don't convert to fn) so let bindings work in eval bodies
             try self.accumulated_source.appendSlice(self.allocator, input);
             try self.accumulated_source.append(self.allocator, '\n');
 
@@ -519,13 +535,38 @@ pub const Repl = struct {
             var source = std.ArrayList(u8).empty;
             defer source.deinit(self.allocator);
 
+            // Separate fn defs from let bindings in accumulated source
+            // fn defs go before the eval function; let bindings go inside it
+            var fn_defs = std.ArrayList(u8).empty;
+            defer fn_defs.deinit(self.allocator);
+            var let_bindings = std.ArrayList(u8).empty;
+            defer let_bindings.deinit(self.allocator);
+
             if (self.accumulated_source.items.len > 0) {
-                try source.appendSlice(self.allocator, self.accumulated_source.items);
-                try source.append(self.allocator, '\n');
+                var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
+                while (lines.next()) |line| {
+                    const trimmed_line = std.mem.trimStart(u8, line, " \t");
+                    if (trimmed_line.len == 0) continue;
+                    if (std.mem.startsWith(u8, trimmed_line, "fn ") or
+                        std.mem.startsWith(u8, trimmed_line, "type "))
+                    {
+                        try fn_defs.appendSlice(self.allocator, line);
+                        try fn_defs.append(self.allocator, '\n');
+                    } else if (trimmed_line.len > 0) {
+                        // let bindings and other defs go inside eval fn body
+                        try let_bindings.appendSlice(self.allocator, "  ");
+                        try let_bindings.appendSlice(self.allocator, line);
+                        try let_bindings.append(self.allocator, '\n');
+                    }
+                }
             }
+
+            try source.appendSlice(self.allocator, fn_defs.items);
             try source.appendSlice(self.allocator, "fn ");
             try source.appendSlice(self.allocator, eval_name);
-            try source.appendSlice(self.allocator, " =\n  ");
+            try source.appendSlice(self.allocator, " =\n");
+            try source.appendSlice(self.allocator, let_bindings.items);
+            try source.appendSlice(self.allocator, "  ");
             try source.appendSlice(self.allocator, input);
             try source.append(self.allocator, '\n');
 
@@ -559,7 +600,28 @@ pub const Repl = struct {
             const eval_fn: *const fn () callconv(.c) i64 = @ptrFromInt(fn_addr);
             const result = eval_fn();
 
-            try printStr(stdout_fd, "= {d}\n", .{result});
+            // Flush C stdout buffer (println/print use C printf)
+            flushStdout();
+
+            // Suppress return value display for side-effecting functions
+            const trimmed_input = std.mem.trimStart(u8, input, " \t");
+            const is_side_effect = blk: {
+                // Check if input starts with println, print, inspect, or any assignment
+                if (std.mem.startsWith(u8, trimmed_input, "println")) break :blk true;
+                if (std.mem.startsWith(u8, trimmed_input, "print ")) break :blk true;
+                if (std.mem.startsWith(u8, trimmed_input, "inspect")) break :blk true;
+                if (std.mem.startsWith(u8, trimmed_input, "panic")) break :blk true;
+                if (std.mem.startsWith(u8, trimmed_input, "assert")) break :blk true;
+                // Check for assignment (:=)
+                for (trimmed_input, 0..) |ch, i| {
+                    if (ch == ':' and i + 1 < trimmed_input.len and trimmed_input[i + 1] == '=') break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (!is_side_effect) {
+                try printStr(stdout_fd, "= {d}\n", .{result});
+            }
         }
     }
 
