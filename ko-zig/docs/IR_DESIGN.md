@@ -3,7 +3,41 @@
 ## Pipeline
 
 ```
-Source → AST → HIR → [HIR passes] → LIR → [LIR passes] → LLVM IR
+Source → Lexer → Parser → Typechecker → AST
+                                              |
+                                              v
+                                        +-----+------+
+                                        | HIR Lower   |  (hir_lower.zig)
+                                        | ANF, src loc|
+                                        +-----+------+
+                                              |
+                                              v
+                                    +---------+---------+
+                                    | HIR Opt Passes     |
+                                    | 1. Beta (93 lines) |
+                                    | 2. Let simpl (248) |
+                                    | 3. Known match(141)|
+                                    | 4. Fold (254)      |
+                                    | 5. DCE (83)        |
+                                    +---------+---------+
+                                              |
+                                              v
+                                        +-----+------+
+                                        | LIR Lower   |  (lir_lower.zig)
+                                        | CFG, switch |
+                                        | decision    |
+                                        | trees, RC   |
+                                        +-----+------+
+                                              |
+                                              v
+                                        +-----+------+
+                                        | LIR Codegen |  (codegen_lir.zig)
+                                        | phi nodes,  |
+                                        | runtime     |
+                                        +-----+------+
+                                              |
+                                              v
+                                          LLVM IR
 ```
 
 Two IRs between AST and LLVM, each with a specific purpose:

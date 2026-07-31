@@ -20,6 +20,12 @@ A practical guide for adding language features to the Kō compiler.
 
 ## The Pipeline
 
+Two paths share the same frontend (Lexer → Parser → Typechecker), then diverge:
+- **LIR path** (`--use-lir`): AST → HIR → [5 passes] → LIR → [pattern match] → LLVM IR (experimental, 40/42 .ko files pass)
+- **Legacy path** (default): AST → codegen → LLVM IR (stable, all .ko files pass)
+
+### Shared Frontend
+
 ```
                Source (.ko)
                   |
@@ -47,12 +53,79 @@ A practical guide for adding language features to the Kō compiler.
 | Produces: expr_type_tags (expr -> tag)      |
 +---------------------------------------------+
                   |  Typed AST + type annotations
+                  |
+                  +-----> (default) ----+
+                  |                     |
+                  v                     v
+```
+
+### LIR Path (--use-lir)
+
+```
++---------------------------------------------+
+| AST -> HIR (src/hir_lower.zig)              |
+| A-normal form, explicit closures,           |
+| tagged patterns, SourceSpan on every node   |
++---------------------------------------------+
+                  |  HirExpr[] + HirDef[]
                   v
++---------------------------------------------+
+| HIR OPTIMIZATION PASSES (src/hir_*.zig)     |
+| 1. Beta reduction (hir_beta.zig)            |
+|    (\x -> body) arg  ->  let x = arg body   |
+| 2. Let simplification (hir_let_simpl.zig)   |
+|    identity, dead, single-use literal inline|
+| 3. Known-match reduction (hir_known_match.zig)
+|    match (Ctor a b) | Ctor x y -> ...       |
+|    reduces to: let x = a; let y = b; ...    |
+| 4. Constant folding (hir_fold.zig)          |
+|    add(3,4) -> 7,  if true then a -> a      |
+| 5. Dead code elimination (hir_dce.zig)      |
+|    reachability from roots                  |
++---------------------------------------------+
+                  |  Optimized HirExpr[]
+                  v
++---------------------------------------------+
+| HIR -> LIR (src/lir_lower.zig)              |
+| Decision tree compilation (Maranget algo):  |
+|   pattern matrix -> column split ->         |
+|   tag comparison -> field extraction ->      |
+|   merge block with phi nodes                |
+| I/O builtins: 5-param *_with_tag convention |
+| Panic/assert with source locations          |
+| Lambda lifting, closure conversion          |
+| Reference counting placement (Perceus)      |
++---------------------------------------------+
+                  |  LirFn[] (basic blocks,  |
+                  |  statements, terminators)
+                  v
++---------------------------------------------+
+| LIR -> LLVM IR (src/codegen_lir.zig)        |
+| Two-pass: declareFn -> codegenFn            |
+| Block params -> LLVM phi nodes (SSA)        |
+| declareRuntime() emits all stdlib           |
+| switch_ -> LLVMBuildSwitch                  |
++---------------------------------------------+
+                  |  LLVM Module
+                  v
++---------------------------------------------+
+| EXECUTION                                   |
+| JIT: LLVM MCJIT (mapLirJitResultFns)        |
+| AOT: not yet supported                      |
++---------------------------------------------+
+```
+
+### Legacy Path (default, --no-lir)
+
+```
 +---------------------------------------------+
 | CODEGEN (src/codegen.zig +                  |
 |          src/stdlib_codegen.zig)            |
 | Typed AST -> LLVM IR                        |
 | Two-pass: declareFn -> codegenFn            |
+| Pattern matching: comparison chains + phi   |
+| Inline error handling: assert, assert_eq,   |
+|   panic with source locations               |
 | Entry: codegenProgram()                     |
 +---------------------------------------------+
                   |  LLVM Module
@@ -71,8 +144,12 @@ A practical guide for adding language features to the Kō compiler.
 | Lexer | `[]const u8` | `Token[]` | `Tokenizer` |
 | Parser | `Token[]` | `Program` | `Parser` |
 | Typechecker | `Program` | `expr_type_tags` | `Inferer` |
-| Codegen | `Program` + tags | `LLVMModule` | `Codegen` |
-| JIT | `LLVMModule` | execution | `Jit` |
+| HIR Lower | `Program` + tags | `HirExpr[]` | `HirLower` |
+| HIR Passes | `HirExpr[]` | `HirExpr[]` (optimized) | `hir_beta`, `hir_let_simpl`, etc. |
+| LIR Lower | `HirExpr[]` | `LirFn[]` | `LirLower` |
+| LIR Codegen | `LirFn[]` | `LLVMModule` | `CodegenLir` |
+| Legacy Codegen | `Program` + tags | `LLVMModule` | `Codegen` |
+| Execution | `LLVMModule` | result | `Jit` / `Aot` |
 
 ---
 

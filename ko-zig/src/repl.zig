@@ -80,6 +80,25 @@ fn readLine(fd: posix.fd_t, line_buf: []u8) ![]const u8 {
     return line_buf[0..line_len];
 }
 
+const ko_keywords = [_][]const u8{
+    "fn", "let", "if", "then", "else", "match", "type", "import", "package",
+    "pub", "module", "ref", "comptime", "not", "and", "or", "true", "false",
+};
+
+const ko_builtins = [_][]const u8{
+    "println", "print", "inspect", "panic", "assert", "assert_eq",
+    "String.length", "String.append", "String.contains", "String.charAt",
+    "String.toUpperCase", "String.toLowerCase", "String.trim", "String.replace", "String.split",
+    "Int.toString", "Int.abs", "Int.min", "Int.max", "Int.pow", "Int.gcd", "Int.lcm",
+    "Int.factorial", "Int.isqrt",
+    "Float.ofInt", "Float.toInt", "Float.sqrt", "Float.pow",
+    "Float.sin", "Float.cos", "Float.tan", "Float.log", "Float.floor", "Float.ceil", "Float.abs",
+    "Result.is_ok", "Result.is_err", "Result.unwrap", "Result.unwrapOr",
+    "Result.map", "Result.fold", "Result.and_then",
+    "head", "tail", "length", "append", "reverse", "map", "filter",
+    "foldl", "foldr", "zip", "concat", "sum", "product",
+};
+
 pub const Repl = struct {
     allocator: std.mem.Allocator,
     accumulated_source: std.ArrayList(u8),
@@ -174,7 +193,7 @@ pub const Repl = struct {
         var line_buf: [4096]u8 = undefined;
         while (true) {
             try printStr(stdout_fd, "ko> ", .{});
-            const line = readLine(stdin_fd, &line_buf) catch |err| {
+            const line = self.readLineWithCompletion(stdin_fd, &line_buf, stdout_fd) catch |err| {
                 if (err == error.ConnectionClosed) {
                     try printStr(stdout_fd, "\nBye!\n", .{});
                     break;
@@ -197,6 +216,201 @@ pub const Repl = struct {
                 try printStr(stdout_fd, "Error: {}\n", .{err});
             };
         }
+    }
+
+    fn readLineWithCompletion(self: *Repl, fd: posix.fd_t, line_buf: []u8, stdout_fd: posix.fd_t) ![]const u8 {
+        var line_len: usize = 0;
+        while (line_len < line_buf.len) {
+            const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
+                if (err == error.EndOfStream) {
+                    if (line_len > 0) return line_buf[0..line_len];
+                    return error.ConnectionClosed;
+                }
+                return err;
+            };
+            if (n == 0) {
+                if (line_len > 0) return line_buf[0..line_len];
+                return error.ConnectionClosed;
+            }
+            const ch = line_buf[line_len];
+
+            // Handle tab completion
+            if (ch == '\t') {
+                // Find the current word being typed
+                var word_start = line_len;
+                while (word_start > 0) {
+                    const prev = line_buf[word_start - 1];
+                    if (prev == ' ' or prev == '\t' or prev == '(' or prev == ')' or prev == ',' or prev == '\n') break;
+                    word_start -= 1;
+                }
+                const prefix = line_buf[word_start..line_len];
+
+                if (prefix.len > 0) {
+                    // Find completions and pick the longest common prefix
+                    var first_match: ?[]const u8 = null;
+                    var match_count: usize = 0;
+                    var all_same = true;
+
+                    // Check keywords
+                    for (ko_keywords) |kw| {
+                        if (std.mem.startsWith(u8, kw, prefix)) {
+                            if (first_match == null) {
+                                first_match = kw;
+                            } else if (all_same and !std.mem.eql(u8, first_match.?, kw)) {
+                                all_same = false;
+                            }
+                            match_count += 1;
+                        }
+                    }
+
+                    // Check builtins
+                    for (ko_builtins) |b| {
+                        if (std.mem.startsWith(u8, b, prefix)) {
+                            if (first_match == null) {
+                                first_match = b;
+                            } else if (all_same and !std.mem.eql(u8, first_match.?, b)) {
+                                all_same = false;
+                            }
+                            match_count += 1;
+                        }
+                    }
+
+                    // Check user-defined names from accumulated source
+                    var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
+                    while (lines.next()) |line| {
+                        var name: ?[]const u8 = null;
+                        // Look for "fn name" patterns
+                        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "fn ")) {
+                            const trimmed = std.mem.trimStart(u8, line, " \t");
+                            const after_fn = trimmed[3..];
+                            var name_end: usize = 0;
+                            while (name_end < after_fn.len and after_fn[name_end] != ' ' and after_fn[name_end] != '=') : (name_end += 1) {}
+                            if (name_end > 0) name = after_fn[0..name_end];
+                        }
+                        // Look for "let name" patterns
+                        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "let ")) {
+                            const trimmed = std.mem.trimStart(u8, line, " \t");
+                            const after_let = trimmed[4..];
+                            var name_end: usize = 0;
+                            while (name_end < after_let.len and after_let[name_end] != ' ' and after_let[name_end] != '=' and after_let[name_end] != ':' and after_let[name_end] != '\t') : (name_end += 1) {}
+                            if (name_end > 0) name = after_let[0..name_end];
+                        }
+                        if (name) |nm| {
+                            if (std.mem.startsWith(u8, nm, prefix) and nm.len > 0) {
+                                // Check for duplicates
+                                var is_dup = false;
+                                if (first_match) |fm| {
+                                    if (std.mem.eql(u8, fm, nm)) is_dup = true;
+                                }
+                                if (!is_dup) {
+                                    if (first_match == null) {
+                                        first_match = nm;
+                                    } else if (all_same and !std.mem.eql(u8, first_match.?, nm)) {
+                                        all_same = false;
+                                    }
+                                    match_count += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    if (match_count == 1 and first_match != null) {
+                        // Single match - complete it
+                        const completion = first_match.?;
+                        const suffix = completion[prefix.len..];
+                        if (line_len + suffix.len <= line_buf.len) {
+                            // Move existing content after cursor
+                            var i: usize = line_len;
+                            while (i > word_start) : (i -= 1) {
+                                line_buf[i + suffix.len - 1] = line_buf[i - 1];
+                            }
+                            // Insert completion
+                            for (suffix, 0..) |s, idx| {
+                                line_buf[word_start + idx] = s;
+                            }
+                            line_len += suffix.len;
+                            // Clear and redraw line
+                            try printStr(stdout_fd, "\r\x1b[K", .{});
+                            try printStr(stdout_fd, "ko> ", .{});
+                            try writeAll(stdout_fd, line_buf[0..line_len]);
+                        }
+                    } else if (match_count > 1) {
+                        // Multiple matches - show them and re-prompt
+                        try printStr(stdout_fd, "\n", .{});
+                        // Print all matches (keywords + builtins + user defs)
+                        var printed: usize = 0;
+                        for (ko_keywords) |kw| {
+                            if (std.mem.startsWith(u8, kw, prefix)) {
+                                if (printed > 0) try printStr(stdout_fd, "  ", .{});
+                                try printStr(stdout_fd, "{s}", .{kw});
+                                printed += 1;
+                            }
+                        }
+                        for (ko_builtins) |b| {
+                            if (std.mem.startsWith(u8, b, prefix)) {
+                                if (printed > 0) try printStr(stdout_fd, "  ", .{});
+                                try printStr(stdout_fd, "{s}", .{b});
+                                printed += 1;
+                            }
+                        }
+                        var lines2 = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
+                        while (lines2.next()) |line| {
+                            var name: ?[]const u8 = null;
+                            if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "fn ")) {
+                                const trimmed = std.mem.trimStart(u8, line, " \t");
+                                const after_fn = trimmed[3..];
+                                var name_end: usize = 0;
+                                while (name_end < after_fn.len and after_fn[name_end] != ' ' and after_fn[name_end] != '=') : (name_end += 1) {}
+                                if (name_end > 0) name = after_fn[0..name_end];
+                            }
+                            if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "let ")) {
+                                const trimmed = std.mem.trimStart(u8, line, " \t");
+                                const after_let = trimmed[4..];
+                                var name_end: usize = 0;
+                                while (name_end < after_let.len and after_let[name_end] != ' ' and after_let[name_end] != '=' and after_let[name_end] != ':' and after_let[name_end] != '\t') : (name_end += 1) {}
+                                if (name_end > 0) name = after_let[0..name_end];
+                            }
+                            if (name) |nm| {
+                                if (std.mem.startsWith(u8, nm, prefix) and nm.len > 0) {
+                                    // Skip duplicates
+                                    var is_dup = false;
+                                    for (ko_keywords) |kw| {
+                                        if (std.mem.eql(u8, kw, nm)) is_dup = true;
+                                    }
+                                    for (ko_builtins) |b| {
+                                        if (std.mem.eql(u8, b, nm)) is_dup = true;
+                                    }
+                                    if (!is_dup) {
+                                        if (printed > 0) try printStr(stdout_fd, "  ", .{});
+                                        try printStr(stdout_fd, "{s}", .{nm});
+                                        printed += 1;
+                                    }
+                                }
+                            }
+                        }
+                        try printStr(stdout_fd, "\nko> ", .{});
+                        try writeAll(stdout_fd, line_buf[0..line_len]);
+                    }
+                }
+                continue;
+            }
+
+            if (ch == '\n') {
+                line_len += 1;
+                break;
+            }
+            line_len += 1;
+        }
+        // Strip trailing \r\n
+        while (line_len > 0) {
+            const last_ch = line_buf[line_len - 1];
+            if (last_ch == '\n' or last_ch == '\r') {
+                line_len -= 1;
+            } else {
+                break;
+            }
+        }
+        return line_buf[0..line_len];
     }
 
     fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {

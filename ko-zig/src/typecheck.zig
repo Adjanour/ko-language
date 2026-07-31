@@ -149,8 +149,12 @@ pub const Inferer = struct {
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
     diagnostics: ?*DiagnosticList = null,
+    enabled_warnings: diagnostics_mod.WarningSet = .{},
+    used_names: std.StringHashMap(void),
+    bound_names: std.StringHashMap(parser.Loc),
 
     pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
+    const diagnostics_mod = @import("diagnostics.zig");
 
     pub fn init(allocator: std.mem.Allocator) Inferer {
         var inferer = Inferer{
@@ -169,6 +173,9 @@ pub const Inferer = struct {
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
+            .enabled_warnings = .{},
+            .used_names = std.StringHashMap(void).init(allocator),
+            .bound_names = std.StringHashMap(parser.Loc).init(allocator),
         };
         // Pre-register built-in type IDs to match codegen's type_ids
         inferer.type_ids.put("Bool", 0) catch {};
@@ -198,6 +205,8 @@ pub const Inferer = struct {
         self.expr_types.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
+        self.used_names.deinit();
+        self.bound_names.deinit();
     }
 
     /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
@@ -208,6 +217,38 @@ pub const Inferer = struct {
             return env.getScheme(qualified);
         }
         return null;
+    }
+
+    fn markNameUsed(self: *Inferer, name: []const u8) void {
+        self.used_names.put(name, {}) catch {};
+    }
+
+    fn bindName(self: *Inferer, name: []const u8, loc: parser.Loc) void {
+        self.bound_names.put(name, loc) catch {};
+    }
+
+    fn checkUnusedBindings(self: *Inferer) void {
+        if (self.diagnostics == null) return;
+        if (!self.enabled_warnings.contains(.unused_variable)) return;
+
+        var iter = self.bound_names.iterator();
+        while (iter.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const loc = entry.value_ptr.*;
+            if (!self.used_names.contains(name)) {
+                // Skip underscore-prefixed names (intentionally unused)
+                if (name.len > 0 and name[0] == '_') continue;
+                self.diagnostics.?.addWarning(
+                    std.fmt.allocPrint(self.allocator, "unused variable '{s}'", .{name}) catch "unused variable",
+                    loc,
+                ) catch {};
+            }
+        }
+    }
+
+    fn resetUsageTracking(self: *Inferer) void {
+        self.used_names.clearRetainingCapacity();
+        self.bound_names.clearRetainingCapacity();
     }
 
     pub fn newType(self: *Inferer, ty: Type) Error!*Type {
@@ -1180,6 +1221,9 @@ pub const Inferer = struct {
         var local = Env.init(self.allocator, &self.global);
         defer local.deinit();
 
+        // Reset usage tracking for this function
+        self.resetUsageTracking();
+
         var cur = fn_type;
         for (f.params) |param| {
             switch (cur.*) {
@@ -1191,6 +1235,7 @@ pub const Inferer = struct {
                 switch (param.pattern) {
                     .identifier => |name| {
                         try local.set(name, .{ .quantified = &.{}, .body = a.from });
+                        self.bindName(name, f.loc);
                     },
                     else => {
                         try self.inferPattern(&local, param.pattern, a.from);
@@ -1208,6 +1253,10 @@ pub const Inferer = struct {
             const ann_ty = try self.typeExprToType(ann);
             try self.unify(cur, ann_ty);
         }
+
+        // Check for unused bindings
+        self.checkUnusedBindings();
+
         // Remove the function's own predeclared binding before generalizing,
         // otherwise collectEnvFree picks up free vars from the function's own type
         // (which has empty quantified), preventing them from being quantified.
@@ -1241,6 +1290,7 @@ pub const Inferer = struct {
                     };
                     return error.UndefinedName;
                 };
+                self.markNameUsed(id.name);
                 break :blk try self.instantiate(scheme);
             },
             .constructor => |c| blk: {
@@ -1305,6 +1355,7 @@ pub const Inferer = struct {
         } else {
             const scheme = try self.generalize(env, val_ty);
             try local.set(name, scheme);
+            self.bindName(name, value.getLoc());
         }
         return self.inferExpr(&local, body);
     }

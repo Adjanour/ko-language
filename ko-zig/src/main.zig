@@ -30,6 +30,13 @@ fn nowNs() u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
+fn hasWarnings(diags: *const diagnostics_mod.DiagnosticList) bool {
+    for (diags.items.items) |d| {
+        if (d.severity == .warning) return true;
+    }
+    return false;
+}
+
 fn printHelp(io: Io) void {
     const stderr = Io.File.stderr();
     var buffer: [4096]u8 = undefined;
@@ -52,6 +59,8 @@ fn printHelp(io: Io) void {
         \\  -v, --version    Show version
         \\  --use-lir        Use experimental HIR→LIR→LLVM pipeline
         \\                   (run/--dump-ir/--emit-ir only)
+        \\  --warn <kind>    Enable warnings (unused, shadow, all)
+        \\  -Werror          Treat warnings as errors
         \\
     , .{VERSION}) catch {};
     w.interface.flush() catch {};
@@ -199,6 +208,8 @@ pub fn main(init: std.process.Init) !void {
     var output: ?[]const u8 = null;
 
     var use_lir = false;
+    var enabled_warnings = diagnostics_mod.WarningSet{};
+    var warnings_as_errors = false;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp(io);
@@ -224,7 +235,16 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--check")) {
             mode = .check;
         } else if (std.mem.eql(u8, arg, "--warn")) {
-            // TODO: warning flags (--warn-unused, --warn-shadow, etc.)
+            if (args.next()) |w| {
+                if (diagnostics_mod.WarningSet.fromName(w)) |ws| {
+                    enabled_warnings = ws;
+                } else {
+                    reportError(io, "(cli)", null, "unknown warning '{s}'", .{w});
+                    std.process.exit(1);
+                }
+            }
+        } else if (std.mem.eql(u8, arg, "-Werror")) {
+            warnings_as_errors = true;
         } else if (filename == null) {
             filename = arg;
         }
@@ -308,6 +328,7 @@ pub fn main(init: std.process.Init) !void {
     defer inferer.deinit();
     inferer.module_loader = &loader;
     inferer.diagnostics = &diags;
+    inferer.enabled_warnings = enabled_warnings;
     inferer.inferProgram(&prog) catch |err| {
         if (inferer.last_error) |ec| {
             try diags.addErrorCtx(
@@ -325,6 +346,16 @@ pub fn main(init: std.process.Init) !void {
     // If we have errors, emit them and exit
     if (diags.has_errors) {
         diags.emitAll(io, fname, source);
+        std.process.exit(1);
+    }
+
+    // Emit warnings (always shown, even without errors)
+    if (hasWarnings(&diags)) {
+        diags.emitAll(io, fname, source);
+    }
+
+    // Check if warnings should be treated as errors
+    if (warnings_as_errors and hasWarnings(&diags)) {
         std.process.exit(1);
     }
 

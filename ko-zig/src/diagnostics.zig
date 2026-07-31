@@ -3,6 +3,43 @@ const parser = @import("parser.zig");
 
 pub const Severity = enum { @"error", warning, note, help };
 
+pub const WarningKind = enum(u32) {
+    unused_variable = 1,
+    unused_import = 2,
+    shadowed_variable = 4,
+    exhaustive_match = 8,
+};
+
+pub const WarningSet = struct {
+    bits: u32 = 0,
+
+    pub fn isEmpty(self: WarningSet) bool {
+        return self.bits == 0;
+    }
+
+    pub fn contains(self: WarningSet, kind: WarningKind) bool {
+        return (self.bits & @intFromEnum(kind)) != 0;
+    }
+
+    pub fn add(self: *WarningSet, kind: WarningKind) void {
+        self.bits |= @intFromEnum(kind);
+    }
+
+    pub fn all() WarningSet {
+        return .{ .bits = 0xFFFFFFFF };
+    }
+
+    pub fn fromName(name: []const u8) ?WarningSet {
+        if (std.mem.eql(u8, name, "all")) return all();
+        if (std.mem.eql(u8, name, "unused")) return .{ .bits = @intFromEnum(WarningKind.unused_variable) | @intFromEnum(WarningKind.unused_import) };
+        if (std.mem.eql(u8, name, "unused-variable")) return .{ .bits = @intFromEnum(WarningKind.unused_variable) };
+        if (std.mem.eql(u8, name, "unused-import")) return .{ .bits = @intFromEnum(WarningKind.unused_import) };
+        if (std.mem.eql(u8, name, "shadow")) return .{ .bits = @intFromEnum(WarningKind.shadowed_variable) };
+        if (std.mem.eql(u8, name, "exhaustive-match")) return .{ .bits = @intFromEnum(WarningKind.exhaustive_match) };
+        return null;
+    }
+};
+
 pub const Diagnostic = struct {
     severity: Severity,
     message: []const u8,
