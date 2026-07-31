@@ -1,0 +1,26 @@
+# Prime Numbers -- sieve of Eratosthenes
+# Demonstrates: recursion, higher-order functions, list filtering
+
+type List a = Cons a (List a) | Nil
+
+fn filter pred xs = match xs
+  | Cons x rest =>
+    if pred x then Cons x (filter pred rest)
+    else filter pred rest
+  | Nil => Nil
+
+fn range lo hi =
+  if lo > hi then Nil
+  else Cons lo (range (lo + 1) hi)
+
+fn sieve xs = match xs
+  | Cons p rest => Cons p (sieve (filter (\x -> x % p != 0) rest))
+  | Nil => Nil
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn main =
+  let primes = sieve (range 2 30)
+  println (length primes)

@@ -1,0 +1,36 @@
+# Matrix Operations -- basic matrix math
+# Demonstrates: nested lists, higher-order functions
+
+type List a = Cons a (List a) | Nil
+
+fn map f xs = match xs
+  | Cons x rest => Cons (f x) (map f rest)
+  | Nil => Nil
+
+fn zipWith f xs ys = match xs
+  | Cons x xrest => match ys
+                     | Cons y yrest => Cons (f x y) (zipWith f xrest yrest)
+                     | Nil => Nil
+  | Nil => Nil
+
+fn sumList xs = match xs
+  | Cons x rest => x + sumList rest
+  | Nil => 0
+
+# Compute the dot product of two vectors.
+# It takes two lists of numbers and returns their dot product 
+# by multiplying corresponding elements and summing the results
+fn dotProduct xs ys = sumList (zipWith (\a b -> a * b) xs ys)
+
+# Compute the dot product of a row with each row in a matrix
+fn dotMatrixRow row matrix = map (dotProduct row) matrix
+
+fn main =
+  let row1 = Cons 1 (Cons 2 (Cons 3 Nil))
+  let row2 = Cons 4 (Cons 5 (Cons 6 Nil))
+  let row3 = 7 :: 8 :: 9 :: Nil
+  println (dotProduct row1 row2) # prints 32
+  println (dotProduct row2 row3) # prints 122
+
+  let m = Cons row1 (Cons row2 (Cons row3 Nil))
+  println (dotMatrixRow row1 m)

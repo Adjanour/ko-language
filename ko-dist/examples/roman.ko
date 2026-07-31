@@ -1,0 +1,25 @@
+# Roman Numeral Converter -- integer to roman
+# Demonstrates: recursion, if-then-else chains, string building
+
+fn roman n =
+  if n >= 1000 then String.append "M" (roman (n - 1000))
+  else if n >= 900 then String.append "CM" (roman (n - 900))
+  else if n >= 500 then String.append "D" (roman (n - 500))
+  else if n >= 400 then String.append "CD" (roman (n - 400))
+  else if n >= 100 then String.append "C" (roman (n - 100))
+  else if n >= 90 then String.append "XC" (roman (n - 90))
+  else if n >= 50 then String.append "L" (roman (n - 50))
+  else if n >= 40 then String.append "XL" (roman (n - 40))
+  else if n >= 10 then String.append "X" (roman (n - 10))
+  else if n >= 9 then String.append "IX" (roman (n - 9))
+  else if n >= 5 then String.append "V" (roman (n - 5))
+  else if n >= 4 then String.append "IV" (roman (n - 4))
+  else if n >= 1 then String.append "I" (roman (n - 1))
+  else ""
+
+fn main =
+  println (roman 3)
+  println (roman 4)
+  println (roman 9)
+  println (roman 58)
+  println (roman 1994)
