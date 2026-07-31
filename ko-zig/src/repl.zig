@@ -285,6 +285,16 @@ pub const Repl = struct {
             }
             const ch = line_buf[line_len];
 
+            // Handle backspace
+            if (ch == 0x7f or ch == '\x08') {
+                if (line_len > 0) {
+                    line_len -= 1;
+                    // Erase character on terminal
+                    try writeAll(stdout_fd, "\x08 \x08");
+                }
+                continue;
+            }
+
             // Handle tab completion
             if (ch == '\t') {
                 // Find the current word being typed
@@ -518,6 +528,8 @@ pub const Repl = struct {
                 line_len += 1;
                 break;
             }
+            // Echo character to terminal
+            try writeAll(stdout_fd, line_buf[line_len .. line_len + 1]);
             line_len += 1;
         }
         // Strip trailing \r\n
