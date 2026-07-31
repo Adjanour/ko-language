@@ -681,6 +681,9 @@ pub const Repl = struct {
 
             if (!is_side_effect) {
                 try printStr(stdout_fd, "= {d}\n", .{result});
+            } else {
+                // Add newline after side-effect output (print/println don't end with \n)
+                try printStr(stdout_fd, "\n", .{});
             }
         }
     }
