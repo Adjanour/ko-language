@@ -425,7 +425,7 @@ let result = eval code
 Rewrite the Kō compiler in Kō. This is the ultimate test of the language's expressiveness.
 
 ### Web Backend
-Compile Kō to WebAssembly for browser deployment.
+Compile Kō to WebAssembly for browser deployment. See `docs/WASM_PLAN.md` for detailed implementation plan.
 
 ### Mobile Support
 Compile Kō to iOS/Android via LLVM.
