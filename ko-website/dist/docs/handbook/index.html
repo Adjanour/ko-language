@@ -1,0 +1,645 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="description" content="A minimal, functional-first programming language that compiles to native binaries via LLVM."><title>Kō Compiler Engineer&#39;s Handbook | Kō</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><script>
+      (function() {
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.classList.add(theme);
+      })();
+    </script><style>:root{--bg: #09090b;--bg-card: #111113;--bg-code: #0c0c0e;--text: #fafafa;--text-muted: #a1a1aa;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #1f1f23;--radius: 8px}html.light{--bg: #fafafa;--bg-card: #f4f4f5;--bg-code: #f0f0f2;--text: #18181b;--text-muted: #52525b;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #e4e4e7}*{margin:0;padding:0;box-sizing:border-box}html{overflow-x:hidden}body{font-family:Inter,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-x:hidden;width:100%}main{flex:1;overflow-x:hidden}.container{max-width:1040px;margin:0 auto;padding:0 1.5rem;overflow:hidden}.navbar{position:sticky;top:0;z-index:50;border-bottom:1px solid var(--border);background:color-mix(in oklab,var(--bg),transparent 14%);backdrop-filter:blur(12px)}.nav-container{display:flex;align-items:center;justify-content:space-between;height:3.5rem}.logo{font-size:1.25rem;font-weight:700;color:var(--text);text-decoration:none;letter-spacing:-.02em}.nav-links{display:flex;gap:.25rem;align-items:center}.nav-links a{padding:.375rem .625rem;color:var(--text-muted);text-decoration:none;font-size:.875rem;border-radius:6px;transition:color .15s}.nav-links a:hover{color:var(--text)}.theme-toggle{display:flex;align-items:center;justify-content:center;width:2.25rem;height:2.25rem;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;transition:all .15s;margin-left:.5rem}.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}.sun-icon,.moon-icon{display:none}html.dark .sun-icon,html.light .moon-icon{display:block}footer{border-top:1px solid var(--border);padding:2rem 0;text-align:center;color:var(--text-muted);font-size:.8rem}h1,h2,h3,h4{line-height:1.2;font-weight:600}p{color:var(--text-muted)}a{color:var(--accent)}code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}pre{background:var(--bg-code);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}pre code{background:none;padding:0;font-size:.9rem;color:var(--text);white-space:pre}.astro-code{background:var(--bg-code)!important;border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}html.light .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}.astro-code *,.astro-code span,.astro-code .line{background-color:transparent!important}html.dark .astro-code span{color:#fff!important}html.dark .astro-code span[style*="color:#D73A49"]{color:#f97583!important}html.dark .astro-code span[style*="color:#005CC5"]{color:#79b8ff!important}html.dark .astro-code span[style*="color:#032F62"]{color:#9ecbff!important}html.dark .astro-code span[style*="color:#6F42C1"]{color:#b392f0!important}html.dark .astro-code span[style*="color:#6A737D"]{color:#8b949e!important}html.dark .astro-code span[style*="color:#24292E"]{color:#fff!important}table{width:100%;border-collapse:collapse;margin:1.5rem 0;display:block;overflow-x:auto}th,td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left;white-space:nowrap}th{background:var(--bg-card);font-weight:600;color:var(--text)}hr{border:none;border-top:1px solid var(--border);margin:3rem 0}blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}
+.docs-layout[data-astro-cid-mw7aashj]{display:grid;grid-template-columns:200px 1fr;gap:3rem;padding-top:3rem;padding-bottom:4rem;min-height:calc(100vh - 200px)}.docs-sidebar[data-astro-cid-mw7aashj]{position:sticky;top:5rem;height:fit-content}.nav-section[data-astro-cid-mw7aashj]{margin-bottom:1.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.7rem;font-weight:500;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-bottom:.5rem;padding-left:.75rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{display:block;padding:.35rem .75rem;color:var(--text-muted);text-decoration:none;font-size:.85rem;border-radius:6px;transition:all .15s}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]:hover{color:var(--text);background:var(--bg-card)}.docs-content[data-astro-cid-mw7aashj]{max-width:720px;min-width:0}.docs-content[data-astro-cid-mw7aashj] h1{font-size:2rem;font-weight:600;letter-spacing:-.02em;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}.docs-content[data-astro-cid-mw7aashj] h2{font-size:1.5rem;font-weight:600;letter-spacing:-.01em;margin-top:3rem;margin-bottom:1rem}.docs-content[data-astro-cid-mw7aashj] h3{font-size:1.2rem;font-weight:500;margin-top:2rem;margin-bottom:.75rem}.docs-content[data-astro-cid-mw7aashj] p{margin-bottom:1rem;line-height:1.7}.docs-content[data-astro-cid-mw7aashj] code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}.docs-content[data-astro-cid-mw7aashj] pre{background:var(--bg-code);border:1px solid var(--border);border-radius:8px;padding:1.25rem;overflow-x:auto;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] pre code{background:none;padding:0;font-size:.9rem;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code{background:var(--bg-code)!important;border-color:var(--border)}html.light .docs-content[data-astro-cid-mw7aashj] .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}html.light .docs-content[data-astro-cid-mw7aashj] code{background:#f0f0f2;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code *,.docs-content[data-astro-cid-mw7aashj] .astro-code span,.docs-content[data-astro-cid-mw7aashj] .astro-code .line{background-color:transparent!important}.docs-content[data-astro-cid-mw7aashj] ul,.docs-content[data-astro-cid-mw7aashj] ol{margin:1rem 0;padding-left:1.5rem;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] li{margin-bottom:.5rem;line-height:1.6}.docs-content[data-astro-cid-mw7aashj] blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] table{width:100%;border-collapse:collapse;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] th,.docs-content[data-astro-cid-mw7aashj] td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left}.docs-content[data-astro-cid-mw7aashj] th{background:var(--bg-card);font-weight:600;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] hr{border:none;border-top:1px solid var(--border);margin:2rem 0}@media(max-width:768px){.docs-layout[data-astro-cid-mw7aashj]{grid-template-columns:1fr}.docs-sidebar[data-astro-cid-mw7aashj]{position:static;border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1.5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}.docs-sidebar[data-astro-cid-mw7aashj]::-webkit-scrollbar{display:none}.docs-sidebar[data-astro-cid-mw7aashj] nav[data-astro-cid-mw7aashj]{display:flex;gap:.25rem;min-width:max-content}.nav-section[data-astro-cid-mw7aashj]{flex-shrink:0;margin-bottom:0;margin-right:.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.6rem;padding:.25rem .5rem;margin-bottom:.25rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{font-size:.75rem;padding:.25rem .5rem;white-space:nowrap}}
+</style></head> <body> <nav class="navbar"> <div class="container nav-container"> <a href="/" class="logo">kō</a> <div class="nav-links"> <a href="/docs/tutorial">Docs</a> <a href="/docs/reference">Reference</a> <a href="/docs/handbook">Handbook</a> <a href="https://github.com/Adjanour/ko-language">GitHub</a> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"> <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg> <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg> </button> </div> </div> </nav> <main>  <div class="docs-layout container" data-astro-cid-mw7aashj> <aside class="docs-sidebar" data-astro-cid-mw7aashj> <nav data-astro-cid-mw7aashj> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Getting Started</h4> <a href="/docs/tutorial" data-astro-cid-mw7aashj>Tutorial</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Language</h4> <a href="/docs/reference" data-astro-cid-mw7aashj>Reference</a> <a href="/docs/grammar" data-astro-cid-mw7aashj>Grammar</a> <a href="/docs/spec" data-astro-cid-mw7aashj>Spec</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Internals</h4> <a href="/docs/handbook" data-astro-cid-mw7aashj>Handbook</a> <a href="/docs/codegen" data-astro-cid-mw7aashj>Codegen</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Project</h4> <a href="/docs/roadmap" data-astro-cid-mw7aashj>Roadmap</a> <a href="/docs/philosophy" data-astro-cid-mw7aashj>Philosophy</a> <a href="/docs/contributing" data-astro-cid-mw7aashj>Contributing</a> <a href="/docs/changelog" data-astro-cid-mw7aashj>Changelog</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Blog</h4> <a href="/docs/build-a-grade-book" data-astro-cid-mw7aashj>Install Kō &amp; Build Your First Program</a> </div> </nav> </aside> <article class="docs-content" data-astro-cid-mw7aashj>  <h1 id="kō-compiler-engineers-handbook">Kō Compiler Engineer’s Handbook</h1>
+<p>A practical guide for adding language features to the Kō compiler.</p>
+<hr>
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol>
+<li><a href="#the-pipeline">The Pipeline</a></li>
+<li><a href="#adding-a-new-tokenoperator">Adding a New Token/Operator</a></li>
+<li><a href="#adding-a-new-keyword">Adding a New Keyword</a></li>
+<li><a href="#adding-a-builtin-function">Adding a Builtin Function</a></li>
+<li><a href="#adding-a-new-ast-node">Adding a New AST Node</a></li>
+<li><a href="#the-typechecker-deep-dive">The Typechecker Deep Dive</a></li>
+<li><a href="#the-codegen-deep-dive">The Codegen Deep Dive</a></li>
+<li><a href="#testing-at-each-stage">Testing at Each Stage</a></li>
+<li><a href="#common-pitfalls">Common Pitfalls</a></li>
+</ol>
+<hr>
+<h2 id="the-pipeline">The Pipeline</h2>
+<p>Two paths share the same frontend (Lexer → Parser → Typechecker), then diverge:</p>
+<ul>
+<li><strong>LIR path</strong> (<code>--use-lir</code>): AST → HIR → [5 passes] → LIR → [pattern match] → LLVM IR (experimental, 40/42 .ko files pass)</li>
+<li><strong>Legacy path</strong> (default): AST → codegen → LLVM IR (stable, all .ko files pass)</li>
+</ul>
+<h3 id="shared-frontend">Shared Frontend</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>               Source (.ko)</span></span>
+<span class="line"><span>                  |</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| LEXER (src/lexer.zig)                       |</span></span>
+<span class="line"><span>| Source string -> Token stream               |</span></span>
+<span class="line"><span>| Handles: whitespace, INDENT/DEDENT,         |</span></span>
+<span class="line"><span>|          keywords, operators, literals      |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  Token[]</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| PARSER (src/parser.zig)                     |</span></span>
+<span class="line"><span>| Token stream -> AST (src/ast.zig types)     |</span></span>
+<span class="line"><span>| Recursive descent, significant whitespace   |</span></span>
+<span class="line"><span>| Entry: parse_program() -> Program           |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  Program { imports, definitions, package }</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| TYPECHECKER (src/typecheck.zig)             |</span></span>
+<span class="line"><span>| AST -> Hindley-Milner type inference        |</span></span>
+<span class="line"><span>| Entry: inferProgram()                       |</span></span>
+<span class="line"><span>| Produces: expr_type_tags (expr -> tag)      |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  Typed AST + type annotations</span></span>
+<span class="line"><span>                  |</span></span>
+<span class="line"><span>                  +-----> (default) ----+</span></span>
+<span class="line"><span>                  |                     |</span></span>
+<span class="line"><span>                  v                     v</span></span></code></pre>
+<h3 id="lir-path-use-lir">LIR Path (—use-lir)</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| AST -> HIR (src/hir_lower.zig)              |</span></span>
+<span class="line"><span>| A-normal form, explicit closures,           |</span></span>
+<span class="line"><span>| tagged patterns, SourceSpan on every node   |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  HirExpr[] + HirDef[]</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| HIR OPTIMIZATION PASSES (src/hir_*.zig)     |</span></span>
+<span class="line"><span>| 1. Beta reduction (hir_beta.zig)            |</span></span>
+<span class="line"><span>|    (\x -> body) arg  ->  let x = arg body   |</span></span>
+<span class="line"><span>| 2. Let simplification (hir_let_simpl.zig)   |</span></span>
+<span class="line"><span>|    identity, dead, single-use literal inline|</span></span>
+<span class="line"><span>| 3. Known-match reduction (hir_known_match.zig)</span></span>
+<span class="line"><span>|    match (Ctor a b) | Ctor x y -> ...       |</span></span>
+<span class="line"><span>|    reduces to: let x = a; let y = b; ...    |</span></span>
+<span class="line"><span>| 4. Constant folding (hir_fold.zig)          |</span></span>
+<span class="line"><span>|    add(3,4) -> 7,  if true then a -> a      |</span></span>
+<span class="line"><span>| 5. Dead code elimination (hir_dce.zig)      |</span></span>
+<span class="line"><span>|    reachability from roots                  |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  Optimized HirExpr[]</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| HIR -> LIR (src/lir_lower.zig)              |</span></span>
+<span class="line"><span>| Decision tree compilation (Maranget algo):  |</span></span>
+<span class="line"><span>|   pattern matrix -> column split ->         |</span></span>
+<span class="line"><span>|   tag comparison -> field extraction ->      |</span></span>
+<span class="line"><span>|   merge block with phi nodes                |</span></span>
+<span class="line"><span>| I/O builtins: 5-param *_with_tag convention |</span></span>
+<span class="line"><span>| Panic/assert with source locations          |</span></span>
+<span class="line"><span>| Lambda lifting, closure conversion          |</span></span>
+<span class="line"><span>| Reference counting placement (Perceus)      |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  LirFn[] (basic blocks,  |</span></span>
+<span class="line"><span>                  |  statements, terminators)</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| LIR -> LLVM IR (src/codegen_lir.zig)        |</span></span>
+<span class="line"><span>| Two-pass: declareFn -> codegenFn            |</span></span>
+<span class="line"><span>| Block params -> LLVM phi nodes (SSA)        |</span></span>
+<span class="line"><span>| declareRuntime() emits all stdlib           |</span></span>
+<span class="line"><span>| switch_ -> LLVMBuildSwitch                  |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  LLVM Module</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| EXECUTION                                   |</span></span>
+<span class="line"><span>| JIT: LLVM MCJIT (mapLirJitResultFns)        |</span></span>
+<span class="line"><span>| AOT: not yet supported                      |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span></code></pre>
+<h3 id="legacy-path-default-no-lir">Legacy Path (default, —no-lir)</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| CODEGEN (src/codegen.zig +                  |</span></span>
+<span class="line"><span>|          src/stdlib_codegen.zig)            |</span></span>
+<span class="line"><span>| Typed AST -> LLVM IR                        |</span></span>
+<span class="line"><span>| Two-pass: declareFn -> codegenFn            |</span></span>
+<span class="line"><span>| Pattern matching: comparison chains + phi   |</span></span>
+<span class="line"><span>| Inline error handling: assert, assert_eq,   |</span></span>
+<span class="line"><span>|   panic with source locations               |</span></span>
+<span class="line"><span>| Entry: codegenProgram()                     |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>                  |  LLVM Module</span></span>
+<span class="line"><span>                  v</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span>
+<span class="line"><span>| EXECUTION                                   |</span></span>
+<span class="line"><span>| JIT: LLVM MCJIT (mapBuiltinsToNative)       |</span></span>
+<span class="line"><span>| AOT: Object file -> ld -> executable        |</span></span>
+<span class="line"><span>+---------------------------------------------+</span></span></code></pre>
+<h3 id="data-flow-between-stages">Data Flow Between Stages</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Stage</th><th>Input</th><th>Output</th><th>Key Struct</th></tr></thead><tbody><tr><td>Lexer</td><td><code>[]const u8</code></td><td><code>Token[]</code></td><td><code>Tokenizer</code></td></tr><tr><td>Parser</td><td><code>Token[]</code></td><td><code>Program</code></td><td><code>Parser</code></td></tr><tr><td>Typechecker</td><td><code>Program</code></td><td><code>expr_type_tags</code></td><td><code>Inferer</code></td></tr><tr><td>HIR Lower</td><td><code>Program</code> + tags</td><td><code>HirExpr[]</code></td><td><code>HirLower</code></td></tr><tr><td>HIR Passes</td><td><code>HirExpr[]</code></td><td><code>HirExpr[]</code> (optimized)</td><td><code>hir_beta</code>, <code>hir_let_simpl</code>, etc.</td></tr><tr><td>LIR Lower</td><td><code>HirExpr[]</code></td><td><code>LirFn[]</code></td><td><code>LirLower</code></td></tr><tr><td>LIR Codegen</td><td><code>LirFn[]</code></td><td><code>LLVMModule</code></td><td><code>CodegenLir</code></td></tr><tr><td>Legacy Codegen</td><td><code>Program</code> + tags</td><td><code>LLVMModule</code></td><td><code>Codegen</code></td></tr><tr><td>Execution</td><td><code>LLVMModule</code></td><td>result</td><td><code>Jit</code> / <code>Aot</code></td></tr></tbody></table>
+<hr>
+<h2 id="adding-a-new-tokenoperator">Adding a New Token/Operator</h2>
+<h3 id="step-1-lexer-srclexerzig">Step 1: Lexer (<code>src/lexer.zig</code>)</h3>
+<p>Find the <code>Token.Tag</code> enum (line ~12). Add your new token:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">// In Token.Tag enum:</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">my_operator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,  </span><span style="color:#6A737D;--shiki-dark:#6A737D">// e.g., ??: or !!</span></span></code></pre>
+<p>Add the lexeme to <code>lexeme()</code> (line ~91):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_operator</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#032F62;--shiki-dark:#9ECBFF"> "??:"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span></code></pre>
+<p>Add human name to <code>humanName()</code> (line ~166):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_operator</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#032F62;--shiki-dark:#9ECBFF"> "operator ??:"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span></code></pre>
+<p>If it’s a keyword (not an operator), add to the <code>keywords</code> map (line ~241):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#032F62;--shiki-dark:#9ECBFF">"mykeyword"</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .</span><span style="color:#E36209;--shiki-dark:#FFAB70">keyword_mykeyword</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span></code></pre>
+<p>Add scanning logic in <code>Tokenizer.next()</code> (line ~326):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#032F62;--shiki-dark:#9ECBFF">'?'</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    if</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">peek</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() </span><span style="color:#D73A49;--shiki-dark:#F97583">==</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> '?'</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">        self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">pos</span><span style="color:#D73A49;--shiki-dark:#F97583"> +=</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">        return</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">makeToken</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_operator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">start</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    }</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    return</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">makeToken</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">question</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">start</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">},</span></span></code></pre>
+<h3 id="step-2-ast-srcastzig">Step 2: AST (<code>src/ast.zig</code>)</h3>
+<p>If it’s a binary operator, add to <code>BinaryOp</code> enum (line ~72):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> BinaryOp</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> enum</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">    // ... existing ops ...</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    my_op</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">};</span></span></code></pre>
+<p>If it’s a unary operator, add to <code>UnaryOp</code> enum (line ~90).</p>
+<p>If it’s an entirely new expression form, add to the <code>Expr</code> union (line ~98) and update <code>getLoc()</code>/<code>setLoc()</code>.</p>
+<h3 id="step-3-parser-srcparserzig">Step 3: Parser (<code>src/parser.zig</code>)</h3>
+<p>Add parsing at the correct precedence level. The expression parser chain (outermost to innermost):</p>
+<ol>
+<li><code>parse_expr</code> -> <code>parse_assign</code> (<code>:=</code>)</li>
+<li><code>parse_pipe</code> (<code>|></code>)</li>
+<li><code>parse_cons</code> (<code>::</code>, right-associative)</li>
+<li><code>parse_or</code> (<code>||</code>, <code>or</code>)</li>
+<li><code>parse_and</code> (<code>&#x26;&#x26;</code>, <code>and</code>)</li>
+<li><code>parse_equality</code> (<code>==</code>, <code>!=</code>)</li>
+<li><code>parse_compare</code> (<code>&#x3C;</code>, <code>&#x3C;=</code>, <code>></code>, <code>>=</code>)</li>
+<li><code>parse_term</code> (<code>+</code>, <code>-</code>)</li>
+<li><code>parse_factor</code> (<code>*</code>, <code>/</code>, <code>%</code>)</li>
+<li><code>parse_unary</code> (<code>-</code>, <code>not</code>, <code>!</code>, <code>ref</code>)</li>
+<li><code>parse_postfix</code> (<code>.</code>, function application, <code>?</code>)</li>
+<li><code>parse_primary</code> (literals, identifiers, etc.)</li>
+</ol>
+<h3 id="step-4-typechecker-srctypecheckzig">Step 4: Typechecker (<code>src/typecheck.zig</code>)</h3>
+<p>Add inference in <code>inferBinary()</code> (line ~1100). Find the switch on <code>.op</code>:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_op</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#E36209;--shiki-dark:#FFAB70"> blk</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">unify</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">left</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">));</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">unify</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">right</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">));</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    break</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> :</span><span style="color:#E36209;--shiki-dark:#FFAB70">blk</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">},</span></span></code></pre>
+<h3 id="step-5-codegen-srccodegenzig">Step 5: Codegen (<code>src/codegen.zig</code>)</h3>
+<p>Add IR generation in <code>codegenBinaryOp()</code> (line ~680):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_op</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#E36209;--shiki-dark:#FFAB70"> blk</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">LLVMBuild</span><span style="color:#24292E;--shiki-dark:#E1E4E8">...(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">builder</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">l</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">r</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_op"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    break</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> :</span><span style="color:#E36209;--shiki-dark:#FFAB70">blk</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">},</span></span></code></pre>
+<h3 id="step-6-test">Step 6: Test</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#005CC5;--shiki-dark:#79B8FF">echo</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> 'fn main = println (5 ??: 3)'</span><span style="color:#D73A49;--shiki-dark:#F97583"> ></span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_myop.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --run</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_myop.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --emit-ir</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_myop.ll</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_myop.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">zig</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> build</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> test</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --summary</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> all</span></span></code></pre>
+<hr>
+<h2 id="adding-a-new-keyword">Adding a New Keyword</h2>
+<h3 id="step-1-lexer">Step 1: Lexer</h3>
+<p>Add to <code>Token.Tag</code>:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">keyword_foo</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span></code></pre>
+<p>Add to <code>keywords</code> map:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#032F62;--shiki-dark:#9ECBFF">"foo"</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .</span><span style="color:#E36209;--shiki-dark:#FFAB70">keyword_foo</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span></code></pre>
+<p>Add lexeme and humanName entries.</p>
+<h3 id="step-2-parser">Step 2: Parser</h3>
+<p>Add to <code>top_level_stops</code> if it terminates blocks at the top level:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> top_level_stops</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: []</span><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> Token</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">Tag</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.{</span></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">    // ... existing ...</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    .</span><span style="color:#E36209;--shiki-dark:#FFAB70">keyword_foo</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">};</span></span></code></pre>
+<p>Add parsing in <code>parse_program()</code> or <code>parse_primary()</code>.</p>
+<hr>
+<h2 id="adding-a-builtin-function">Adding a Builtin Function</h2>
+<p>This is the most common task. Builtins are functions available without importing (like <code>println</code>, <code>Int.pow</code>).</p>
+<h3 id="step-1-typechecker-srctypecheckzig">Step 1: Typechecker (<code>src/typecheck.zig</code>)</h3>
+<p>Find <code>inferProgram()</code> (line ~592). Add type scheme registration:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">// Example: my_fn : Int -> Int -> Int</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> a</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newVarType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"a"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> b</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newVarType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"b"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newVarType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"c"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> inner</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">allocator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">create</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">inner</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">arrow</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">from</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> b</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .</span><span style="color:#E36209;--shiki-dark:#FFAB70">to</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> } };</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_type</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">allocator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">create</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">fn_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">arrow</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">from</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .</span><span style="color:#E36209;--shiki-dark:#FFAB70">to</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> inner</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> } };</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> quantified</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">allocator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">alloc</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">usize</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#005CC5;--shiki-dark:#79B8FF">3</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">quantified</span><span style="color:#24292E;--shiki-dark:#E1E4E8">[</span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8">] </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#E36209;--shiki-dark:#FFAB70"> a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">variable</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">id</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">quantified</span><span style="color:#24292E;--shiki-dark:#E1E4E8">[</span><span style="color:#005CC5;--shiki-dark:#79B8FF">1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">] </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#E36209;--shiki-dark:#FFAB70"> b</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">variable</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">id</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">quantified</span><span style="color:#24292E;--shiki-dark:#E1E4E8">[</span><span style="color:#005CC5;--shiki-dark:#79B8FF">2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">] </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">variable</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">id</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">global</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">set</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">quantified</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> quantified</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .</span><span style="color:#E36209;--shiki-dark:#FFAB70">body</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> });</span></span></code></pre>
+<p>For simpler cases (monomorphic):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_type</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">allocator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">create</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">fn_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">arrow</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">from</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">), .</span><span style="color:#E36209;--shiki-dark:#FFAB70">to</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) } };</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">global</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">set</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">quantified</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> &#x26;</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.{}, .</span><span style="color:#E36209;--shiki-dark:#FFAB70">body</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> });</span></span></code></pre>
+<h3 id="step-2-stdlib-codegen-srcstdlib_codegenzig">Step 2: Stdlib Codegen (<code>src/stdlib_codegen.zig</code>)</h3>
+<p>Add a new codegen method:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> codegenMyFn</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">StdlibCodegen</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">void</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    var</span><span style="color:#E36209;--shiki-dark:#FFAB70"> params</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: [</span><span style="color:#005CC5;--shiki-dark:#79B8FF">2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">]</span><span style="color:#E36209;--shiki-dark:#FFAB70">types</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">LLVMTypeRef</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ </span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">i64Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(), </span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">i64Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">() };</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_val</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">createFunction</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">i64Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(), </span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#E36209;--shiki-dark:#FFAB70">params</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> entry</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMAppendBasicBlockInContext</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">context</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">fn_val</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"entry"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMPositionBuilderAtEnd</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">builder</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">entry</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> a</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMGetParam</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">fn_val</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> b</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMGetParam</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">fn_val</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#005CC5;--shiki-dark:#79B8FF">1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> result</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMBuildAdd</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">builder</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">a</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">b</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"result"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">buildRet</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">}</span></span></code></pre>
+<p>Call it from <code>generateAll()</code>.</p>
+<h3 id="step-3-codegen-registration-srccodegenzig">Step 3: Codegen Registration (<code>src/codegen.zig</code>)</h3>
+<p>In <code>declareBuiltins()</code> (line ~254), register the function:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> my_fn</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMGetNamedFunction</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">module</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">orelse</span><span style="color:#E36209;--shiki-dark:#FFAB70"> blk</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    var</span><span style="color:#E36209;--shiki-dark:#FFAB70"> params</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: [</span><span style="color:#005CC5;--shiki-dark:#79B8FF">2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">]</span><span style="color:#E36209;--shiki-dark:#FFAB70">types</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">LLVMTypeRef</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ </span><span style="color:#E36209;--shiki-dark:#FFAB70">i64_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">i64_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> };</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> fn_type</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMFunctionType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">i64_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#D73A49;--shiki-dark:#F97583">&#x26;</span><span style="color:#E36209;--shiki-dark:#FFAB70">params</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#005CC5;--shiki-dark:#79B8FF">2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    break</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> :</span><span style="color:#E36209;--shiki-dark:#FFAB70">blk</span><span style="color:#E36209;--shiki-dark:#FFAB70"> core</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">LLVMAddFunction</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">module</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">fn_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">};</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">_</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">named_values</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">put</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#032F62;--shiki-dark:#9ECBFF">"my_fn"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">my_fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">catch</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {};</span></span></code></pre>
+<h3 id="step-4-test">Step 4: Test</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#005CC5;--shiki-dark:#79B8FF">echo</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> 'fn main = println (my_fn 3 4)'</span><span style="color:#D73A49;--shiki-dark:#F97583"> ></span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_builtin.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --run</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> /tmp/test_builtin.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">zig</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> build</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> test</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --summary</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> all</span></span></code></pre>
+<hr>
+<h2 id="adding-a-new-ast-node">Adding a New AST Node</h2>
+<h3 id="step-1-ast-srcastzig">Step 1: AST (<code>src/ast.zig</code>)</h3>
+<p>Add to the <code>Expr</code> union:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> Expr</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> union</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">    // ... existing ...</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    my_node</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">        value</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Expr</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">        loc</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#E36209;--shiki-dark:#FFAB70">Loc</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    },</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">};</span></span></code></pre>
+<p>Update <code>getLoc()</code> and <code>setLoc()</code> for the new variant.</p>
+<h3 id="step-2-parser-1">Step 2: Parser</h3>
+<p>Add parsing logic:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> parse_my_node</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Parser</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#E36209;--shiki-dark:#FFAB70">Error</span><span style="color:#D73A49;--shiki-dark:#F97583">!*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Expr</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> start</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">current</span><span style="color:#24292E;--shiki-dark:#E1E4E8">().</span><span style="color:#E36209;--shiki-dark:#FFAB70">loc</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    _</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">advance</span><span style="color:#24292E;--shiki-dark:#E1E4E8">();</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> value</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">parse_expr</span><span style="color:#24292E;--shiki-dark:#E1E4E8">();</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    return</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newExpr</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_node</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">value</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> value</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, .</span><span style="color:#E36209;--shiki-dark:#FFAB70">loc</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#E36209;--shiki-dark:#FFAB70"> start</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> } }, </span><span style="color:#E36209;--shiki-dark:#FFAB70">start</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">}</span></span></code></pre>
+<h3 id="step-3-typechecker">Step 3: Typechecker</h3>
+<p>Add case in <code>inferExpr()</code>:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_node</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#E36209;--shiki-dark:#FFAB70">n</span><span style="color:#D73A49;--shiki-dark:#F97583">|</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> inner</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">inferExpr</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">env</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">n</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">value</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    return</span><span style="color:#E36209;--shiki-dark:#FFAB70"> inner</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">},</span></span></code></pre>
+<h3 id="step-4-codegen">Step 4: Codegen</h3>
+<p>Add case in <code>codegenExpr()</code>:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">my_node</span><span style="color:#D73A49;--shiki-dark:#F97583"> =></span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#E36209;--shiki-dark:#FFAB70">n</span><span style="color:#D73A49;--shiki-dark:#F97583">|</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> val</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">codegenExpr</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">n</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">value</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    return</span><span style="color:#E36209;--shiki-dark:#FFAB70"> val</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">},</span></span></code></pre>
+<hr>
+<h2 id="the-typechecker-deep-dive">The Typechecker Deep Dive</h2>
+<h3 id="key-concepts">Key Concepts</h3>
+<p><strong>Types</strong> (<code>Type</code> union in <code>src/typecheck.zig</code>):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> Type</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> union</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#D73A49;--shiki-dark:#F97583">enum</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) {</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">float</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#D73A49;--shiki-dark:#F97583">bool</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">char</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">string</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">unit</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    con</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#E36209;--shiki-dark:#FFAB70">name</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: []</span><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#D73A49;--shiki-dark:#F97583"> u8</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">args</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: []</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> },</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    arrow</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> { </span><span style="color:#E36209;--shiki-dark:#FFAB70">from</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">to</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> },</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    tuple</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: []</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    record</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#E36209;--shiki-dark:#FFAB70">RecordType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    ref</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">    variable</span><span style="color:#24292E;--shiki-dark:#E1E4E8">: </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">TypeVar</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">};</span></span></code></pre>
+<p><strong>Type Variables</strong>: Mutable references that get unified (resolved) during inference.</p>
+<p><strong>Schemes</strong>: <code>Scheme { quantified: usize[], body: *Type }</code> — polymorphic types with bound variables.</p>
+<p><strong>Environments</strong>: <code>Env</code> maps names to schemes. Scoped (child envs shadow parents).</p>
+<h3 id="the-inference-flow">The Inference Flow</h3>
+<ol>
+<li><code>inferProgram()</code> — registers builtins, then infers each definition</li>
+<li><code>inferDef()</code> — for <code>fn</code>, creates type vars for params, infers body</li>
+<li><code>inferExpr()</code> — dispatches on AST node, returns inferred type</li>
+<li><code>unify()</code> — constrains two types to be equal (resolves variables)</li>
+</ol>
+<h3 id="adding-type-constraints">Adding Type Constraints</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="zig"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">// "This expression must be Int"</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">unify</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">inferred_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">));</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D">// "This expression must be a function from Int to Bool"</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">const</span><span style="color:#E36209;--shiki-dark:#FFAB70"> expected</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#E36209;--shiki-dark:#FFAB70">allocator</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">create</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">Type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span>
+<span class="line"><span style="color:#E36209;--shiki-dark:#FFAB70">expected</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{ .</span><span style="color:#E36209;--shiki-dark:#FFAB70">arrow</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> .{</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    .</span><span style="color:#E36209;--shiki-dark:#FFAB70">from</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#E36209;--shiki-dark:#FFAB70">int</span><span style="color:#24292E;--shiki-dark:#E1E4E8">),</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    .</span><span style="color:#E36209;--shiki-dark:#FFAB70">to</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#D73A49;--shiki-dark:#F97583"> try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">newType</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(.</span><span style="color:#D73A49;--shiki-dark:#F97583">bool</span><span style="color:#24292E;--shiki-dark:#E1E4E8">),</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">} };</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">try</span><span style="color:#E36209;--shiki-dark:#FFAB70"> self</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.</span><span style="color:#6F42C1;--shiki-dark:#B392F0">unify</span><span style="color:#24292E;--shiki-dark:#E1E4E8">(</span><span style="color:#E36209;--shiki-dark:#FFAB70">inferred_type</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, </span><span style="color:#E36209;--shiki-dark:#FFAB70">expected</span><span style="color:#24292E;--shiki-dark:#E1E4E8">);</span></span></code></pre>
+<h3 id="runtime-type-tags">Runtime Type Tags</h3>
+<p><code>typeToTag()</code> maps types to integer tags for runtime dispatch:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tag</th><th>Type</th></tr></thead><tbody><tr><td>0</td><td>Int</td></tr><tr><td>1</td><td>Float</td></tr><tr><td>2</td><td>Bool</td></tr><tr><td>3</td><td>Char</td></tr><tr><td>4</td><td>String</td></tr><tr><td>5</td><td>Unit <code>()</code></td></tr><tr><td>6</td><td>Constructor (sum types)</td></tr><tr><td>7</td><td>Record</td></tr><tr><td>8</td><td>Function</td></tr><tr><td>9</td><td>Tuple</td></tr><tr><td>100</td><td>Variable/Ref (unknown)</td></tr></tbody></table>
+<hr>
+<h2 id="the-codegen-deep-dive">The Codegen Deep Dive</h2>
+<h3 id="llvm-value-representation">LLVM Value Representation</h3>
+<p>All Kō values are <code>i64</code> in LLVM:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Kō Type</th><th>LLVM Representation</th></tr></thead><tbody><tr><td>Int</td><td><code>i64</code> (raw value)</td></tr><tr><td>Float</td><td><code>i64</code> (bitcast from double)</td></tr><tr><td>Bool</td><td><code>i64</code> (0 or 1)</td></tr><tr><td>Char</td><td><code>i64</code> (ASCII code)</td></tr><tr><td>String</td><td><code>i8*</code> pointer -> <code>i64</code> (ptrtoint)</td></tr><tr><td>Unit</td><td><code>i64</code> (0)</td></tr><tr><td>Constructor (0-arg)</td><td><code>i64</code> (tag value)</td></tr><tr><td>Constructor (N-arg)</td><td><code>i64</code> (ptrtoint of heap struct)</td></tr><tr><td>Function</td><td><code>i64</code> (function pointer or closure pointer)</td></tr></tbody></table>
+<h3 id="memory-layout">Memory Layout</h3>
+<p><strong>Heap-allocated structs</strong> (constructors with args):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>[ i64 tag ][ i64 arg1 ][ i64 arg2 ]...</span></span>
+<span class="line"><span>^</span></span>
+<span class="line"><span>pointer returned by ko_alloc (what codegen sees)</span></span></code></pre>
+<p><strong>Closure struct</strong> (partial application):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>[ fn_ptr total_arity applied_count applied_args... ]</span></span></code></pre>
+<h3 id="reference-counting">Reference Counting</h3>
+<p>All heap allocations use <code>ko_alloc</code> which sets rc=1. Functions must:</p>
+<ul>
+<li>Call <code>emitIncref()</code> when storing values in parent structures</li>
+<li>Call <code>markConsumed()</code> to skip decref at function exit</li>
+<li>Call <code>ko_decref()</code> on values they own but don’t return</li>
+</ul>
+<h3 id="two-pass-codegen">Two-Pass Codegen</h3>
+<ol>
+<li><strong>Pass 1</strong> (<code>declareFn</code>): Creates LLVM function declarations, registers in <code>named_values</code></li>
+<li><strong>Pass 2</strong> (<code>codegenFn</code>): Generates function bodies</li>
+</ol>
+<p>This allows forward references (functions calling functions defined later).</p>
+<hr>
+<h2 id="testing-at-each-stage">Testing at Each Stage</h2>
+<h3 id="test-file-organization">Test File Organization</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>src/tests.zig          -- All Zig tests (lexer, parser, typechecker, codegen)</span></span>
+<span class="line"><span>src/tests_ko/          -- .ko test programs (47+ files)</span></span>
+<span class="line"><span>  01_literal.ko        -- Basic literals</span></span>
+<span class="line"><span>  15_sum_type.ko       -- User-defined types</span></span>
+<span class="line"><span>  44_cons_operator.ko  -- List operations</span></span>
+<span class="line"><span>  50_comptime_lists.ko -- Compile-time evaluation</span></span></code></pre>
+<h3 id="adding-a-new-test">Adding a New Test</h3>
+<ol>
+<li>Write <code>.ko</code> file in <code>src/tests_ko/</code> (must have trailing newline)</li>
+<li>Add <code>@embedFile</code> entry in <code>tests.zig</code> parser test section</li>
+<li>Verify it parses: <code>ko your_test.ko</code> (should show “Parsed: N definitions”)</li>
+<li>Run full suite: <code>zig build test --summary all</code></li>
+</ol>
+<h3 id="test-commands">Test Commands</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Full test suite (ALWAYS use --summary all)</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">zig</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> build</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> test</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --summary</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> all</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># JIT-execute a program</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --run</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> file.ko</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Dump LLVM IR to stdout</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> file.ko</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Emit LLVM IR to file</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --emit-ir</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> out.ll</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> file.ko</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Emit object file</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --emit-obj</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> out.o</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> file.ko</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Emit linked executable</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">ko</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --emit-exe</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> out</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> file.ko</span></span></code></pre>
+<h3 id="testing-a-new-feature">Testing a New Feature</h3>
+<ol>
+<li><strong>Lexer test</strong>: Add token test in <code>tests.zig</code> lexer section</li>
+<li><strong>Parser test</strong>: Add <code>.ko</code> file, add <code>@embedFile</code> entry</li>
+<li><strong>Typechecker test</strong>: Add <code>testInfer()</code> call in <code>tests.zig</code></li>
+<li><strong>Codegen test</strong>: Use <code>ko --run</code> or <code>ko --emit-ir</code></li>
+<li><strong>Integration test</strong>: Full <code>.ko</code> program that exercises the feature</li>
+</ol>
+<hr>
+<h2 id="common-pitfalls">Common Pitfalls</h2>
+<h3 id="lexer">Lexer</h3>
+<ul>
+<li><code>@embedFile</code> returns null-terminated <code>*const [N:0]u8</code> — do NOT append <code>++ "\x00"</code></li>
+<li><code>#</code> comments must fully disappear from token stream</li>
+<li>Indentation can emit multiple <code>dedent</code> tokens — queue them</li>
+</ul>
+<h3 id="parser">Parser</h3>
+<ul>
+<li><code>parse_block</code> from <code>parse_fn_def</code> vs <code>parse_let_expr_in_block</code> — use <code>allow_let_in_body</code> flag</li>
+<li>Field access binds tighter than function application: <code>println pt.x</code> = <code>println(pt.x)</code></li>
+<li><code>inspect Some(42)</code> without parens is parsed as <code>(inspect Some)(42)</code> — use parens</li>
+</ul>
+<h3 id="typechecker">Typechecker</h3>
+<ul>
+<li><code>next_type_id</code> starts at 2 (Bool=0, Result=1) — must match codegen</li>
+<li><code>registerTypeDef</code> called from multiple passes — guard with <code>if (!type_ids.contains(name))</code></li>
+<li>Imported module types may not propagate to main inferer</li>
+</ul>
+<h3 id="codegen">Codegen</h3>
+<ul>
+<li><code>LLVMBuildCall2</code> needs function type from <code>LLVMGlobalGetValueType</code>, NOT <code>LLVMTypeOf</code></li>
+<li>String literals include quotes — strip them in codegen</li>
+<li>Float literals produce <code>double</code> — bitcast to <code>i64</code> for builtins</li>
+<li><code>trackHeapAlloc</code> stores <code>ptrtoint</code> (i64), NOT raw pointer</li>
+<li><code>emitDecrefAll</code> must skip return value (caller takes ownership)</li>
+<li>Allocas for conditional allocations must be before entry block terminator</li>
+<li><code>LLVMAddGlobalMapping</code> doesn’t override functions with bodies in MCJIT</li>
+</ul>
+<h3 id="testing">Testing</h3>
+<ul>
+<li>Always use <code>zig build test --summary all</code> — default output is misleading</li>
+<li>Every <code>.ko</code> test must parse before it can test typecheck/codegen</li>
+<li>Use <code>ArenaAllocator</code> wrapping <code>std.testing.allocator</code> for parser/typechecker tests</li>
+<li>Never use <code>page_allocator</code> for tests (bypasses leak detection)</li>
+</ul>
+<hr>
+<h2 id="known-issues">Known Issues</h2>
+<h3 id="parser-1">Parser</h3>
+<ul>
+<li><strong>Negative numbers as args</strong>: <code>f -3</code> must be <code>f (-3)</code> (GitHub #17)</li>
+<li><strong>Multi-line pipe</strong>: <code>|></code> doesn’t work across lines (GitHub #18)</li>
+<li><strong><code>let</code> in non-indented blocks</strong>: parser may consume next def as body</li>
+</ul>
+<h3 id="typechecker-1">Typechecker</h3>
+<ul>
+<li><strong>Imported type propagation</strong>: Types from imported modules show as type variables</li>
+<li><strong>Multi-line closures with free variables</strong>: LLVM codegen errors</li>
+</ul>
+<h3 id="codegen-1">Codegen</h3>
+<ul>
+<li><strong>Let-bound constructor display</strong>: Shows raw pointers (element-level type tags lost at LLVM IR level)</li>
+<li><strong>List element printing</strong>: Non-integer list elements print as raw pointers (tag=100)</li>
+</ul>
+<h3 id="lir-pipeline">LIR Pipeline</h3>
+<ul>
+<li><strong>Module/import system</strong>: Not implemented: <code>module_def.ko</code> and <code>module_import.ko</code> fail</li>
+<li><strong>Division by zero guard</strong>: Not implemented in LIR codegen (control flow issue)</li>
+</ul>
+<hr>
+<h2 id="string-design">String Design</h2>
+<p>Strings are <code>i8*</code> (null-terminated) at LLVM level. Operations use C library functions.</p>
+<p><strong>Known limitations:</strong></p>
+<ul>
+<li>No UTF-8 awareness: <code>String.length</code> counts bytes, not code points</li>
+<li><code>String.toUpperCase</code> uses C <code>toupper</code> (ASCII-only)</li>
+<li><code>String.split</code> LLVM IR body is empty (only Zig JIT fallback works)</li>
+<li>No efficient building: every <code>String.append</code> allocates + copies (O(n²))</li>
+</ul>
+<p><strong>Design goals:</strong> UTF-8 by default, length-prefixed internally, efficient building, comptime/runtime parity.</p>
+<hr>
+<h2 id="see-also">See Also</h2>
+<ul>
+<li><a href="CODEGEN.md">Codegen</a>: how LLVM IR generation works</li>
+<li><a href="LANGUAGE_REFERENCE.md">Language Reference</a>: syntax and semantics</li>
+<li><a href="TUTORIAL.md">Tutorial</a>: getting started guide</li>
+</ul>  </article> </div>  </main> <footer> <div class="container"> <p>Kō is MIT licensed. Built with Zig and LLVM.</p> </div> </footer> <script>
+      const toggle = document.getElementById('theme-toggle');
+      toggle.addEventListener('click', () => {
+        const html = document.documentElement;
+        const isDark = html.classList.contains('dark');
+        html.classList.remove('dark', 'light');
+        html.classList.add(isDark ? 'light' : 'dark');
+        localStorage.setItem('theme', isDark ? 'light' : 'dark');
+      });
+    </script> </body> </html>  

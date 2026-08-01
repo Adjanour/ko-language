@@ -1,0 +1,234 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="description" content="A minimal, functional-first programming language that compiles to native binaries via LLVM."><title>Contributing to Kō | Kō</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><script>
+      (function() {
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.classList.add(theme);
+      })();
+    </script><style>:root{--bg: #09090b;--bg-card: #111113;--bg-code: #0c0c0e;--text: #fafafa;--text-muted: #a1a1aa;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #1f1f23;--radius: 8px}html.light{--bg: #fafafa;--bg-card: #f4f4f5;--bg-code: #f0f0f2;--text: #18181b;--text-muted: #52525b;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #e4e4e7}*{margin:0;padding:0;box-sizing:border-box}html{overflow-x:hidden}body{font-family:Inter,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-x:hidden;width:100%}main{flex:1;overflow-x:hidden}.container{max-width:1040px;margin:0 auto;padding:0 1.5rem;overflow:hidden}.navbar{position:sticky;top:0;z-index:50;border-bottom:1px solid var(--border);background:color-mix(in oklab,var(--bg),transparent 14%);backdrop-filter:blur(12px)}.nav-container{display:flex;align-items:center;justify-content:space-between;height:3.5rem}.logo{font-size:1.25rem;font-weight:700;color:var(--text);text-decoration:none;letter-spacing:-.02em}.nav-links{display:flex;gap:.25rem;align-items:center}.nav-links a{padding:.375rem .625rem;color:var(--text-muted);text-decoration:none;font-size:.875rem;border-radius:6px;transition:color .15s}.nav-links a:hover{color:var(--text)}.theme-toggle{display:flex;align-items:center;justify-content:center;width:2.25rem;height:2.25rem;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;transition:all .15s;margin-left:.5rem}.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}.sun-icon,.moon-icon{display:none}html.dark .sun-icon,html.light .moon-icon{display:block}footer{border-top:1px solid var(--border);padding:2rem 0;text-align:center;color:var(--text-muted);font-size:.8rem}h1,h2,h3,h4{line-height:1.2;font-weight:600}p{color:var(--text-muted)}a{color:var(--accent)}code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}pre{background:var(--bg-code);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}pre code{background:none;padding:0;font-size:.9rem;color:var(--text);white-space:pre}.astro-code{background:var(--bg-code)!important;border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}html.light .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}.astro-code *,.astro-code span,.astro-code .line{background-color:transparent!important}html.dark .astro-code span{color:#fff!important}html.dark .astro-code span[style*="color:#D73A49"]{color:#f97583!important}html.dark .astro-code span[style*="color:#005CC5"]{color:#79b8ff!important}html.dark .astro-code span[style*="color:#032F62"]{color:#9ecbff!important}html.dark .astro-code span[style*="color:#6F42C1"]{color:#b392f0!important}html.dark .astro-code span[style*="color:#6A737D"]{color:#8b949e!important}html.dark .astro-code span[style*="color:#24292E"]{color:#fff!important}table{width:100%;border-collapse:collapse;margin:1.5rem 0;display:block;overflow-x:auto}th,td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left;white-space:nowrap}th{background:var(--bg-card);font-weight:600;color:var(--text)}hr{border:none;border-top:1px solid var(--border);margin:3rem 0}blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}
+.docs-layout[data-astro-cid-mw7aashj]{display:grid;grid-template-columns:200px 1fr;gap:3rem;padding-top:3rem;padding-bottom:4rem;min-height:calc(100vh - 200px)}.docs-sidebar[data-astro-cid-mw7aashj]{position:sticky;top:5rem;height:fit-content}.nav-section[data-astro-cid-mw7aashj]{margin-bottom:1.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.7rem;font-weight:500;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-bottom:.5rem;padding-left:.75rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{display:block;padding:.35rem .75rem;color:var(--text-muted);text-decoration:none;font-size:.85rem;border-radius:6px;transition:all .15s}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]:hover{color:var(--text);background:var(--bg-card)}.docs-content[data-astro-cid-mw7aashj]{max-width:720px;min-width:0}.docs-content[data-astro-cid-mw7aashj] h1{font-size:2rem;font-weight:600;letter-spacing:-.02em;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}.docs-content[data-astro-cid-mw7aashj] h2{font-size:1.5rem;font-weight:600;letter-spacing:-.01em;margin-top:3rem;margin-bottom:1rem}.docs-content[data-astro-cid-mw7aashj] h3{font-size:1.2rem;font-weight:500;margin-top:2rem;margin-bottom:.75rem}.docs-content[data-astro-cid-mw7aashj] p{margin-bottom:1rem;line-height:1.7}.docs-content[data-astro-cid-mw7aashj] code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}.docs-content[data-astro-cid-mw7aashj] pre{background:var(--bg-code);border:1px solid var(--border);border-radius:8px;padding:1.25rem;overflow-x:auto;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] pre code{background:none;padding:0;font-size:.9rem;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code{background:var(--bg-code)!important;border-color:var(--border)}html.light .docs-content[data-astro-cid-mw7aashj] .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}html.light .docs-content[data-astro-cid-mw7aashj] code{background:#f0f0f2;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code *,.docs-content[data-astro-cid-mw7aashj] .astro-code span,.docs-content[data-astro-cid-mw7aashj] .astro-code .line{background-color:transparent!important}.docs-content[data-astro-cid-mw7aashj] ul,.docs-content[data-astro-cid-mw7aashj] ol{margin:1rem 0;padding-left:1.5rem;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] li{margin-bottom:.5rem;line-height:1.6}.docs-content[data-astro-cid-mw7aashj] blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] table{width:100%;border-collapse:collapse;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] th,.docs-content[data-astro-cid-mw7aashj] td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left}.docs-content[data-astro-cid-mw7aashj] th{background:var(--bg-card);font-weight:600;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] hr{border:none;border-top:1px solid var(--border);margin:2rem 0}@media(max-width:768px){.docs-layout[data-astro-cid-mw7aashj]{grid-template-columns:1fr}.docs-sidebar[data-astro-cid-mw7aashj]{position:static;border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1.5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}.docs-sidebar[data-astro-cid-mw7aashj]::-webkit-scrollbar{display:none}.docs-sidebar[data-astro-cid-mw7aashj] nav[data-astro-cid-mw7aashj]{display:flex;gap:.25rem;min-width:max-content}.nav-section[data-astro-cid-mw7aashj]{flex-shrink:0;margin-bottom:0;margin-right:.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.6rem;padding:.25rem .5rem;margin-bottom:.25rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{font-size:.75rem;padding:.25rem .5rem;white-space:nowrap}}
+</style></head> <body> <nav class="navbar"> <div class="container nav-container"> <a href="/" class="logo">kō</a> <div class="nav-links"> <a href="/docs/tutorial">Docs</a> <a href="/docs/reference">Reference</a> <a href="/docs/handbook">Handbook</a> <a href="https://github.com/Adjanour/ko-language">GitHub</a> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"> <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg> <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg> </button> </div> </div> </nav> <main>  <div class="docs-layout container" data-astro-cid-mw7aashj> <aside class="docs-sidebar" data-astro-cid-mw7aashj> <nav data-astro-cid-mw7aashj> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Getting Started</h4> <a href="/docs/tutorial" data-astro-cid-mw7aashj>Tutorial</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Language</h4> <a href="/docs/reference" data-astro-cid-mw7aashj>Reference</a> <a href="/docs/grammar" data-astro-cid-mw7aashj>Grammar</a> <a href="/docs/spec" data-astro-cid-mw7aashj>Spec</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Internals</h4> <a href="/docs/handbook" data-astro-cid-mw7aashj>Handbook</a> <a href="/docs/codegen" data-astro-cid-mw7aashj>Codegen</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Project</h4> <a href="/docs/roadmap" data-astro-cid-mw7aashj>Roadmap</a> <a href="/docs/philosophy" data-astro-cid-mw7aashj>Philosophy</a> <a href="/docs/contributing" data-astro-cid-mw7aashj>Contributing</a> <a href="/docs/changelog" data-astro-cid-mw7aashj>Changelog</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Blog</h4> <a href="/docs/build-a-grade-book" data-astro-cid-mw7aashj>Install Kō &amp; Build Your First Program</a> </div> </nav> </aside> <article class="docs-content" data-astro-cid-mw7aashj>  <h1 id="contributing-to-kō">Contributing to Kō</h1>
+<p>Thanks for your interest in contributing! Kō is an early-stage language: there’s a lot of work to do and every contribution helps.</p>
+<h2 id="getting-started">Getting started</h2>
+<h3 id="prerequisites">Prerequisites</h3>
+<ul>
+<li><strong>Zig 0.17</strong> (0.17-dev): <code>snap install zig --classic --channel=latest/edge</code></li>
+<li><strong>LLVM 22</strong>: <code>sudo apt install llvm-22-dev zlib1g-dev</code> (Linux) or <code>brew install llvm@22</code> (macOS)</li>
+</ul>
+<h3 id="build">Build</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#005CC5;--shiki-dark:#79B8FF">cd</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> ko-zig</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">zig</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> build</span><span style="color:#6A737D;--shiki-dark:#6A737D">                # Build compiler + LSP</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">zig</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> build</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> test</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> --summary</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> all</span><span style="color:#6A737D;--shiki-dark:#6A737D">  # Run all 78 tests</span></span></code></pre>
+<h3 id="try-it">Try it</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="bash"><code><span class="line"><span style="color:#005CC5;--shiki-dark:#79B8FF">echo</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> 'fn main = println "Hello, Kō!"'</span><span style="color:#D73A49;--shiki-dark:#F97583"> ></span><span style="color:#032F62;--shiki-dark:#9ECBFF"> hello.ko</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">./zig-out/bin/ko</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> hello.ko</span></span></code></pre>
+<h2 id="project-structure">Project structure</h2>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>ko-zig/src/</span></span>
+<span class="line"><span>├── lexer.zig           # Tokenizer (~872 lines)</span></span>
+<span class="line"><span>├── parser.zig          # Recursive descent parser (~1316 lines)</span></span>
+<span class="line"><span>├── typecheck.zig       # Hindley-Milner type inference (~1495 lines)</span></span>
+<span class="line"><span>├── codegen.zig         # LLVM IR generation (~3060 lines)</span></span>
+<span class="line"><span>├── comptime.zig        # Compile-time evaluation (~740 lines)</span></span>
+<span class="line"><span>├── ast.zig             # AST node types</span></span>
+<span class="line"><span>├── errors.zig          # Error types</span></span>
+<span class="line"><span>├── stdlib.zig          # Zig runtime implementations</span></span>
+<span class="line"><span>├── stdlib_codegen.zig  # LLVM IR stdlib generation</span></span>
+<span class="line"><span>├── module_loader.zig   # File-based module imports</span></span>
+<span class="line"><span>├── lsp.zig             # LSP server (separate binary)</span></span>
+<span class="line"><span>├── repl.zig            # REPL implementation</span></span>
+<span class="line"><span>├── prettyprint.zig     # Type-directed value display</span></span>
+<span class="line"><span>├── tests.zig           # All tests</span></span>
+<span class="line"><span>└── tests_ko/           # .ko test programs (53 files)</span></span></code></pre>
+<h2 id="how-to-contribute">How to contribute</h2>
+<h3 id="good-first-issues">Good first issues</h3>
+<p>Look for issues tagged <code>good first issue</code> on the <a href="https://github.com/Adjanour/ko-language/issues">issue tracker</a>. These are scoped, well-defined tasks that don’t require deep compiler knowledge.</p>
+<h3 id="areas-that-need-help">Areas that need help</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Area</th><th>Difficulty</th><th>Issues</th></tr></thead><tbody><tr><td><strong>Tokenizer fixes</strong></td><td>Easy</td><td>Blank-line scoping in <code>scan_indent</code></td></tr><tr><td><strong>Standard library</strong></td><td>Easy-Medium</td><td>New <code>.ko</code> files in <code>std/</code> (Set, Map, Maybe, etc.)</td></tr><tr><td><strong>Error messages</strong></td><td>Medium</td><td>Better type error messages with source location</td></tr><tr><td><strong>Codegen bugs</strong></td><td>Medium</td><td><code>list_ops.ko</code> hangs, multi-line closure errors</td></tr><tr><td><strong>Documentation</strong></td><td>Easy</td><td>Examples, tutorials, language guide</td></tr><tr><td><strong>Tree-sitter grammar</strong></td><td>Medium</td><td>Update grammar for new syntax</td></tr><tr><td><strong>Tests</strong></td><td>Easy</td><td>More test cases for edge cases</td></tr></tbody></table>
+<h3 id="workflow">Workflow</h3>
+<ol>
+<li><strong>Fork</strong> the repo and create a branch</li>
+<li><strong>Make your change</strong>: keep commits focused</li>
+<li><strong>Run tests</strong>: <code>zig build test --summary all</code></li>
+<li><strong>Test manually</strong>: try your change on example programs</li>
+<li><strong>Open a PR</strong> with a clear description of what changed and why</li>
+</ol>
+<h3 id="code-style">Code style</h3>
+<ul>
+<li>Follow existing patterns in the file you’re editing</li>
+<li>Zig 0.17 APIs only (see <code>AGENTS.md</code> for gotchas)</li>
+<li>No unnecessary comments: code should be self-documenting</li>
+<li>All <code>.ko</code> test files must parse successfully before they can test typechecking/codegen</li>
+</ul>
+<h3 id="adding-a-test">Adding a test</h3>
+<ol>
+<li>Create <code>src/tests_ko/NN_name.ko</code> with a trailing newline</li>
+<li>Add the <code>@embedFile</code> entry in <code>tests.zig</code></li>
+<li>Verify it parses: <code>./zig-out/bin/ko src/tests_ko/NN_name.ko</code> should show “Parsed: N definitions”</li>
+<li>Run <code>zig build test --summary all</code></li>
+</ol>
+<h3 id="commit-messages">Commit messages</h3>
+<p>Keep them short and descriptive:</p>
+<ul>
+<li><code>fix: blank-line scoping in scan_indent</code></li>
+<li><code>feat: add List.sort built-in</code></li>
+<li><code>docs: update examples for ? operator</code></li>
+</ul>
+<h2 id="reporting-bugs">Reporting bugs</h2>
+<p>Open an issue with:</p>
+<ol>
+<li>What you expected to happen</li>
+<li>What actually happened</li>
+<li>A minimal <code>.ko</code> file that reproduces the issue</li>
+<li>Your OS and Zig/LLVM versions</li>
+</ol>
+<h2 id="questions">Questions?</h2>
+<p>Open a discussion on GitHub or check the existing docs:</p>
+<ul>
+<li><code>GRAMMAR.md</code>: formal grammar</li>
+<li><code>LANGUAGE_CHARTER.md</code>: design principles</li>
+<li><code>ROADMAP.md</code>: what’s planned</li>
+<li><code>AGENTS.md</code>: developer guide (compiler internals)</li>
+</ul>
+<h2 id="architecture-reference-how-llvm-works">Architecture Reference: How LLVM Works</h2>
+<h3 id="the-pipeline">The Pipeline</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>Frontend            Middle end (LLVM)              Backend (LLVM)</span></span>
+<span class="line"><span>(yours)              (LLVM IR + passes)              (target codegen)</span></span>
+<span class="line"><span>Source → AST   →     LLVM IR → optimized IR   →     machine code / object file</span></span></code></pre>
+<p>Every language that targets LLVM writes its own frontend down to LLVM IR, and LLVM’s optimizer and every backend target work on that IR without knowing or caring what source language produced it. Kō’s frontend is everything before <code>codegen.zig</code>/<code>codegen_lir.zig</code>: lexer, parser, typechecker, HIR, and LIR.</p>
+<h3 id="llvm-ir-and-ssa">LLVM IR and SSA</h3>
+<p>LLVM IR is typed, register-based, in Static Single Assignment (SSA) form: every virtual register is assigned exactly once. Where control flow merges, <code>phi</code> instructions pick the right incoming value. This is <em>why</em> the HIR→LIR split exists: Kō source has constructs SSA has no notion of: pattern matching, closures, tail-recursive functions: all must be lowered into branches, phi nodes, and explicit loads/stores before reaching LLVM.</p>
+<h3 id="object-model">Object Model</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>LLVMContextRef                    (owns all types/constants; one per compilation unit)</span></span>
+<span class="line"><span>  └─ LLVMModuleRef                (a translation unit: roughly, one Kō program)</span></span>
+<span class="line"><span>       └─ LLVMValueRef (function)  (one Kō `fn`)</span></span>
+<span class="line"><span>            └─ LLVMBasicBlockRef   (a straight-line run of instructions)</span></span>
+<span class="line"><span>                 └─ instructions   (built via LLVMBuildXxx calls)</span></span></code></pre>
+<h3 id="types">Types</h3>
+<p>LLVM has a real type system (<code>i1</code>, <code>i64</code>, <code>float</code>, <code>ptr</code>, function types, struct types, arrays) but it’s much coarser than Kō’s. Kō collapses its rich type system: <code>Int</code> is <code>i64</code>, <code>Bool</code> is <code>i1</code>, zero-arg constructors and small sum types are packed into a raw <code>i64</code> tag, multi-arg constructors become heap-allocated structs behind a <code>ptr</code> with an RC header. LLVM never sees <code>type Maybe a = Just a | Nothing</code>: it sees an <code>i64</code> and a <code>ptr</code>.</p>
+<h3 id="the-optimizer">The Optimizer</h3>
+<p>A <strong>pass</strong> is a self-contained transformation over the IR: constant folding, dead code elimination, inlining, etc. Kō currently runs <code>.LLVMCodeGenLevelNone</code> unconditionally due to an LLVM 22 bug: <code>CodeGenPrepare</code> infinite loop with bitcast+phi patterns (fixed in LLVM 23, <a href="https://github.com/llvm/llvm-project/pull/186468">PR #186468</a>).</p>
+<h3 id="jit-vs-aot">JIT vs AOT</h3>
+<ul>
+<li><strong>JIT</strong> (<code>codegen.zig:2967-3003</code>): MCJIT compiles the whole module to machine code in memory and hands back a function pointer. Powers the REPL and <code>ko run</code>.</li>
+<li><strong>AOT</strong> (<code>codegen.zig:3011-3082</code>, <code>main.zig:426-475</code>): Emit object file via <code>LLVMTargetMachineEmitToMemoryBuffer</code>, then shell out to the system linker (<code>ld</code>) for the final executable.</li>
+</ul>
+<h3 id="the-dependency">The Dependency</h3>
+<p>Kō uses <a href="https://github.com/kassane/llvm-zig">kassane/llvm-zig</a>: third-party Zig bindings over LLVM’s C API. This is why Kō needs LLVM 22 specifically and can’t build against whatever LLVM a distro packages.</p>
+<h3 id="llvm-c-api-cheat-sheet">LLVM-C API Cheat Sheet</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Call</th><th>Purpose</th><th>Location</th></tr></thead><tbody><tr><td><code>LLVMContextCreate</code></td><td>One context per compile; owns types/constants</td><td><code>codegen.zig:84</code></td></tr><tr><td><code>LLVMModuleCreateWithNameInContext</code></td><td>One module per Kō program</td><td><code>codegen.zig:85</code></td></tr><tr><td><code>LLVMCreateBuilderInContext</code></td><td>Cursor used to append instructions</td><td><code>codegen.zig:97</code></td></tr><tr><td><code>LLVMBuild*</code> (Add, Call2, Br, Load2, ICmp, Phi, …)</td><td>Emit one SSA instruction</td><td>throughout <code>codegen.zig</code>/<code>codegen_lir.zig</code></td></tr><tr><td><code>LLVMLinkInMCJIT</code> + <code>LLVMCreateJITCompilerForModule</code></td><td>JIT compile to memory</td><td><code>codegen.zig:2977-2988</code></td></tr><tr><td><code>LLVMGetFunctionAddress</code></td><td>Resolve symbol to function pointer</td><td><code>codegen.zig:2998</code></td></tr><tr><td><code>LLVMGetDefaultTargetTriple</code> / <code>LLVMGetTargetFromTriple</code></td><td>Identify host target</td><td><code>codegen.zig:3021-3029</code></td></tr><tr><td><code>LLVMCreateTargetMachine</code></td><td>Configure codegen for target</td><td><code>codegen.zig:3038-3046</code></td></tr><tr><td><code>LLVMTargetMachineEmitToMemoryBuffer</code></td><td>IR → machine code object file in memory</td><td><code>codegen.zig:3067</code></td></tr><tr><td><code>LLVMVerifyModule</code> / <code>LLVMPrintModuleToString</code></td><td>Sanity-check and dump IR</td><td>scattered in <code>tests.zig</code></td></tr></tbody></table>
+<h3 id="where-the-middle-end-fits">Where the Middle End Fits</h3>
+<p>The HIR/LIR pipeline is <em>upstream</em> of LLVM. Its entire reason for existing is everything above: LLVM IR is SSA, flat, and has no patience for closures, nested pattern matches, or anything that isn’t already a branch and a phi node. <code>codegen_lir.zig</code> is the point where Kō’s own IR stops and LLVM’s begins.</p>
+<h2 id="license">License</h2>
+<p>By contributing, you agree that your contributions will be licensed under the MIT License.</p>  </article> </div>  </main> <footer> <div class="container"> <p>Kō is MIT licensed. Built with Zig and LLVM.</p> </div> </footer> <script>
+      const toggle = document.getElementById('theme-toggle');
+      toggle.addEventListener('click', () => {
+        const html = document.documentElement;
+        const isDark = html.classList.contains('dark');
+        html.classList.remove('dark', 'light');
+        html.classList.add(isDark ? 'light' : 'dark');
+        localStorage.setItem('theme', isDark ? 'light' : 'dark');
+      });
+    </script> </body> </html>  

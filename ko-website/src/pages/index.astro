@@ -1,0 +1,772 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+
+<Layout title="Home">
+  <header class="hero">
+    <div class="container">
+      <span class="hero-label">
+        <svg width="6" height="6" viewBox="0 0 6 6" fill="none"><circle cx="3" cy="3" r="3" fill="var(--accent)"/></svg>
+        v0.3.0-alpha
+      </span>
+      <h1>A minimal, functional-first language<br/>that compiles to native binaries.</h1>
+      <p class="hero-subtitle">No parens for function calls. Indentation-based blocks. Algebraic data types. Pattern matching. Hindley-Milner type inference. Reference counting. One binary, no runtime.</p>
+      <div class="install-bar">
+        <span class="install-prompt">$</span>
+        <code>git clone https://github.com/Adjanour/ko-language.git && cd ko-language && ./build.sh</code>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText('git clone https://github.com/Adjanour/ko-language.git && cd ko-language && ./build.sh')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+        </button>
+      </div>
+      <div class="hero-meta">
+        <span>MIT licensed</span>
+        <span aria-hidden="true">/</span>
+        <span>Zig + LLVM</span>
+        <span aria-hidden="true">/</span>
+        <span>Linux / macOS</span>
+      </div>
+      <div class="hero-links">
+        <a href="/docs/tutorial">Read the docs</a>
+        <a href="https://github.com/Adjanour/ko-language">Star on GitHub</a>
+      </div>
+    </div>
+  </header>
+
+  <section class="code-showcase">
+    <div class="container">
+      <div class="window">
+        <div class="window-bar">
+          <span class="window-dot"></span>
+          <span class="window-dot"></span>
+          <span class="window-dot"></span>
+          <span class="window-title">hello.ko</span>
+        </div>
+        <pre><code><span class="cmt"># Functions — no parens needed</span>
+<span class="kw">fn</span> <span class="fn">add</span> x y = x + y
+
+<span class="cmt"># Pattern matching</span>
+<span class="kw">type</span> <span class="ty">Maybe</span> a = <span class="ty">Just</span> a | <span class="ty">Nothing</span>
+
+<span class="kw">fn</span> <span class="fn">from-just</span> default mx =
+  <span class="kw">match</span> mx
+    <span class="ty">Just</span> x =&gt; x
+    <span class="ty">Nothing</span> =&gt; default
+
+<span class="cmt"># Pipe operator</span>
+<span class="num">5</span> |> add <span class="num">1</span> |> add <span class="num">2</span>
+
+<span class="cmt"># Error propagation</span>
+<span class="kw">fn</span> <span class="fn">divide</span> a b =
+  <span class="kw">if</span> b == <span class="num">0</span> <span class="kw">then</span> <span class="ty">Err</span> <span class="str">"by zero"</span>
+  <span class="kw">else</span> <span class="ty">Ok</span> (a / b)</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="features">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">Why Kō</span>
+        <h2>Everything you need in a functional language.</h2>
+        <p>Minimal syntax. Powerful type system. Native performance.</p>
+      </div>
+      <div class="feature-grid">
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>
+          </div>
+          <h3>Hindley-Milner Inference</h3>
+          <p>Full type inference with let-polymorphism. Write expressive code without type annotations.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </div>
+          <h3>Algebraic Data Types</h3>
+          <p>Sum types, record types, and exhaustive pattern matching. Model your domain precisely.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          </div>
+          <h3>Native Performance</h3>
+          <p>Compiles to native binaries via LLVM. Reference counting for memory management. No GC pauses.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+          </div>
+          <h3>Zero Dependencies</h3>
+          <p>One binary. One folder. No npm, no brew, no virtualenv. Drop it anywhere and run.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+          </div>
+          <h3>Error Propagation</h3>
+          <p>Built-in Result type with <code class="inline-code">?</code> operator. Unwrap or propagate errors seamlessly.</p>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3>Developer Tools</h3>
+          <p>LSP server, REPL, tree-sitter grammar, VS Code extension. Full toolchain included.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="syntax-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">Language</span>
+        <h2>Clean, expressive syntax.</h2>
+      </div>
+      <div class="syntax-grid">
+        <div class="syntax-card">
+          <div class="window window--small">
+            <div class="window-bar">
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+            </div>
+            <pre><code><span class="cmt"># No parentheses for function calls</span>
+add <span class="num">1</span> <span class="num">2</span>
+
+<span class="cmt"># Partial application</span>
+<span class="kw">let</span> add1 = add <span class="num">1</span>
+add1 <span class="num">2</span>  <span class="cmt"># 3</span>
+
+<span class="cmt"># Pipe operator</span>
+<span class="num">5</span> |> add <span class="num">1</span> |> add <span class="num">2</span></code></pre>
+          </div>
+          <h3>No Parentheses</h3>
+          <p>Function calls use spaces, not parens. Pipe operator for chaining.</p>
+        </div>
+        <div class="syntax-card">
+          <div class="window window--small">
+            <div class="window-bar">
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+            </div>
+            <pre><code><span class="kw">type</span> <span class="ty">List</span> a = <span class="ty">Cons</span> a (<span class="ty">List</span> a) | <span class="ty">Nil</span>
+
+<span class="kw">fn</span> <span class="fn">length</span> lst =
+  <span class="kw">match</span> lst
+    <span class="ty">Cons</span> _ rest =&gt; <span class="num">1</span> + length rest
+    <span class="ty">Nil</span> =&gt; <span class="num">0</span></code></pre>
+          </div>
+          <h3>Pattern Matching</h3>
+          <p>Exhaustive matching on ADTs. Destructure and bind in one step.</p>
+        </div>
+        <div class="syntax-card">
+          <div class="window window--small">
+            <div class="window-bar">
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+              <span class="window-dot"></span>
+            </div>
+            <pre><code><span class="kw">type</span> <span class="ty">Result</span> a b = <span class="ty">Ok</span> a | <span class="ty">Err</span> b
+
+<span class="kw">fn</span> <span class="fn">divide</span> a b =
+  <span class="kw">if</span> b == <span class="num">0</span> <span class="kw">then</span> <span class="ty">Err</span> <span class="str">"by zero"</span>
+  <span class="kw">else</span> <span class="ty">Ok</span> (a / b)
+
+<span class="kw">let</span> x = divide <span class="num">10</span> <span class="num">3</span>?</code></pre>
+          </div>
+          <h3>Error Propagation</h3>
+          <p>Built-in Result type. The <code>?</code> operator unwraps or propagates.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="install-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">Get started</span>
+        <h2>Install Kō</h2>
+        <p>Requires Zig 0.17 and LLVM 22.</p>
+      </div>
+      <div class="install-grid">
+        <div class="install-card">
+          <h3>Linux</h3>
+          <pre><code><span class="cmt"># Ubuntu/Debian</span>
+sudo apt install llvm-22-dev zlib1g-dev
+
+<span class="cmt"># Arch</span>
+sudo pacman -S llvm zlib
+
+<span class="cmt"># Build</span>
+git clone https://github.com/Adjanour/ko-language.git
+<span class="kw">cd</span> ko-language/ko-zig
+zig build</code></pre>
+        </div>
+        <div class="install-card">
+          <h3>macOS</h3>
+          <pre><code>brew install llvm@22
+<span class="kw">export</span> PATH=<span class="str">"/opt/homebrew/opt/llvm@22/bin:$PATH"</span>
+
+git clone https://github.com/Adjanour/ko-language.git
+<span class="kw">cd</span> ko-language/ko-zig
+zig build</code></pre>
+        </div>
+      </div>
+      <div class="quick-start">
+        <h3>Quick start</h3>
+        <div class="window">
+          <div class="window-bar">
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+            <span class="window-dot"></span>
+            <span class="window-title">terminal</span>
+          </div>
+          <pre><code>./build.sh
+<span class="kw">echo</span> <span class="str">'fn main = println "Hello, Kō!"'</span> > hello.ko
+./ko-dist/ko hello.ko</code></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="docs-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="section-label">Documentation</span>
+        <h2>Learn Kō</h2>
+      </div>
+      <div class="docs-grid">
+        <a href="/docs/tutorial" class="doc-card">
+          <h3>Tutorial</h3>
+          <p>Learn Kō from scratch. Variables, functions, types, and more.</p>
+        </a>
+        <a href="/docs/reference" class="doc-card">
+          <h3>Language Reference</h3>
+          <p>Complete syntax and semantics reference.</p>
+        </a>
+        <a href="/docs/handbook" class="doc-card">
+          <h3>Compiler Handbook</h3>
+          <p>Add features to the compiler. Internals and architecture.</p>
+        </a>
+        <a href="/docs/codegen" class="doc-card">
+          <h3>Codegen Guide</h3>
+          <p>LLVM IR generation, JIT, AOT compilation.</p>
+        </a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  /* Hero */
+  .hero {
+    padding: 5rem 0 4rem;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+  }
+
+  @media (max-width: 640px) {
+    .hero {
+      padding: 3rem 0 2.5rem;
+    }
+  }
+
+  .hero-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .hero h1 {
+    margin-top: 1.5rem;
+    font-size: clamp(2rem, 5vw, 3.5rem);
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    line-height: 1.1;
+    color: var(--text);
+  }
+
+  .hero-subtitle {
+    margin-top: 1.25rem;
+    max-width: 52ch;
+    margin-left: auto;
+    margin-right: auto;
+    font-size: clamp(0.95rem, 1.4vw, 1.1rem);
+    line-height: 1.6;
+    color: var(--text-muted);
+  }
+
+  .install-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 2rem;
+    padding: 0.75rem 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-width: 540px;
+    margin-left: auto;
+    margin-right: auto;
+    overflow: hidden;
+  }
+
+  .install-prompt {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    color: var(--accent);
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .install-bar code {
+    flex: 1;
+    min-width: 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text);
+    background: none;
+    padding: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: none;
+  }
+
+  .install-bar code::-webkit-scrollbar {
+    display: none;
+  }
+
+  .copy-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .copy-btn:hover {
+    background: var(--border);
+    color: var(--text);
+  }
+
+  .hero-meta {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+  }
+
+  .hero-links {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    margin-top: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .hero-links a {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    text-decoration: underline;
+    text-decoration-color: var(--border);
+    text-underline-offset: 4px;
+    transition: all 0.15s;
+  }
+
+  .hero-links a:hover {
+    color: var(--text);
+    text-decoration-color: var(--text-muted);
+  }
+
+  /* Window chrome */
+  .window {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  .window-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .window-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--border);
+    flex-shrink: 0;
+  }
+
+  .window-title {
+    margin-left: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+  }
+
+  .window pre {
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    padding: 1.25rem;
+    overflow-x: auto;
+    max-width: 100%;
+    background: transparent;
+  }
+
+  .window code {
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+
+  html.light .window {
+    background: #f6f8fa !important;
+    border-color: #e4e4e7;
+  }
+
+  html.light .window pre {
+    background: transparent !important;
+  }
+
+  html.light .window-bar {
+    border-color: #e4e4e7;
+  }
+
+  html.light .window-dot {
+    background: #d4d4d8;
+  }
+
+  /* Code showcase */
+  .code-showcase {
+    padding: 4rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .code-showcase .window {
+    max-width: 600px;
+    margin: 0 auto;
+  }
+
+  /* Syntax highlighting - dark */
+  .kw { color: #c084fc; }
+  .fn { color: #60a5fa; }
+  .num { color: #34d399; }
+  .str { color: #fb923c; }
+  .ty { color: #f472b6; }
+  .cmt { color: #52525b; }
+
+  /* Syntax highlighting - light */
+  html.light .kw { color: #7c3aed; }
+  html.light .fn { color: #2563eb; }
+  html.light .num { color: #059669; }
+  html.light .str { color: #ea580c; }
+  html.light .ty { color: #db2777; }
+  html.light .cmt { color: #a1a1aa; }
+
+  /* Features */
+  .features {
+    padding: 5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  @media (max-width: 640px) {
+    .features {
+      padding: 3rem 0;
+    }
+  }
+
+  .section-header {
+    margin-bottom: 3rem;
+  }
+
+  @media (max-width: 640px) {
+    .section-header {
+      margin-bottom: 2rem;
+    }
+  }
+
+  .section-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .section-header h2 {
+    margin-top: 0.75rem;
+    font-size: clamp(1.5rem, 2.8vw, 2rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .section-header p {
+    margin-top: 0.5rem;
+    font-size: 0.95rem;
+    color: var(--text-muted);
+  }
+
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+
+  .feature {
+    padding: 1.5rem;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .feature:nth-child(3n) {
+    border-right: none;
+  }
+
+  .feature:nth-last-child(-n+3) {
+    border-bottom: none;
+  }
+
+  .feature-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    background: rgba(167, 139, 250, 0.1);
+    border-radius: 10px;
+    color: var(--accent);
+    margin-bottom: 1rem;
+  }
+
+  .feature h3 {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+  }
+
+  .feature p {
+    font-size: 0.85rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .inline-code {
+    background: rgba(124, 58, 237, 0.1);
+    color: var(--accent);
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.85em;
+  }
+
+  @media (max-width: 768px) {
+    .feature-grid {
+      grid-template-columns: 1fr;
+    }
+
+    .feature {
+      border-right: none;
+    }
+
+    .feature:last-child {
+      border-bottom: none;
+    }
+  }
+
+  /* Syntax section */
+  .syntax-section {
+    padding: 5rem 0;
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+
+  @media (max-width: 640px) {
+    .syntax-section {
+      padding: 3rem 0;
+    }
+  }
+
+  .syntax-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+  }
+
+  .syntax-card h3 {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-top: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .syntax-card p {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+  }
+
+  .syntax-card code {
+    font-size: 0.8rem;
+  }
+
+  @media (max-width: 768px) {
+    .syntax-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Install section */
+  .install-section {
+    padding: 5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  @media (max-width: 640px) {
+    .install-section {
+      padding: 3rem 0;
+    }
+  }
+
+  .install-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+  }
+
+  .install-card {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .install-card h3 {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 0.75rem;
+  }
+
+  .install-card pre {
+    font-size: 0.85rem;
+    overflow-x: auto;
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .install-card code {
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+  }
+
+  .quick-start h3 {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 0.75rem;
+  }
+
+  .quick-start .window {
+    max-width: 500px;
+    overflow: hidden;
+  }
+
+  .quick-start .window pre {
+    overflow-x: auto;
+    max-width: 100%;
+  }
+
+  @media (max-width: 768px) {
+    .install-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  /* Docs section */
+  .docs-section {
+    padding: 5rem 0;
+  }
+
+  @media (max-width: 640px) {
+    .docs-section {
+      padding: 3rem 0;
+    }
+  }
+
+  .docs-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1rem;
+  }
+
+  .doc-card {
+    display: block;
+    padding: 1.5rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    text-decoration: none;
+    transition: border-color 0.15s;
+  }
+
+  .doc-card:hover {
+    border-color: var(--accent);
+  }
+
+  .doc-card h3 {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text);
+    margin-bottom: 0.5rem;
+  }
+
+  .doc-card p {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  @media (max-width: 768px) {
+    .docs-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>

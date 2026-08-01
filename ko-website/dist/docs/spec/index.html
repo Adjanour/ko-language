@@ -1,0 +1,1411 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="description" content="A minimal, functional-first programming language that compiles to native binaries via LLVM."><title>Kō Language Specification v0.3.0 | Kō</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><script>
+      (function() {
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.classList.add(theme);
+      })();
+    </script><style>:root{--bg: #09090b;--bg-card: #111113;--bg-code: #0c0c0e;--text: #fafafa;--text-muted: #a1a1aa;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #1f1f23;--radius: 8px}html.light{--bg: #fafafa;--bg-card: #f4f4f5;--bg-code: #f0f0f2;--text: #18181b;--text-muted: #52525b;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #e4e4e7}*{margin:0;padding:0;box-sizing:border-box}html{overflow-x:hidden}body{font-family:Inter,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-x:hidden;width:100%}main{flex:1;overflow-x:hidden}.container{max-width:1040px;margin:0 auto;padding:0 1.5rem;overflow:hidden}.navbar{position:sticky;top:0;z-index:50;border-bottom:1px solid var(--border);background:color-mix(in oklab,var(--bg),transparent 14%);backdrop-filter:blur(12px)}.nav-container{display:flex;align-items:center;justify-content:space-between;height:3.5rem}.logo{font-size:1.25rem;font-weight:700;color:var(--text);text-decoration:none;letter-spacing:-.02em}.nav-links{display:flex;gap:.25rem;align-items:center}.nav-links a{padding:.375rem .625rem;color:var(--text-muted);text-decoration:none;font-size:.875rem;border-radius:6px;transition:color .15s}.nav-links a:hover{color:var(--text)}.theme-toggle{display:flex;align-items:center;justify-content:center;width:2.25rem;height:2.25rem;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;transition:all .15s;margin-left:.5rem}.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}.sun-icon,.moon-icon{display:none}html.dark .sun-icon,html.light .moon-icon{display:block}footer{border-top:1px solid var(--border);padding:2rem 0;text-align:center;color:var(--text-muted);font-size:.8rem}h1,h2,h3,h4{line-height:1.2;font-weight:600}p{color:var(--text-muted)}a{color:var(--accent)}code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}pre{background:var(--bg-code);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}pre code{background:none;padding:0;font-size:.9rem;color:var(--text);white-space:pre}.astro-code{background:var(--bg-code)!important;border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}html.light .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}.astro-code *,.astro-code span,.astro-code .line{background-color:transparent!important}html.dark .astro-code span{color:#fff!important}html.dark .astro-code span[style*="color:#D73A49"]{color:#f97583!important}html.dark .astro-code span[style*="color:#005CC5"]{color:#79b8ff!important}html.dark .astro-code span[style*="color:#032F62"]{color:#9ecbff!important}html.dark .astro-code span[style*="color:#6F42C1"]{color:#b392f0!important}html.dark .astro-code span[style*="color:#6A737D"]{color:#8b949e!important}html.dark .astro-code span[style*="color:#24292E"]{color:#fff!important}table{width:100%;border-collapse:collapse;margin:1.5rem 0;display:block;overflow-x:auto}th,td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left;white-space:nowrap}th{background:var(--bg-card);font-weight:600;color:var(--text)}hr{border:none;border-top:1px solid var(--border);margin:3rem 0}blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}
+.docs-layout[data-astro-cid-mw7aashj]{display:grid;grid-template-columns:200px 1fr;gap:3rem;padding-top:3rem;padding-bottom:4rem;min-height:calc(100vh - 200px)}.docs-sidebar[data-astro-cid-mw7aashj]{position:sticky;top:5rem;height:fit-content}.nav-section[data-astro-cid-mw7aashj]{margin-bottom:1.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.7rem;font-weight:500;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-bottom:.5rem;padding-left:.75rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{display:block;padding:.35rem .75rem;color:var(--text-muted);text-decoration:none;font-size:.85rem;border-radius:6px;transition:all .15s}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]:hover{color:var(--text);background:var(--bg-card)}.docs-content[data-astro-cid-mw7aashj]{max-width:720px;min-width:0}.docs-content[data-astro-cid-mw7aashj] h1{font-size:2rem;font-weight:600;letter-spacing:-.02em;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}.docs-content[data-astro-cid-mw7aashj] h2{font-size:1.5rem;font-weight:600;letter-spacing:-.01em;margin-top:3rem;margin-bottom:1rem}.docs-content[data-astro-cid-mw7aashj] h3{font-size:1.2rem;font-weight:500;margin-top:2rem;margin-bottom:.75rem}.docs-content[data-astro-cid-mw7aashj] p{margin-bottom:1rem;line-height:1.7}.docs-content[data-astro-cid-mw7aashj] code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}.docs-content[data-astro-cid-mw7aashj] pre{background:var(--bg-code);border:1px solid var(--border);border-radius:8px;padding:1.25rem;overflow-x:auto;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] pre code{background:none;padding:0;font-size:.9rem;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code{background:var(--bg-code)!important;border-color:var(--border)}html.light .docs-content[data-astro-cid-mw7aashj] .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}html.light .docs-content[data-astro-cid-mw7aashj] code{background:#f0f0f2;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code *,.docs-content[data-astro-cid-mw7aashj] .astro-code span,.docs-content[data-astro-cid-mw7aashj] .astro-code .line{background-color:transparent!important}.docs-content[data-astro-cid-mw7aashj] ul,.docs-content[data-astro-cid-mw7aashj] ol{margin:1rem 0;padding-left:1.5rem;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] li{margin-bottom:.5rem;line-height:1.6}.docs-content[data-astro-cid-mw7aashj] blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] table{width:100%;border-collapse:collapse;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] th,.docs-content[data-astro-cid-mw7aashj] td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left}.docs-content[data-astro-cid-mw7aashj] th{background:var(--bg-card);font-weight:600;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] hr{border:none;border-top:1px solid var(--border);margin:2rem 0}@media(max-width:768px){.docs-layout[data-astro-cid-mw7aashj]{grid-template-columns:1fr}.docs-sidebar[data-astro-cid-mw7aashj]{position:static;border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1.5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}.docs-sidebar[data-astro-cid-mw7aashj]::-webkit-scrollbar{display:none}.docs-sidebar[data-astro-cid-mw7aashj] nav[data-astro-cid-mw7aashj]{display:flex;gap:.25rem;min-width:max-content}.nav-section[data-astro-cid-mw7aashj]{flex-shrink:0;margin-bottom:0;margin-right:.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.6rem;padding:.25rem .5rem;margin-bottom:.25rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{font-size:.75rem;padding:.25rem .5rem;white-space:nowrap}}
+</style></head> <body> <nav class="navbar"> <div class="container nav-container"> <a href="/" class="logo">kō</a> <div class="nav-links"> <a href="/docs/tutorial">Docs</a> <a href="/docs/reference">Reference</a> <a href="/docs/handbook">Handbook</a> <a href="https://github.com/Adjanour/ko-language">GitHub</a> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"> <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg> <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg> </button> </div> </div> </nav> <main>  <div class="docs-layout container" data-astro-cid-mw7aashj> <aside class="docs-sidebar" data-astro-cid-mw7aashj> <nav data-astro-cid-mw7aashj> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Getting Started</h4> <a href="/docs/tutorial" data-astro-cid-mw7aashj>Tutorial</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Language</h4> <a href="/docs/reference" data-astro-cid-mw7aashj>Reference</a> <a href="/docs/grammar" data-astro-cid-mw7aashj>Grammar</a> <a href="/docs/spec" data-astro-cid-mw7aashj>Spec</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Internals</h4> <a href="/docs/handbook" data-astro-cid-mw7aashj>Handbook</a> <a href="/docs/codegen" data-astro-cid-mw7aashj>Codegen</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Project</h4> <a href="/docs/roadmap" data-astro-cid-mw7aashj>Roadmap</a> <a href="/docs/philosophy" data-astro-cid-mw7aashj>Philosophy</a> <a href="/docs/contributing" data-astro-cid-mw7aashj>Contributing</a> <a href="/docs/changelog" data-astro-cid-mw7aashj>Changelog</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Blog</h4> <a href="/docs/build-a-grade-book" data-astro-cid-mw7aashj>Install Kō &amp; Build Your First Program</a> </div> </nav> </aside> <article class="docs-content" data-astro-cid-mw7aashj>  <h1 id="kō-language-specification-v030">Kō Language Specification v0.3.0</h1>
+<blockquote>
+<p><strong>Kō</strong> (光): “light” in Japanese. A minimal functional language that compiles to C.</p>
+</blockquote>
+<hr>
+<h2 id="1-manifesto">1. Manifesto</h2>
+<p><strong>Kō is a practical functional language for systems programmers.</strong></p>
+<p>Most functional languages (Haskell, OCaml, Erlang) target managed runtimes. Most systems languages (C, C++, Rust) use imperative syntax. Kō sits in the gap: functional expressiveness, systems-level output.</p>
+<p><strong>What Kō is:</strong></p>
+<ul>
+<li>A small, learnable language (the spec fits on a few pages)</li>
+<li>Functional by default: immutable data, pure functions, algebraic types</li>
+<li>Compiles to C99: runs everywhere a C compiler runs</li>
+<li>Practical: no monads, no type classes, no higher-kinded types in v0.1.0</li>
+</ul>
+<p><strong>What Kō is NOT:</strong></p>
+<ul>
+<li>Not a research language (no dependent types, no linear types)</li>
+<li>Not an systems language (no manual memory, no unsafe blocks)</li>
+<li>Not trying to replace Haskell or Rust</li>
+</ul>
+<p><strong>Design philosophy:</strong> “Make the common thing easy, the hard thing possible, the wrong thing hard.”</p>
+<hr>
+<h2 id="2-the-curse-of-languages--design-baggage">2. The Curse of Languages &#x26; Design Baggage</h2>
+<p>Every new language carries syntax DNA from its ancestors. Fights this and you get alien syntax that scares users. Kō deliberately accommodates these familiar patterns:</p>
+<h3 id="from-cgo-imperative-programmers-know-these">From C/Go (imperative programmers know these):</h3>
+<ul>
+<li><code>fn</code> for functions (not <code>fun</code> or <code>def</code>)</li>
+<li><code>if</code>/<code>else</code> with expression syntax</li>
+<li><code>import</code> for modules</li>
+<li>Operator syntax: <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>%</code>, <code>==</code>, <code>!=</code>, <code>&#x3C;</code>, <code>></code>, <code>&#x3C;=</code>, <code>>=</code></li>
+</ul>
+<h3 id="from-haskellml-functional-programmers-know-these">From Haskell/ML (functional programmers know these):</h3>
+<ul>
+<li><code>let</code> for bindings (not <code>var</code>/<code>const</code>)</li>
+<li><code>-></code> for function types and arrows</li>
+<li><code>match</code> for pattern matching (not <code>case</code>)</li>
+<li><code>type</code> for defining algebraic data types</li>
+<li><code>True</code>/<code>False</code> as capitalized constructors</li>
+</ul>
+<h3 id="from-python-indentation-based-blocks">From Python (indentation-based blocks):</h3>
+<ul>
+<li>Indentation determines block structure (no <code>{}</code> or <code>begin</code>/<code>end</code>)</li>
+<li>Significant whitespace: 2-space indent</li>
+</ul>
+<h3 id="from-zig-modern-systems-language">From Zig (modern systems language):</h3>
+<ul>
+<li><code>comptime</code> for compile-time evaluation</li>
+<li>Explicit over implicit (no hidden allocations)</li>
+</ul>
+<h3 id="what-kō-deliberately-breaks-innovations">What Kō deliberately breaks (innovations):</h3>
+<ol>
+<li><strong>No parentheses for function calls</strong>: <code>add 1 2</code> not <code>add(1, 2)</code>: cleaner, more uniform</li>
+<li><strong>No semicolons</strong>: newlines separate expressions</li>
+<li><strong>No curly braces</strong>: indentation defines blocks</li>
+<li><strong>No null/nil</strong>: use <code>Maybe</code> type instead</li>
+<li><strong>No exceptions</strong>: use <code>Result</code> type instead</li>
+<li><strong>No classes/objects</strong>: use ADTs + functions instead</li>
+<li><strong>All expressions return values</strong>: <code>if</code>/<code>match</code>/blocks are expressions, not statements</li>
+</ol>
+<hr>
+<h2 id="3-language-features">3. Language Features</h2>
+<h3 id="31-core-v010">3.1 Core (v0.1.0)</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Feature</th><th>Example</th><th>Status</th></tr></thead><tbody><tr><td>Functions</td><td><code>fn add a b = a + b</code></td><td>Done</td></tr><tr><td>Let bindings</td><td><code>let x = 5</code></td><td>Done</td></tr><tr><td>Integers</td><td><code>42</code>, <code>0xFF</code>, <code>0b1010</code>, <code>1_000</code></td><td>Done</td></tr><tr><td>Floats</td><td><code>3.14</code></td><td>Done</td></tr><tr><td>Strings</td><td><code>"hello"</code></td><td>Done</td></tr><tr><td>Booleans</td><td><code>true</code>, <code>false</code></td><td>Done</td></tr><tr><td>Char</td><td><code>'a'</code></td><td>Done</td></tr><tr><td>If/then/else</td><td><code>if x > 0 then x else -x</code></td><td>Done</td></tr><tr><td>ADTs</td><td><code>type Maybe = Just * | Nothing</code></td><td>Done</td></tr><tr><td>Pattern matching</td><td><code>match x Just v -> v Nothing -> 0</code></td><td>Done</td></tr><tr><td>Higher-order functions</td><td><code>map \x -> x * 2 list</code></td><td>Done</td></tr><tr><td>Closures</td><td><code>\x -> x + y</code> (captures y)</td><td>Done</td></tr><tr><td>Lambda lifting</td><td>Automatic closure conversion</td><td>Done</td></tr><tr><td>String interpolation</td><td><code>"hello ${name}!"</code></td><td>Done</td></tr><tr><td>Ref cells (mutation)</td><td><code>let x = ref 0; x := !x + 1</code></td><td>Done</td></tr><tr><td>Comptime</td><td><code>comptime 3 + 4</code></td><td>Done</td></tr><tr><td>Modules</td><td><code>import math</code></td><td>Done (textual inclusion)</td></tr><tr><td>Comments</td><td><code># line</code>, <code>#| block |#</code></td><td>Done</td></tr></tbody></table>
+<h3 id="32-type-system-v010">3.2 Type System (v0.1.0)</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Feature</th><th>Example</th><th>Status</th></tr></thead><tbody><tr><td>Type inference</td><td>Hindley-Milner</td><td>Done</td></tr><tr><td>Type annotations</td><td><code>fn add : Int -> Int -> Int</code></td><td>Done</td></tr><tr><td>ADT constructors</td><td><code>Just 42</code>, <code>Nothing</code></td><td>Done</td></tr><tr><td>Wildcard patterns</td><td><code>_</code></td><td>Done</td></tr><tr><td>Exhaustiveness check</td><td>Compiler warns on missing cases</td><td>Done</td></tr><tr><td>Let-polymorphism</td><td><code>fn id x = x</code> works for any type</td><td>Done</td></tr><tr><td>Multi-field constructors</td><td><code>type Tree = Node * * * | Leaf</code></td><td>Done</td></tr><tr><td>Boolean operators</td><td><code>&#x26;&#x26;</code>, <code>||</code></td><td>Done</td></tr><tr><td>Tuple types</td><td><code>(Int, String)</code>, <code>(1, "hello")</code></td><td>Done</td></tr><tr><td>Tuple destructuring</td><td><code>let (x, y) = pair</code></td><td>Done</td></tr><tr><td>Tuple field access</td><td><code>tup.0</code>, <code>tup.1</code></td><td>Done</td></tr><tr><td>Tuple match patterns</td><td><code>match t (0, 0) -> "origin"</code></td><td>Done</td></tr></tbody></table>
+<h3 id="33-future">3.3 Future</h3>
+<ul>
+<li>Generics: <code>type List a = Cons * * | Nil</code></li>
+<li>Record types: <code>{ name: String, age: Int }</code></li>
+<li>Type classes: <code>class Eq a where (==) : a -> a -> Bool</code></li>
+<li>Effect system: <code>fn read_file : !IO (Result Error String)</code></li>
+<li>Proper modules (separate compilation, namespaces)</li>
+<li>Self-hosting</li>
+</ul>
+<hr>
+<h2 id="4-syntax-grammar-ebnf">4. Syntax Grammar (EBNF)</h2>
+<p>The grammar is <strong>context-free</strong> and <strong>unambiguous</strong>. It can be parsed with a recursive-descent parser (no conflicts).</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="text"><code><span class="line"><span>(* === Top Level === *)</span></span>
+<span class="line"><span>program         = package_decl? top_stmt* EOF</span></span>
+<span class="line"><span>package_decl    = 'package' IDENT ('.' IDENT)*</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>top_stmt        = fn_def</span></span>
+<span class="line"><span>                | type_def</span></span>
+<span class="line"><span>                | import_stmt</span></span>
+<span class="line"><span>                | let_def</span></span>
+<span class="line"><span>                | module_def</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>fn_def          = 'pub'? 'fn' IDENT+ '=' expr</span></span>
+<span class="line"><span>                | 'pub'? 'fn' IDENT+ ':' type_expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>type_def        = 'pub'? 'type' IDENT '=' variant ('|' variant)*</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>let_def         = 'pub'? 'let' IDENT '=' expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>module_def      = 'pub'? 'module' IDENT '{' top_stmt* '}'</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>variant         = IDENT ('*'*)?</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>import_stmt     = 'import' IDENT ('.' IDENT)*</span></span>
+<span class="line"><span>                | 'import' IDENT ('.' IDENT)* '.' '{' IDENT (',' IDENT)* '}'</span></span>
+<span class="line"><span>                | 'import' IDENT ('.' IDENT)* 'as' IDENT</span></span>
+<span class="line"><span>                | 'import' STRING</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Types === *)</span></span>
+<span class="line"><span>type_expr       = type_atom ('->' type_expr)?</span></span>
+<span class="line"><span>type_atom       = IDENT</span></span>
+<span class="line"><span>                | '(' type_expr ')'</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Expressions === *)</span></span>
+<span class="line"><span>expr            = let_expr</span></span>
+<span class="line"><span>                | if_expr</span></span>
+<span class="line"><span>                | match_expr</span></span>
+<span class="line"><span>                | lambda_expr</span></span>
+<span class="line"><span>                | ref_expr</span></span>
+<span class="line"><span>                | comptime_expr</span></span>
+<span class="line"><span>                | or_expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>let_expr        = 'let' IDENT ['=' expr] '=' expr</span></span>
+<span class="line"><span>                | 'let' IDENT ':' type_expr '=' expr</span></span>
+<span class="line"><span>                | 'let' '(' pattern (',' pattern)+ ')' '=' expr    (* tuple destructuring *)</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>if_expr         = 'if' expr 'then' expr ('else' expr)?</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>match_expr      = 'match' expr match_arm+</span></span>
+<span class="line"><span>match_arm       = pattern '->' expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>lambda_expr     = '\' IDENT+ '->' expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>ref_expr        = 'ref' expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>comptime_expr   = 'comptime' expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Operators (precedence low to high) === *)</span></span>
+<span class="line"><span>or_expr         = and_expr ('||' and_expr)*</span></span>
+<span class="line"><span>and_expr        = comparison ('&#x26;&#x26;' comparison)*</span></span>
+<span class="line"><span>comparison      = addition (('==' | '!=' | '&#x3C;' | '>' | '&#x3C;=' | '>=') addition)*</span></span>
+<span class="line"><span>addition        = multiplication (('+' | '-') multiplication)*</span></span>
+<span class="line"><span>multiplication  = unary (('*' | '/' | '%') unary)*</span></span>
+<span class="line"><span>unary           = '-' unary</span></span>
+<span class="line"><span>                | '!' unary</span></span>
+<span class="line"><span>                | 'comptime' unary</span></span>
+<span class="line"><span>                | application</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Function Application === *)</span></span>
+<span class="line"><span>application     = primary primary*</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Primary Expressions === *)</span></span>
+<span class="line"><span>primary         = INT | FLOAT | STRING | CHAR | TRUE | FALSE</span></span>
+<span class="line"><span>                | IDENT | CONSTRUCTOR</span></span>
+<span class="line"><span>                | '(' expr ')'</span></span>
+<span class="line"><span>                | '(' expr (',' expr)+ ')'    (* tuple literal *)</span></span>
+<span class="line"><span>                | lambda_expr</span></span>
+<span class="line"><span>                | '[' expr (',' expr)* ']'</span></span>
+<span class="line"><span>                | ref_expr</span></span>
+<span class="line"><span>                | '!' primary</span></span>
+<span class="line"><span>                | comptime_expr</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Tuple field access === *)</span></span>
+<span class="line"><span>application     = primary ('.' INT)*            (* tuple field access: tup.0, tup.1, etc. *)</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Patterns === *)</span></span>
+<span class="line"><span>pattern         = CONSTRUCTOR pattern_arg*</span></span>
+<span class="line"><span>                | '_'</span></span>
+<span class="line"><span>                | LITERAL</span></span>
+<span class="line"><span>                | IDENT</span></span>
+<span class="line"><span>                | '(' pattern (',' pattern)+ ')'    (* tuple pattern *)</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>pattern_arg     = '_'</span></span>
+<span class="line"><span>                | LITERAL</span></span>
+<span class="line"><span>                | IDENT</span></span>
+<span class="line"><span>                | CONSTRUCTOR pattern_arg*</span></span>
+<span class="line"><span>                | '(' pattern (',' pattern)+ ')'    (* tuple pattern *)</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Tokens === *)</span></span>
+<span class="line"><span>IDENT           = [a-z_][a-zA-Z0-9_-]*</span></span>
+<span class="line"><span>CONSTRUCTOR     = [A-Z][a-zA-Z0-9_]*</span></span>
+<span class="line"><span>INT             = [0-9][0-9_]*</span></span>
+<span class="line"><span>                | '0x'[0-9a-fA-F][0-9a-fA-F_]*</span></span>
+<span class="line"><span>                | '0b'[01][01_]*</span></span>
+<span class="line"><span>FLOAT           = [0-9][0-9_]*'.'[0-9][0-9_]*</span></span>
+<span class="line"><span>STRING          = '"' chars '"'</span></span>
+<span class="line"><span>CHAR            = '\'' chars '\''</span></span>
+<span class="line"><span>TRUE            = 'true'</span></span>
+<span class="line"><span>FALSE           = 'false'</span></span>
+<span class="line"><span>LITERAL         = INT | FLOAT | STRING | CHAR | TRUE | FALSE</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>(* === Comments === *)</span></span>
+<span class="line"><span>line_comment    = '#' [^\n]*</span></span>
+<span class="line"><span>block_comment   = '#|' block_chars '|#'</span></span></code></pre>
+<h3 id="41-key-grammar-decisions">4.1 Key Grammar Decisions</h3>
+<p><strong>Function application is implicit (no parentheses):</strong></p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>add 1 2          (* Curried: ((add 1) 2) *)</span></span>
+<span class="line"><span>map \x -> x*2 xs</span></span></code></pre>
+<p><strong>Indentation rules:</strong></p>
+<ul>
+<li>Function bodies are indented by 2+ spaces from the <code>fn</code> line</li>
+<li><code>match</code> arms are indented by 2+ spaces from the <code>match</code> keyword</li>
+<li>No other indentation rules (no Python-style block detection)</li>
+</ul>
+<p><strong>Operator precedence (high to low):</strong></p>
+<ol>
+<li><code>*</code>, <code>/</code>, <code>%</code></li>
+<li><code>+</code>, <code>-</code></li>
+<li><code>==</code>, <code>!=</code>, <code>&#x3C;</code>, <code>></code>, <code>&#x3C;=</code>, <code>>=</code></li>
+<li><code>&#x26;&#x26;</code></li>
+<li><code>||</code></li>
+<li>Function application (highest)</li>
+</ol>
+<p><strong>Pattern syntax:</strong></p>
+<ul>
+<li>Uppercase identifiers are constructors: <code>Just</code>, <code>Nothing</code>, <code>Cons</code></li>
+<li>Lowercase identifiers are variable bindings: <code>x</code>, <code>name</code>, <code>rest</code></li>
+<li><code>_</code> is wildcard (matches anything, binds nothing)</li>
+<li>Literal patterns: <code>0</code>, <code>"hello"</code>, <code>true</code></li>
+<li>Constructor patterns can have arguments: <code>Cons head tail</code></li>
+</ul>
+<hr>
+<h2 id="5-type-system">5. Type System</h2>
+<h3 id="51-design-goals">5.1 Design Goals</h3>
+<ol>
+<li><strong>Inferred</strong>: Users rarely need type annotations</li>
+<li><strong>Sound</strong>: If it type-checks, no runtime type errors</li>
+<li><strong>Simple</strong>: Hindley-Milner, no extensions in v0.1.0</li>
+<li><strong>Practical</strong>: ADTs cover most use cases</li>
+</ol>
+<h3 id="52-type-language">5.2 Type Language</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>type ::= Int | Float | Bool | Char | String</span></span>
+<span class="line"><span>       | a                           (* type variable *)</span></span>
+<span class="line"><span>       | type -> type                (* function type *)</span></span>
+<span class="line"><span>       | TypeName                    (* ADT type *)</span></span>
+<span class="line"><span>       | TypeName type_atom*         (* parameterized ADT, future *)</span></span>
+<span class="line"><span>       | '(' type (',' type)+ ')'    (* tuple type *)</span></span></code></pre>
+<h3 id="53-built-in-types">5.3 Built-in Types</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Type</th><th>C Representation</th><th>Description</th></tr></thead><tbody><tr><td><code>Int</code></td><td><code>int64_t</code></td><td>64-bit signed integer</td></tr><tr><td><code>Float</code></td><td><code>double</code></td><td>64-bit floating point</td></tr><tr><td><code>Bool</code></td><td><code>int</code> (0/1)</td><td>Boolean</td></tr><tr><td><code>Char</code></td><td><code>char</code></td><td>Single character</td></tr><tr><td><code>String</code></td><td><code>char*</code> (heap)</td><td>UTF-8 string</td></tr><tr><td><code>()</code></td><td><code>int</code> (0)</td><td>Unit type (like void)</td></tr><tr><td><code>(T1, T2, ...)</code></td><td><code>Tuple_N</code> struct</td><td>Anonymous tuple (fixed-size, heterogeneous)</td></tr><tr><td><code>(T1, T2, ...)</code></td><td><code>Constructor</code></td><td>Anonymous tuple (fixed-size, heterogeneous)</td></tr></tbody></table>
+<h3 id="54-adts-and-pattern-matching">5.4 ADTs and Pattern Matching</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Maybe</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">  Just</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nothing</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">  Ok</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Error</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> List</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">  Cons</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Either</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">  Left</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Right</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Binding</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  name : </span><span style="color:#005CC5;--shiki-dark:#79B8FF">String</span><span style="color:#24292E;--shiki-dark:#E1E4E8">,</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  value : </span><span style="color:#005CC5;--shiki-dark:#79B8FF">Int</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">}</span></span></code></pre>
+<p><code>type Name = ...</code> defines a sum type.
+<code>type Name = { ... }</code> defines a record.</p>
+<p>Each <code>*</code> marks a data slot in the current sum-type notation. The compiler generates:</p>
+<ul>
+<li>A tag enum (0, 1, 2, …)</li>
+<li>A C struct with a union of variant data</li>
+<li>Constructor functions: <code>Maybe Just(Value v)</code></li>
+<li>Destructor/pattern matching via tag checks</li>
+</ul>
+<p>Record patterns should support <code>..</code> for intentional partial matches.</p>
+<h3 id="55-type-inference-algorithm-w">5.5 Type Inference (Algorithm W)</h3>
+<p>The compiler infers types using unification:</p>
+<ol>
+<li>Assign fresh type variables to all expressions</li>
+<li>Generate constraints from usage:
+<ul>
+<li><code>add 1 2</code>: <code>add : a -> b -> c</code>, <code>1 : Int</code>, <code>2 : Int</code></li>
+<li>Constraint: <code>a = Int</code>, <code>b = Int</code></li>
+</ul>
+</li>
+<li>Unify constraints to find most general type</li>
+<li>Substitute solved types back</li>
+</ol>
+<p><strong>Result:</strong> <code>add : Int -> Int -> Int</code></p>
+<h3 id="56-exhaustiveness-checking">5.6 Exhaustiveness Checking</h3>
+<p>The compiler verifies all match arms cover all constructors:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Maybe</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Just</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nothing</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> safe_head xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x _ </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Just</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x    (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> covers </span><span style="color:#6F42C1;--shiki-dark:#B392F0">Cons</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nothing</span><span style="color:#24292E;--shiki-dark:#E1E4E8">         (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> covers </span><span style="color:#6F42C1;--shiki-dark:#B392F0">Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> compiler warns </span><span style="color:#D73A49;--shiki-dark:#F97583">if</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> a case is missing </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<hr>
+<h2 id="6-semantics">6. Semantics</h2>
+<h3 id="61-evaluation-order">6.1 Evaluation Order</h3>
+<p>Kō uses <strong>strict evaluation</strong> (eager): arguments are evaluated before function application.</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> expensive_computation   (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> evaluated now </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">add x </span><span style="color:#005CC5;--shiki-dark:#79B8FF">1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">                         (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x already computed </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<p><strong>Exception:</strong> <code>comptime</code> expressions are evaluated at compile time.</p>
+<h3 id="62-scoping">6.2 Scoping</h3>
+<ul>
+<li><code>let</code> bindings are scoped to the current block</li>
+<li>Function parameters are scoped to the function body</li>
+<li>Closures capture variables from enclosing scope (lexical scoping)</li>
+</ul>
+<h3 id="63-immutability">6.3 Immutability</h3>
+<ul>
+<li><code>let</code> bindings cannot be reassigned</li>
+<li>ADT values are immutable</li>
+<li>Ref cells provide controlled mutability: <code>let x = ref 0; x := !x + 1</code></li>
+</ul>
+<h3 id="64-reference-counting">6.4 Reference Counting</h3>
+<p>All heap-allocated values (strings, constructors, closures, ref cells) use reference counting:</p>
+<ul>
+<li><code>make_*</code> functions increment refcount to 1</li>
+<li>Assignment to a new variable increments refcount</li>
+<li>When a variable goes out of scope, refcount decrements</li>
+<li>At refcount 0, memory is freed</li>
+<li>Ref cells have special semantics: <code>:=</code> replaces the value but doesn’t free the cell</li>
+</ul>
+<hr>
+<h2 id="7-c-codegen">7. C Codegen</h2>
+<h3 id="71-value-representation">7.1 Value Representation</h3>
+<p>Every Kō value is a tagged union in C:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">typedef</span><span style="color:#D73A49;--shiki-dark:#F97583"> struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> type;</span><span style="color:#6A737D;--shiki-dark:#6A737D">           // VAL_INT, VAL_STRING, VAL_CLOSURE, etc.</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  union</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    int64_t</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> int_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    double</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> float_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> bool_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    char</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> char_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    char*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> string_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> Constructor</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> constructor_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> Closure</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> closure_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> RefCell</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ref_val;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">    int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> unit_val;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  } as;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">} Value;</span></span></code></pre>
+<h3 id="72-constructor-representation">7.2 Constructor Representation</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">typedef</span><span style="color:#D73A49;--shiki-dark:#F97583"> struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> tag;</span><span style="color:#6A737D;--shiki-dark:#6A737D">            // Which variant (0, 1, 2, ...)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> refcount;</span><span style="color:#6A737D;--shiki-dark:#6A737D">       // Reference count</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  Value fields</span><span style="color:#D73A49;--shiki-dark:#F97583">[]</span><span style="color:#24292E;--shiki-dark:#E1E4E8">;</span><span style="color:#6A737D;--shiki-dark:#6A737D">     // Variant data (flexible array member)</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">} Constructor;</span></span></code></pre>
+<h3 id="73-closure-representation">7.3 Closure Representation</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">typedef</span><span style="color:#D73A49;--shiki-dark:#F97583"> struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> refcount;</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> env_size;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  Value</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> env;</span><span style="color:#6A737D;--shiki-dark:#6A737D">         // Captured variables</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  ClosureFn func;</span><span style="color:#6A737D;--shiki-dark:#6A737D">     // Function pointer</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">} Closure;</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">typedef</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Value</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#E36209;--shiki-dark:#FFAB70">ClosureFn</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)(Closure</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> env, Value arg);</span></span></code></pre>
+<h3 id="74-ref-cell-representation">7.4 Ref Cell Representation</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="c"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">typedef</span><span style="color:#D73A49;--shiki-dark:#F97583"> struct</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> {</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  int</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> refcount;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  Value value;</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">} RefCell;</span></span></code></pre>
+<h3 id="75-string-handling">7.5 String Handling</h3>
+<ul>
+<li>Strings are heap-allocated <code>char*</code></li>
+<li><code>==</code> uses <code>strcmp()</code> (not pointer comparison)</li>
+<li>String interpolation desugars to <code>concat</code> calls at parse time</li>
+<li><code>to_string</code> converts any value to string representation</li>
+</ul>
+<h3 id="76-generated-c-structure">7.6 Generated C Structure</h3>
+<p>A Kō program compiles to a single <code>.c</code> file with:</p>
+<ol>
+<li>Forward declarations</li>
+<li><code>#include</code> directives</li>
+<li>Type tag enums</li>
+<li>Constructor structs</li>
+<li>Standard library functions</li>
+<li>Lambda functions (hoisted from closures)</li>
+<li>Top-level functions</li>
+<li><code>main()</code> function</li>
+</ol>
+<hr>
+<h2 id="8-module-system">8. Module System</h2>
+<h3 id="81-import-syntax">8.1 Import Syntax</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> std.math              (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#D73A49;--shiki-dark:#F97583"> import</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> full </span><span style="color:#D73A49;--shiki-dark:#F97583">module</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, prefixed </span><span style="color:#D73A49;--shiki-dark:#F97583">as</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> math </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> std.math.{sin, cos}   (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> selective </span><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, no prefix </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> std.math </span><span style="color:#D73A49;--shiki-dark:#F97583">as</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> m          (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> alias </span><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#24292E;--shiki-dark:#E1E4E8">, prefixed </span><span style="color:#D73A49;--shiki-dark:#F97583">as</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> m </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> "lib/custom.ko"</span><span style="color:#24292E;--shiki-dark:#E1E4E8">        (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> string path </span><span style="color:#D73A49;--shiki-dark:#F97583">import</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<h3 id="82-package-declarations">8.2 Package Declarations</h3>
+<p>Files can declare their package name (must be first statement):</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">package</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> std.math</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PI</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 3.14159</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> sin x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ...</span></span></code></pre>
+<h3 id="83-visibility-pub">8.3 Visibility (<code>pub</code>)</h3>
+<p>By default, definitions are private (not importable). Use <code>pub</code> to make them visible:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> public_fn x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x        (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> importable </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> private_fn x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x           (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> NOT</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> importable </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">pub</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> my_value </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 42</span><span style="color:#24292E;--shiki-dark:#E1E4E8">             (</span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> importable </span><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> binding </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<h3 id="84-module-blocks">8.4 Module Blocks</h3>
+<p>Group related definitions in a module block:</p>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">module</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Math</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  pub</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> PI</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 3.14159</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  pub</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> sin x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x</span></span></code></pre>
+<h3 id="85-module-resolution">8.5 Module Resolution</h3>
+<p>Search order:</p>
+<ol>
+<li>Current directory (relative to source file)</li>
+<li><code>lib/</code> in current directory</li>
+<li>Compiler’s <code>lib/</code> directory (standard library)</li>
+<li>Package root (auto-detected by walking up to find <code>package.ko</code>)</li>
+</ol>
+<h3 id="86-module-semantics">8.6 Module Semantics</h3>
+<p>Modules are resolved by <strong>textual inclusion</strong>: imported definitions are inlined into the importing file.</p>
+<ul>
+<li>Without selective imports: names are prefixed with the module name (<code>math_PI</code>, <code>math_sin</code>)</li>
+<li>With selective imports: names are imported as-is (<code>PI</code>, <code>sin</code>)</li>
+<li>With alias: names are prefixed with the alias (<code>m_PI</code>, <code>m_sin</code>)</li>
+<li>Only <code>pub</code> definitions are importable</li>
+</ul>
+<h3 id="84-future-proper-modules-v020">8.4 Future: Proper Modules (v0.2.0)</h3>
+<ul>
+<li>Each module is a separate compilation unit</li>
+<li>Explicit namespace: <code>math.sqrt</code>, <code>utils.map</code></li>
+<li>No textual inclusion, proper linking</li>
+</ul>
+<hr>
+<h2 id="9-standard-library">9. Standard Library</h2>
+<p>All functions below are built into the compiler and runtime. No imports needed.</p>
+<h3 id="91-io">9.1 I/O</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>print</code></td><td><code>forall a. a -> Unit</code></td><td>Print value to stdout without newline</td></tr><tr><td><code>println</code></td><td><code>forall a. a -> Unit</code></td><td>Print value to stdout with newline</td></tr><tr><td><code>eprint</code></td><td><code>forall a. a -> Unit</code></td><td>Print value to stderr without newline</td></tr><tr><td><code>eprintln</code></td><td><code>forall a. a -> Unit</code></td><td>Print value to stderr with newline</td></tr><tr><td><code>inspect</code></td><td><code>forall a. a -> Unit</code></td><td>Debug print with type and value info</td></tr><tr><td><code>panic</code></td><td><code>String -> Unit</code></td><td>Exit with error message to stderr</td></tr></tbody></table>
+<h3 id="92-string-operations">9.2 String Operations</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>len</code></td><td><code>String -> Int</code></td><td>String length</td></tr><tr><td><code>concat</code></td><td><code>String -> String -> String</code></td><td>Concatenate two strings</td></tr><tr><td><code>char_at</code></td><td><code>String -> Int -> Char</code></td><td>Character at index (0-based)</td></tr><tr><td><code>substring</code></td><td><code>String -> Int -> Int -> String</code></td><td>Extract substring [start, end)</td></tr><tr><td><code>contains</code></td><td><code>String -> String -> Bool</code></td><td>Check if substring exists</td></tr><tr><td><code>starts_with</code></td><td><code>String -> String -> Bool</code></td><td>Check if string starts with prefix</td></tr><tr><td><code>ends_with</code></td><td><code>String -> String -> Bool</code></td><td>Check if string ends with suffix</td></tr><tr><td><code>to_upper</code></td><td><code>String -> String</code></td><td>Convert to uppercase</td></tr><tr><td><code>to_lower</code></td><td><code>String -> String</code></td><td>Convert to lowercase</td></tr><tr><td><code>trim</code></td><td><code>String -> String</code></td><td>Remove leading/trailing whitespace</td></tr><tr><td><code>repeat</code></td><td><code>String -> Int -> String</code></td><td>Repeat string n times</td></tr><tr><td><code>split</code></td><td><code>String -> String -> List</code></td><td>Split string by delimiter into list</td></tr><tr><td><code>join</code></td><td><code>List -> String -> String</code></td><td>Join list elements with separator</td></tr><tr><td><code>replace</code></td><td><code>String -> String -> String -> String</code></td><td>Replace all occurrences of substring</td></tr><tr><td><code>ord</code></td><td><code>Char -> Int</code></td><td>Convert character to Unicode code point</td></tr><tr><td><code>chr</code></td><td><code>Int -> Char</code></td><td>Convert code point to character</td></tr><tr><td><code>parse_int</code></td><td><code>String -> Int</code></td><td>Parse string as integer</td></tr><tr><td><code>parse_float</code></td><td><code>String -> Float</code></td><td>Parse string as float</td></tr></tbody></table>
+<h3 id="93-math">9.3 Math</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>abs</code></td><td><code>Int -> Int</code></td><td>Absolute value</td></tr><tr><td><code>min</code></td><td><code>Int -> Int -> Int</code></td><td>Minimum of two integers</td></tr><tr><td><code>max</code></td><td><code>Int -> Int -> Int</code></td><td>Maximum of two integers</td></tr><tr><td><code>pow</code></td><td><code>Int -> Int -> Int</code></td><td>Raise base to power</td></tr><tr><td><code>mod</code></td><td><code>Int -> Int -> Int</code></td><td>Modulo (remainder of division)</td></tr><tr><td><code>sqrt</code></td><td><code>Float -> Float</code></td><td>Square root</td></tr><tr><td><code>floor</code></td><td><code>Float -> Int</code></td><td>Round down to integer</td></tr><tr><td><code>ceil</code></td><td><code>Float -> Int</code></td><td>Round up to integer</td></tr></tbody></table>
+<h3 id="94-type-conversion--introspection">9.4 Type Conversion &#x26; Introspection</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>to_string</code></td><td><code>forall a. a -> String</code></td><td>Convert any value to string</td></tr><tr><td><code>to_int</code></td><td><code>String -> Int</code></td><td>Parse string as integer</td></tr><tr><td><code>to_float</code></td><td><code>forall a. a -> Float</code></td><td>Convert value to float</td></tr><tr><td><code>type_of</code></td><td><code>forall a. a -> String</code></td><td>Get type name as string</td></tr><tr><td><code>is_int</code></td><td><code>forall a. a -> Bool</code></td><td>Check if value is Int</td></tr><tr><td><code>is_float</code></td><td><code>forall a. a -> Bool</code></td><td>Check if value is Float</td></tr><tr><td><code>is_string</code></td><td><code>forall a. a -> Bool</code></td><td>Check if value is String</td></tr><tr><td><code>is_bool</code></td><td><code>forall a. a -> Bool</code></td><td>Check if value is Bool</td></tr><tr><td><code>is_null</code></td><td><code>forall a. a -> Bool</code></td><td>Check if value is null (Nil constructor)</td></tr></tbody></table>
+<h3 id="95-file--system-io">9.5 File &#x26; System I/O</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>read_file</code></td><td><code>String -> String</code></td><td>Read entire file as string</td></tr><tr><td><code>write_file</code></td><td><code>String -> String -> Unit</code></td><td>Write string to file (creates/overwrites)</td></tr><tr><td><code>append_file</code></td><td><code>String -> String -> Unit</code></td><td>Append string to file</td></tr><tr><td><code>read_line</code></td><td><code>String -> String</code></td><td>Read line from stdin (with prompt)</td></tr><tr><td><code>run</code></td><td><code>String -> String</code></td><td>Run shell command, return stdout</td></tr><tr><td><code>get_env</code></td><td><code>String -> String</code></td><td>Get environment variable value</td></tr><tr><td><code>file_exists</code></td><td><code>String -> Bool</code></td><td>Check if file exists</td></tr><tr><td><code>file_size</code></td><td><code>String -> Int</code></td><td>Get file size in bytes</td></tr><tr><td><code>file_modified</code></td><td><code>String -> Int</code></td><td>Get file modification time (ms since epoch)</td></tr><tr><td><code>sleep</code></td><td><code>Int -> Unit</code></td><td>Sleep for N milliseconds</td></tr><tr><td><code>mkdir</code></td><td><code>String -> Bool</code></td><td>Create directory (returns true on success)</td></tr><tr><td><code>rm</code></td><td><code>String -> Bool</code></td><td>Remove file or empty directory</td></tr><tr><td><code>cp</code></td><td><code>String -> String -> Bool</code></td><td>Copy file to destination</td></tr><tr><td><code>mv</code></td><td><code>String -> String -> Bool</code></td><td>Move/rename file to destination</td></tr><tr><td><code>readdir</code></td><td><code>String -> List</code></td><td>List directory contents as list of strings</td></tr></tbody></table>
+<h3 id="96-cli-arguments--time">9.6 CLI Arguments &#x26; Time</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>args_count</code></td><td><code>Int</code></td><td>Number of command line arguments</td></tr><tr><td><code>args_get</code></td><td><code>Int -> String</code></td><td>Get CLI argument by index</td></tr><tr><td><code>now</code></td><td><code>Int</code></td><td>Milliseconds since program start</td></tr><tr><td><code>exit</code></td><td><code>Int -> Unit</code></td><td>Exit program with code</td></tr></tbody></table>
+<h3 id="97-random">9.7 Random</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>random</code></td><td><code>Int -> Int -> Int -> Int</code></td><td>Pure random (seed, min, max)</td></tr><tr><td><code>seed</code></td><td><code>Int</code></td><td>Get next seed for chaining</td></tr></tbody></table>
+<h3 id="98-path-operations">9.8 Path Operations</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>path_join</code></td><td><code>String -> String -> String</code></td><td>Join path segments with <code>/</code></td></tr><tr><td><code>path_dirname</code></td><td><code>String -> String</code></td><td>Get directory part of path</td></tr><tr><td><code>path_basename</code></td><td><code>String -> String</code></td><td>Get filename part of path</td></tr></tbody></table>
+<h3 id="99-json">9.9 JSON</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>json_parse</code></td><td><code>String -> List</code></td><td>Parse JSON string to Kō value</td></tr><tr><td><code>json_stringify</code></td><td><code>forall a. a -> String</code></td><td>Convert Kō value to JSON string</td></tr></tbody></table>
+<h3 id="910-testing">9.10 Testing</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>assert</code></td><td><code>Bool -> Unit</code></td><td>Assert condition is true</td></tr><tr><td><code>assert_eq</code></td><td><code>forall a. a -> a -> Unit</code></td><td>Assert two values are equal</td></tr><tr><td><code>test</code></td><td><code>forall a. String -> a -> Unit</code></td><td>Run a named test group</td></tr><tr><td><code>run_tests</code></td><td><code>Unit</code></td><td>Print test summary and exit</td></tr></tbody></table>
+<h3 id="911-list-operations">9.11 List Operations</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Function</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>head</code></td><td><code>forall a. List[a] -> a</code></td><td>First element of list (panics on empty)</td></tr><tr><td><code>tail</code></td><td><code>forall a. List[a] -> List[a]</code></td><td>All but first element (panics on empty)</td></tr><tr><td><code>append</code></td><td><code>forall a. List[a] -> a -> List[a]</code></td><td>Append element to end of list</td></tr><tr><td><code>reverse</code></td><td><code>forall a. List[a] -> List[a]</code></td><td>Reverse a list</td></tr><tr><td><code>sum</code></td><td><code>List[Int] -> Int</code></td><td>Sum all integers in list</td></tr><tr><td><code>product</code></td><td><code>List[Int] -> Int</code></td><td>Product of all integers in list</td></tr></tbody></table>
+<h3 id="912-reference-cells">9.12 Reference Cells</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Syntax</th><th>Type</th><th>Description</th></tr></thead><tbody><tr><td><code>ref x</code></td><td><code>forall a. a -> a</code></td><td>Create mutable reference</td></tr><tr><td><code>!x</code></td><td><code>forall a. a -> a</code></td><td>Dereference a reference</td></tr><tr><td><code>x := v</code></td><td><code>forall a. a -> a -> Unit</code></td><td>Mutate a reference</td></tr></tbody></table>
+<h3 id="913-higher-order-functions-in-kō-itself">9.13 Higher-Order Functions (in Kō itself)</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> List</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> map f xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (f x) (map f rest)</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> filter f xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#D73A49;--shiki-dark:#F97583"> if</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> f x </span><span style="color:#D73A49;--shiki-dark:#F97583">then</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x (filter f rest) </span><span style="color:#D73A49;--shiki-dark:#F97583">else</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> filter f rest</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fold f acc xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fold f (f acc x) rest</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> acc</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> zip xs ys </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest_x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">      match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ys</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">        Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> y rest_y </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (x, y) (zip rest_x rest_y)</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">        Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span></code></pre>
+<hr>
+<h2 id="10-implementation">10. Implementation</h2>
+<h3 id="101-implementation-language">10.1 Implementation Language</h3>
+<p><strong>Recommendation: Write v0.1.0 in Python, port to Rust/Zig later.</strong></p>
+<p>Rationale:</p>
+<ul>
+<li>Python is fast to iterate with (current approach works)</li>
+<li>The compiler is small (~2000 lines)</li>
+<li>Runtime performance comes from the generated C, not the compiler</li>
+<li>Port to Rust/Zig for v0.2.0 when the design stabilizes</li>
+</ul>
+<h3 id="102-compiler-pipeline">10.2 Compiler Pipeline</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>Source Code (.ko)</span></span>
+<span class="line"><span>    ↓</span></span>
+<span class="line"><span>Lexer → Tokens</span></span>
+<span class="line"><span>    ↓</span></span>
+<span class="line"><span>Parser → AST</span></span>
+<span class="line"><span>    ↓</span></span>
+<span class="line"><span>Semantic Analysis → Typed AST + exhaustiveness check</span></span>
+<span class="line"><span>    ↓</span></span>
+<span class="line"><span>Codegen → C99 Source (.c)</span></span>
+<span class="line"><span>    ↓</span></span>
+<span class="line"><span>C Compiler (gcc/clang) → Binary</span></span></code></pre>
+<h3 id="103-architecture">10.3 Architecture</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="plaintext"><code><span class="line"><span>ko.py              CLI entry point</span></span>
+<span class="line"><span>lexer.py           Tokenizer</span></span>
+<span class="line"><span>parser.py          Recursive descent parser</span></span>
+<span class="line"><span>typecheck.py       Hindley-Milner type inference</span></span>
+<span class="line"><span>semantic.py        Exhaustiveness checking</span></span>
+<span class="line"><span>codegen.py         C99 code generation</span></span>
+<span class="line"><span>runtime.h          C runtime (value representation, stdlib, RC)</span></span>
+<span class="line"><span>errors.py          Error reporting with source locations</span></span>
+<span class="line"><span>lsp.py             Language Server Protocol server</span></span>
+<span class="line"><span>vscode-ko/         VS Code extension</span></span></code></pre>
+<h3 id="104-implementation-phases">10.4 Implementation Phases</h3>
+<p><strong>Phase 1: Core (done)</strong></p>
+<ul>
+<li>Lexer, Parser, Codegen</li>
+<li>ADTs, Pattern Matching</li>
+<li>Closures, Higher-Order Functions</li>
+<li>Basic standard library</li>
+</ul>
+<p><strong>Phase 2: Type System (done)</strong></p>
+<ul>
+<li>Hindley-Milner type inference</li>
+<li>Type annotations (optional)</li>
+<li>Exhaustiveness checking</li>
+</ul>
+<p><strong>Phase 3: Tooling (done)</strong></p>
+<ul>
+<li>LSP server (hover, definition, diagnostics, completion, symbols)</li>
+<li>VS Code extension</li>
+<li>Module imports with aliasing</li>
+</ul>
+<p><strong>Phase 4: Module System v2 (done)</strong></p>
+<ul>
+<li>Hierarchical imports (<code>import std.math</code>)</li>
+<li>Selective imports (<code>import math.{sin, cos}</code>)</li>
+<li>Alias imports (<code>import math as m</code>)</li>
+<li>Package declarations (<code>package std.math</code>)</li>
+<li>Visibility (<code>pub</code> keyword)</li>
+<li>Module blocks (<code>module Name { ... }</code>)</li>
+<li>Package detection (<code>package.ko</code>)</li>
+</ul>
+<p><strong>Phase 5: Next</strong></p>
+<ul>
+<li>Error handling (Result type)</li>
+<li>Named parameters</li>
+<li>Traits/typeclasses</li>
+<li>Generics</li>
+</ul>
+<p><strong>Phase 6: Future</strong></p>
+<ul>
+<li>Rewrite compiler in Zig</li>
+<li>Self-hosting (Kō compiles itself)</li>
+</ul>
+<hr>
+<h2 id="11-v020-roadmap">11. v0.2.0 Roadmap</h2>
+<h3 id="done">Done</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" checked disabled> Lexer with all token types</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Parser for core syntax</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> ADT definition and construction</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Pattern matching with wildcards</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Exhaustiveness checking</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Function definitions and application</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Closures via lambda lifting</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Higher-order functions</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Let bindings</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> If/then/else expressions</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Basic operators (+, -, *, /, %, ==, !=, &#x3C;, >)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> String interpolation</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Ref cells</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Comptime (basic)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Comments (# and #| |#)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> C codegen with reference counting</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Standard library (50+ builtins)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Type inference (Hindley-Milner)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Type annotations</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> LSP server (hover, go-to-definition, diagnostics, completion, symbols)</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> VS Code extension</li>
+<li class="task-list-item"><input type="checkbox" checked disabled> Module imports with aliasing</li>
+</ul>
+<h3 id="next">Next</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> Better error messages (did you mean…?)</li>
+<li class="task-list-item"><input type="checkbox" disabled> Generics: <code>type List a = Cons * * | Nil</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> Tuple types: <code>(Int, String)</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> Record types: <code>{ name: String, age: Int }</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> Pattern matching in let: <code>let (x, y) = pair</code></li>
+<li class="task-list-item"><input type="checkbox" disabled> Nested function definitions</li>
+</ul>
+<h3 id="future">Future</h3>
+<ul class="contains-task-list">
+<li class="task-list-item"><input type="checkbox" disabled> Proper modules (separate compilation, namespaces)</li>
+<li class="task-list-item"><input type="checkbox" disabled> Effect tracking</li>
+<li class="task-list-item"><input type="checkbox" disabled> Type classes</li>
+<li class="task-list-item"><input type="checkbox" disabled> Self-hosting (Kō compiles itself)</li>
+</ul>
+<hr>
+<h2 id="12-examples">12. Examples</h2>
+<h3 id="hello-world">Hello World</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> print </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"Hello, World!"</span></span></code></pre>
+<h3 id="fibonacci">Fibonacci</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fib n </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  if</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> n </span><span style="color:#D73A49;--shiki-dark:#F97583">&#x3C;=</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span><span style="color:#D73A49;--shiki-dark:#F97583"> then</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> n</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  else</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fib (n </span><span style="color:#D73A49;--shiki-dark:#F97583">-</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fib (n </span><span style="color:#D73A49;--shiki-dark:#F97583">-</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> print (fib </span><span style="color:#005CC5;--shiki-dark:#79B8FF">20</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span></code></pre>
+<h3 id="maybe-type">Maybe Type</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Maybe</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Just</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nothing</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> from_default default mx </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> mx</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Just</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nothing</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> default</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Just</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 42</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> y </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nothing</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  print (from_default </span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x)</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  print (from_default </span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> y)</span></span></code></pre>
+<h3 id="mapfilterfold">Map/Filter/Fold</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">type</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> List</span><span style="color:#D73A49;--shiki-dark:#F97583"> =</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> *</span><span style="color:#D73A49;--shiki-dark:#F97583"> |</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> map f xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (f x) (map f rest)</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> filter f xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#D73A49;--shiki-dark:#F97583"> if</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> f x </span><span style="color:#D73A49;--shiki-dark:#F97583">then</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x (filter f rest) </span><span style="color:#D73A49;--shiki-dark:#F97583">else</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> filter f rest</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fold f acc xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Cons</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fold f (f acc x) rest</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">    Nil</span><span style="color:#D73A49;--shiki-dark:#F97583"> -></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> acc</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Cons</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Cons</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 2</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Cons</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 3</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (</span><span style="color:#6F42C1;--shiki-dark:#B392F0">Cons</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 4</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Nil</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)))</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> doubled </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> map (</span><span style="color:#D73A49;--shiki-dark:#F97583">\</span><span style="color:#24292E;--shiki-dark:#E1E4E8">x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">*</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) xs</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> evens </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> filter (</span><span style="color:#D73A49;--shiki-dark:#F97583">\</span><span style="color:#24292E;--shiki-dark:#E1E4E8">x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">%</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 2</span><span style="color:#D73A49;--shiki-dark:#F97583"> ==</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 0</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) xs</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> sum </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fold (</span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) </span><span style="color:#005CC5;--shiki-dark:#79B8FF">0</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  inspect doubled</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  inspect evens</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  print sum</span></span></code></pre>
+<h3 id="ref-cells-mutable-state">Ref Cells (Mutable State)</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> counter </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#D73A49;--shiki-dark:#F97583"> ref</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 0</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> i </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#D73A49;--shiki-dark:#F97583"> ref</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 0</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  while (</span><span style="color:#D73A49;--shiki-dark:#F97583">!</span><span style="color:#24292E;--shiki-dark:#E1E4E8">i </span><span style="color:#D73A49;--shiki-dark:#F97583">&#x3C;</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 10</span><span style="color:#24292E;--shiki-dark:#E1E4E8">) (</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    counter </span><span style="color:#D73A49;--shiki-dark:#F97583">:=</span><span style="color:#D73A49;--shiki-dark:#F97583"> !</span><span style="color:#24292E;--shiki-dark:#E1E4E8">counter </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#D73A49;--shiki-dark:#F97583"> !</span><span style="color:#24292E;--shiki-dark:#E1E4E8">i</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    i </span><span style="color:#D73A49;--shiki-dark:#F97583">:=</span><span style="color:#D73A49;--shiki-dark:#F97583"> !</span><span style="color:#24292E;--shiki-dark:#E1E4E8">i </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  )</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  print </span><span style="color:#D73A49;--shiki-dark:#F97583">!</span><span style="color:#24292E;--shiki-dark:#E1E4E8">counter</span></span></code></pre>
+<h3 id="string-interpolation">String Interpolation</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> main </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> name </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> "Kō"</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> version </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#032F62;--shiki-dark:#9ECBFF"> "0.1.0"</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  println </span><span style="color:#032F62;--shiki-dark:#9ECBFF">"Welcome to ${name} v${version}!"</span></span></code></pre>
+<hr>
+<p><em>This specification is a living document. It will be updated as Kō evolves.</em></p>  </article> </div>  </main> <footer> <div class="container"> <p>Kō is MIT licensed. Built with Zig and LLVM.</p> </div> </footer> <script>
+      const toggle = document.getElementById('theme-toggle');
+      toggle.addEventListener('click', () => {
+        const html = document.documentElement;
+        const isDark = html.classList.contains('dark');
+        html.classList.remove('dark', 'light');
+        html.classList.add(isDark ? 'light' : 'dark');
+        localStorage.setItem('theme', isDark ? 'light' : 'dark');
+      });
+    </script> </body> </html>  

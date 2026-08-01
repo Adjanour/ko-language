@@ -1,0 +1,256 @@
+<!DOCTYPE html><html lang="en"> <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="description" content="A minimal, functional-first programming language that compiles to native binaries via LLVM."><title>Kō Design Documents | Kō</title><link rel="icon" type="image/svg+xml" href="/favicon.svg"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"><script>
+      (function() {
+        const theme = localStorage.getItem('theme') || 'dark';
+        document.documentElement.classList.add(theme);
+      })();
+    </script><style>:root{--bg: #09090b;--bg-card: #111113;--bg-code: #0c0c0e;--text: #fafafa;--text-muted: #a1a1aa;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #1f1f23;--radius: 8px}html.light{--bg: #fafafa;--bg-card: #f4f4f5;--bg-code: #f0f0f2;--text: #18181b;--text-muted: #52525b;--accent: #7c3aed;--accent-hover: #6d28d9;--border: #e4e4e7}*{margin:0;padding:0;box-sizing:border-box}html{overflow-x:hidden}body{font-family:Inter,-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;display:flex;flex-direction:column;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-x:hidden;width:100%}main{flex:1;overflow-x:hidden}.container{max-width:1040px;margin:0 auto;padding:0 1.5rem;overflow:hidden}.navbar{position:sticky;top:0;z-index:50;border-bottom:1px solid var(--border);background:color-mix(in oklab,var(--bg),transparent 14%);backdrop-filter:blur(12px)}.nav-container{display:flex;align-items:center;justify-content:space-between;height:3.5rem}.logo{font-size:1.25rem;font-weight:700;color:var(--text);text-decoration:none;letter-spacing:-.02em}.nav-links{display:flex;gap:.25rem;align-items:center}.nav-links a{padding:.375rem .625rem;color:var(--text-muted);text-decoration:none;font-size:.875rem;border-radius:6px;transition:color .15s}.nav-links a:hover{color:var(--text)}.theme-toggle{display:flex;align-items:center;justify-content:center;width:2.25rem;height:2.25rem;background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-muted);cursor:pointer;transition:all .15s;margin-left:.5rem}.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}.sun-icon,.moon-icon{display:none}html.dark .sun-icon,html.light .moon-icon{display:block}footer{border-top:1px solid var(--border);padding:2rem 0;text-align:center;color:var(--text-muted);font-size:.8rem}h1,h2,h3,h4{line-height:1.2;font-weight:600}p{color:var(--text-muted)}a{color:var(--accent)}code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}pre{background:var(--bg-code);border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}pre code{background:none;padding:0;font-size:.9rem;color:var(--text);white-space:pre}.astro-code{background:var(--bg-code)!important;border:1px solid var(--border);border-radius:var(--radius);padding:1.25rem;overflow-x:auto;margin:1rem 0;max-width:100%}html.light .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}.astro-code *,.astro-code span,.astro-code .line{background-color:transparent!important}html.dark .astro-code span{color:#fff!important}html.dark .astro-code span[style*="color:#D73A49"]{color:#f97583!important}html.dark .astro-code span[style*="color:#005CC5"]{color:#79b8ff!important}html.dark .astro-code span[style*="color:#032F62"]{color:#9ecbff!important}html.dark .astro-code span[style*="color:#6F42C1"]{color:#b392f0!important}html.dark .astro-code span[style*="color:#6A737D"]{color:#8b949e!important}html.dark .astro-code span[style*="color:#24292E"]{color:#fff!important}table{width:100%;border-collapse:collapse;margin:1.5rem 0;display:block;overflow-x:auto}th,td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left;white-space:nowrap}th{background:var(--bg-card);font-weight:600;color:var(--text)}hr{border:none;border-top:1px solid var(--border);margin:3rem 0}blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}
+.docs-layout[data-astro-cid-mw7aashj]{display:grid;grid-template-columns:200px 1fr;gap:3rem;padding-top:3rem;padding-bottom:4rem;min-height:calc(100vh - 200px)}.docs-sidebar[data-astro-cid-mw7aashj]{position:sticky;top:5rem;height:fit-content}.nav-section[data-astro-cid-mw7aashj]{margin-bottom:1.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.7rem;font-weight:500;text-transform:uppercase;letter-spacing:.1em;color:var(--text-muted);margin-bottom:.5rem;padding-left:.75rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{display:block;padding:.35rem .75rem;color:var(--text-muted);text-decoration:none;font-size:.85rem;border-radius:6px;transition:all .15s}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]:hover{color:var(--text);background:var(--bg-card)}.docs-content[data-astro-cid-mw7aashj]{max-width:720px;min-width:0}.docs-content[data-astro-cid-mw7aashj] h1{font-size:2rem;font-weight:600;letter-spacing:-.02em;margin-bottom:1.5rem;padding-bottom:1rem;border-bottom:1px solid var(--border)}.docs-content[data-astro-cid-mw7aashj] h2{font-size:1.5rem;font-weight:600;letter-spacing:-.01em;margin-top:3rem;margin-bottom:1rem}.docs-content[data-astro-cid-mw7aashj] h3{font-size:1.2rem;font-weight:500;margin-top:2rem;margin-bottom:.75rem}.docs-content[data-astro-cid-mw7aashj] p{margin-bottom:1rem;line-height:1.7}.docs-content[data-astro-cid-mw7aashj] code{font-family:JetBrains Mono,monospace;background:var(--bg-code);padding:.15em .4em;border-radius:4px;font-size:.875em}.docs-content[data-astro-cid-mw7aashj] pre{background:var(--bg-code);border:1px solid var(--border);border-radius:8px;padding:1.25rem;overflow-x:auto;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] pre code{background:none;padding:0;font-size:.9rem;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code{background:var(--bg-code)!important;border-color:var(--border)}html.light .docs-content[data-astro-cid-mw7aashj] .astro-code{background:#f6f8fa!important;border-color:#e4e4e7}html.light .docs-content[data-astro-cid-mw7aashj] code{background:#f0f0f2;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] .astro-code *,.docs-content[data-astro-cid-mw7aashj] .astro-code span,.docs-content[data-astro-cid-mw7aashj] .astro-code .line{background-color:transparent!important}.docs-content[data-astro-cid-mw7aashj] ul,.docs-content[data-astro-cid-mw7aashj] ol{margin:1rem 0;padding-left:1.5rem;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] li{margin-bottom:.5rem;line-height:1.6}.docs-content[data-astro-cid-mw7aashj] blockquote{border-left:3px solid var(--accent);padding-left:1rem;margin:1.5rem 0;color:var(--text-muted)}.docs-content[data-astro-cid-mw7aashj] table{width:100%;border-collapse:collapse;margin:1.5rem 0}.docs-content[data-astro-cid-mw7aashj] th,.docs-content[data-astro-cid-mw7aashj] td{padding:.75rem 1rem;border:1px solid var(--border);text-align:left}.docs-content[data-astro-cid-mw7aashj] th{background:var(--bg-card);font-weight:600;color:var(--text)}.docs-content[data-astro-cid-mw7aashj] hr{border:none;border-top:1px solid var(--border);margin:2rem 0}@media(max-width:768px){.docs-layout[data-astro-cid-mw7aashj]{grid-template-columns:1fr}.docs-sidebar[data-astro-cid-mw7aashj]{position:static;border-bottom:1px solid var(--border);padding-bottom:1rem;margin-bottom:1.5rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}.docs-sidebar[data-astro-cid-mw7aashj]::-webkit-scrollbar{display:none}.docs-sidebar[data-astro-cid-mw7aashj] nav[data-astro-cid-mw7aashj]{display:flex;gap:.25rem;min-width:max-content}.nav-section[data-astro-cid-mw7aashj]{flex-shrink:0;margin-bottom:0;margin-right:.5rem}.nav-section[data-astro-cid-mw7aashj] h4[data-astro-cid-mw7aashj]{font-size:.6rem;padding:.25rem .5rem;margin-bottom:.25rem}.nav-section[data-astro-cid-mw7aashj] a[data-astro-cid-mw7aashj]{font-size:.75rem;padding:.25rem .5rem;white-space:nowrap}}
+</style></head> <body> <nav class="navbar"> <div class="container nav-container"> <a href="/" class="logo">kō</a> <div class="nav-links"> <a href="/docs/tutorial">Docs</a> <a href="/docs/reference">Reference</a> <a href="/docs/handbook">Handbook</a> <a href="https://github.com/Adjanour/ko-language">GitHub</a> <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme"> <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg> <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg> </button> </div> </div> </nav> <main>  <div class="docs-layout container" data-astro-cid-mw7aashj> <aside class="docs-sidebar" data-astro-cid-mw7aashj> <nav data-astro-cid-mw7aashj> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Getting Started</h4> <a href="/docs/tutorial" data-astro-cid-mw7aashj>Tutorial</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Language</h4> <a href="/docs/reference" data-astro-cid-mw7aashj>Reference</a> <a href="/docs/grammar" data-astro-cid-mw7aashj>Grammar</a> <a href="/docs/spec" data-astro-cid-mw7aashj>Spec</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Internals</h4> <a href="/docs/handbook" data-astro-cid-mw7aashj>Handbook</a> <a href="/docs/codegen" data-astro-cid-mw7aashj>Codegen</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Project</h4> <a href="/docs/roadmap" data-astro-cid-mw7aashj>Roadmap</a> <a href="/docs/philosophy" data-astro-cid-mw7aashj>Philosophy</a> <a href="/docs/contributing" data-astro-cid-mw7aashj>Contributing</a> <a href="/docs/changelog" data-astro-cid-mw7aashj>Changelog</a> </div> <div class="nav-section" data-astro-cid-mw7aashj> <h4 data-astro-cid-mw7aashj>Blog</h4> <a href="/docs/build-a-grade-book" data-astro-cid-mw7aashj>Install Kō &amp; Build Your First Program</a> </div> </nav> </aside> <article class="docs-content" data-astro-cid-mw7aashj>  <h1 id="kō-design-documents">Kō Design Documents</h1>
+<h2 id="compile-time-ast-construction-helpers">Compile-Time AST Construction Helpers</h2>
+<blockquote>
+<p><strong>Status:</strong> Design Draft<br>
+<strong>Date:</strong> 2026-07-12<br>
+<strong>Research:</strong> Zig comptime, MetaOCaml, Template Haskell, Lisp macros</p>
+</blockquote>
+<h3 id="problem">Problem</h3>
+<p>Kō’s comptime evaluator can compute values at compile time, but can’t:</p>
+<ol>
+<li><strong>Construct AST nodes</strong>: no way to build code programmatically</li>
+<li><strong>Manipulate code</strong>: no way to transform or generate code at compile time</li>
+<li><strong>Write macros</strong>: no way to define new syntax or code transformations</li>
+<li><strong>Domain-specific languages</strong>: can’t embed DSLs that compile to efficient code</li>
+</ol>
+<h3 id="proposed-design-code-keyword">Proposed Design: <code>code</code> Keyword</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Quote an expression as code</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ast </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> code (</span><span style="color:#005CC5;--shiki-dark:#79B8FF">1</span><span style="color:#D73A49;--shiki-dark:#F97583"> +</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Quote with variables (antiquotation)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> code (</span><span style="color:#005CC5;--shiki-dark:#79B8FF">42</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ast </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> code (x </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)  </span><span style="color:#6A737D;--shiki-dark:#6A737D"># ast = (42 + 1)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Manipulate code at compile time</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> double_code ast </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  code (ast </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ast)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> result </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> double_code (code (</span><span style="color:#005CC5;--shiki-dark:#79B8FF">3</span><span style="color:#24292E;--shiki-dark:#E1E4E8">))  </span><span style="color:#6A737D;--shiki-dark:#6A737D"># result = (3 + 3)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Build AST programmatically</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> make_add left right </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">  code (left </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> right)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> sum </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> make_add (code (</span><span style="color:#005CC5;--shiki-dark:#79B8FF">1</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)) (code (</span><span style="color:#005CC5;--shiki-dark:#79B8FF">2</span><span style="color:#24292E;--shiki-dark:#E1E4E8">))  </span><span style="color:#6A737D;--shiki-dark:#6A737D"># sum = (1 + 2)</span></span></code></pre>
+<h3 id="comptime-ast-constructor-functions">Comptime AST Constructor Functions</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> lit value </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.literal value</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> var name </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.identifier name</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> app func arg </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.application func arg</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> lam param body </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.lambda param body</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#D73A49;--shiki-dark:#F97583"> let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> name value body </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.let name value body</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ifte cond </span><span style="color:#D73A49;--shiki-dark:#F97583">then</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> else_ </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.if_then_else cond </span><span style="color:#D73A49;--shiki-dark:#F97583">then</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> else_</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> binop op left right </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.binary_op op left right</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> block exprs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.block exprs</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> ctor name args </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.constructor name args</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> tuple elems </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.tuple elems</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> record fields </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.record fields</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Code manipulation</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> code_size ast </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.size ast</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> code_subst ast name replacement </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.substitute ast name replacement</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Code evaluation</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> eval code </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.eval code</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> type_of code </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Code</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.type_of code</span></span></code></pre>
+<h3 id="comparison-with-existing-features">Comparison with Existing Features</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Feature</th><th><code>comptime expr</code></th><th><code>code expr</code></th><th><code>stage expr</code></th></tr></thead><tbody><tr><td>Evaluation time</td><td>Compile time</td><td>Compile time</td><td>Compile time</td></tr><tr><td>Result type</td><td>ComptimeValue</td><td>CodeNode</td><td>Runtime type</td></tr><tr><td>Splicing</td><td>Scalar only</td><td>To CodeNode</td><td>To LLVM IR</td></tr><tr><td>Manipulation</td><td>Limited</td><td>Full AST</td><td>Via comptime</td></tr><tr><td>Use case</td><td>Constants</td><td>Macros, DSLs</td><td>Code generation</td></tr></tbody></table>
+<h3 id="implementation-plan">Implementation Plan</h3>
+<ul>
+<li><strong>Phase 1</strong>: Add <code>code: *CodeNode</code> to ComptimeValue, implement <code>CodeNode</code> structure, handle <code>code expr</code> in comptime evaluator, add code constructors and evaluation</li>
+<li><strong>Phase 2</strong>: Substitution, code inspection, code transformation (map/fold over AST)</li>
+<li><strong>Phase 3</strong>: Integration with <code>stage</code> for LLVM IR emission, type checking of constructed code</li>
+</ul>
+<hr>
+<h2 id="error-handling">Error Handling</h2>
+<blockquote>
+<p><strong>Status:</strong> Design Draft
+<strong>Date:</strong> 2026-07-27
+<strong>Research:</strong> Rust panic/Result split, Roc’s total stdlib, OCaml’s <code>Division_by_zero</code>, Koka’s <code>exn</code> effect</p>
+</blockquote>
+<h3 id="the-two-buckets">The Two Buckets</h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Recoverable (<code>Result</code>)</th><th>Unrecoverable (<code>panic</code>)</th></tr></thead><tbody><tr><td>Meaning</td><td>Expected failure a caller should handle</td><td>Broken invariant / programmer error</td></tr><tr><td>Examples</td><td><code>String.to_int</code> on bad input, file not found, <code>div</code>/<code>mod</code> by zero, safe list <code>at</code>/index</td><td>empty-list <code>head</code>/<code>tail</code> on the panicking variants, stack overflow, <code>assert</code> failure</td></tr><tr><td>Mechanism</td><td>Already exists: <code>Result</code>, <code>?</code>, <code>map</code>/<code>fold</code>/<code>and_then</code></td><td>Generalize the stack-overflow path into a real <code>panic(msg)</code></td></tr><tr><td>Rule of thumb</td><td>Failure a well-formed program can hit from real input</td><td>Failure that means the program itself has a bug</td></tr></tbody></table>
+<p>Division by zero belongs in the <code>Result</code> bucket (Roc’s answer), because a divisor coming from user input isn’t a programmer error. If that’s judged too heavy, the fallback is OCaml’s answer: keep the signature, but panic with a message instead of trapping.</p>
+<h3 id="panic-as-a-general-mechanism"><code>panic</code> as a General Mechanism</h3>
+<p>Generalize the stack-overflow path into <code>panic : String -> a</code>: print to stderr, exit nonzero, no unwinding. Every other panic site (head/tail on empty, assert failure, out-of-bounds indexing) calls through this one mechanism.</p>
+<h3 id="naming">Naming</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.unwrap    : </span><span style="color:#6F42C1;--shiki-dark:#B392F0">Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> a b </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> a        </span><span style="color:#6A737D;--shiki-dark:#6A737D"># panics on Err</span></span>
+<span class="line"><span style="color:#6F42C1;--shiki-dark:#B392F0">Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8">.unwrapOr  : a </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#6F42C1;--shiki-dark:#B392F0"> Result</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> a b </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> a   </span><span style="color:#6A737D;--shiki-dark:#6A737D"># supplies a default</span></span></code></pre>
+<h3 id="implementation-plan-1">Implementation Plan</h3>
+<ul>
+<li><strong>Phase 1</strong>: Generalize stack-overflow panic into <code>panic(msg)</code> builtin; guard div/mod codegen with zero check; rename <code>ko_result_unwrap</code> → <code>ko_result_unwrap_or</code>, add real panicking <code>unwrap</code>; fix <code>head</code>/<code>tail</code> in <code>List.ko</code> to panic on <code>Nil</code></li>
+<li><strong>Phase 2</strong>: Decide Maybe-returning vs panicking for <code>head</code>/<code>tail</code> and indexing</li>
+<li><strong>Phase 3</strong>: Source location in panic messages; implement <code>assert</code>/<code>assert_eq</code>/<code>test</code></li>
+</ul>
+<hr>
+<h2 id="staged-compilation">Staged Compilation</h2>
+<blockquote>
+<p><strong>Status:</strong> Design Draft<br>
+<strong>Date:</strong> 2026-07-12<br>
+<strong>Research:</strong> MacoCaml (OCaml), Template Haskell, MetaML, Zig comptime</p>
+</blockquote>
+<h3 id="problem-1">Problem</h3>
+<p>Kō’s <code>comptime</code> evaluates expressions at compile time and splices scalar results into LLVM IR. But it can’t:</p>
+<ol>
+<li><strong>Generate code</strong>: comptime can’t produce runtime functions or complex data structures</li>
+<li><strong>Partial evaluation</strong>: can’t specialize functions for known inputs at compile time</li>
+<li><strong>Zero-cost abstractions</strong>: can’t eliminate runtime overhead of generic code</li>
+<li><strong>Domain-specific languages</strong>: can’t embed DSLs that compile to efficient native code</li>
+</ol>
+<h3 id="proposed-design-stage-keyword">Proposed Design: <code>stage</code> Keyword</h3>
+<pre class="astro-code astro-code-themes github-light github-dark" style="background-color:#fff;--shiki-dark-bg:#24292e;color:#24292e;--shiki-dark:#e1e4e8; overflow-x: auto;" tabindex="0" data-language="ko"><code><span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Stage an expression for compile-time evaluation</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> optimized </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> stage (fibonacci </span><span style="color:#005CC5;--shiki-dark:#79B8FF">10</span><span style="color:#24292E;--shiki-dark:#E1E4E8">)</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Stage with lambda for partial evaluation</span></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Known args evaluated at compile time, unknown args become runtime parameters</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> fast_add </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> stage (</span><span style="color:#D73A49;--shiki-dark:#F97583">\</span><span style="color:#24292E;--shiki-dark:#E1E4E8">x y </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">+</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> y) where x </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#005CC5;--shiki-dark:#79B8FF"> 5</span></span>
+<span class="line"></span>
+<span class="line"><span style="color:#6A737D;--shiki-dark:#6A737D"># Stage a function definition for specialization</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">comptime</span><span style="color:#D73A49;--shiki-dark:#F97583"> fn</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> specialized_sort xs </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">  match</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> xs</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    [] </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> []</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">    pivot </span><span style="color:#D73A49;--shiki-dark:#F97583">::</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> rest </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">      let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> smaller </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> stage (filter (</span><span style="color:#D73A49;--shiki-dark:#F97583">\</span><span style="color:#24292E;--shiki-dark:#E1E4E8">x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">&#x3C;</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> pivot) rest)</span></span>
+<span class="line"><span style="color:#D73A49;--shiki-dark:#F97583">      let</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> larger </span><span style="color:#D73A49;--shiki-dark:#F97583">=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> stage (filter (</span><span style="color:#D73A49;--shiki-dark:#F97583">\</span><span style="color:#24292E;--shiki-dark:#E1E4E8">x </span><span style="color:#D73A49;--shiki-dark:#F97583">-></span><span style="color:#24292E;--shiki-dark:#E1E4E8"> x </span><span style="color:#D73A49;--shiki-dark:#F97583">>=</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> pivot) rest)</span></span>
+<span class="line"><span style="color:#24292E;--shiki-dark:#E1E4E8">      (specialized_sort smaller) </span><span style="color:#D73A49;--shiki-dark:#F97583">++</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> [pivot] </span><span style="color:#D73A49;--shiki-dark:#F97583">++</span><span style="color:#24292E;--shiki-dark:#E1E4E8"> (specialized_sort larger)</span></span></code></pre>
+<h3 id="semantics">Semantics</h3>
+<ol>
+<li><code>stage expr</code> evaluates <code>expr</code> at compile time</li>
+<li>If <code>expr</code> reduces to a value, that value is spliced into the LLVM IR</li>
+<li>If <code>expr</code> contains free variables, it becomes a lambda with those variables as parameters</li>
+<li><code>stage</code> is compile-time only: can’t appear in runtime expressions</li>
+</ol>
+<h3 id="comparison-with-existing-comptime">Comparison with Existing <code>comptime</code></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Feature</th><th><code>comptime expr</code></th><th><code>stage expr</code></th></tr></thead><tbody><tr><td>Evaluation time</td><td>Compile time</td><td>Compile time</td></tr><tr><td>Result type</td><td>ComptimeValue</td><td>Runtime type</td></tr><tr><td>Splicing</td><td>Scalar only</td><td>Any type</td></tr><tr><td>Free variables</td><td>Error</td><td>Lambda</td></tr><tr><td>Side effects</td><td>Allowed</td><td>Restricted</td></tr><tr><td>Use case</td><td>Constants, simple computations</td><td>Code generation, specialization</td></tr></tbody></table>
+<h3 id="implementation-plan-2">Implementation Plan</h3>
+<ul>
+<li><strong>Phase 1</strong>: Add <code>stage</code> keyword to parser, <code>StageExpr</code> AST node, type as type of body, codegen evaluates at compile time and splices</li>
+<li><strong>Phase 2</strong>: Extend comptime evaluator for free variables, generate lambdas for staged expressions with free vars, partial application specialization</li>
+<li><strong>Phase 3</strong>: Staged pattern matching, staged recursion unrolling, staged generic specialization</li>
+</ul>  </article> </div>  </main> <footer> <div class="container"> <p>Kō is MIT licensed. Built with Zig and LLVM.</p> </div> </footer> <script>
+      const toggle = document.getElementById('theme-toggle');
+      toggle.addEventListener('click', () => {
+        const html = document.documentElement;
+        const isDark = html.classList.contains('dark');
+        html.classList.remove('dark', 'light');
+        html.classList.add(isDark ? 'light' : 'dark');
+        localStorage.setItem('theme', isDark ? 'light' : 'dark');
+      });
+    </script> </body> </html>  
