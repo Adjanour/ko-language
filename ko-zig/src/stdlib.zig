@@ -100,6 +100,16 @@ pub fn ko_string_append(a: ?[*:0]const u8, b: ?[*:0]const u8) callconv(.c) ?[*:0
     return @ptrCast(buf.ptr);
 }
 
+pub fn ko_string_eq(a: ?[*:0]const u8, b: ?[*:0]const u8) callconv(.c) i64 {
+    const sa = a orelse "";
+    const sb = b orelse "";
+    var i: usize = 0;
+    while (sa[i] != 0 and sb[i] != 0) : (i += 1) {
+        if (sa[i] != sb[i]) return 0;
+    }
+    return if (sa[i] == 0 and sb[i] == 0) 1 else 0;
+}
+
 pub fn ko_string_contains(haystack: ?[*:0]const u8, needle: ?[*:0]const u8) callconv(.c) i64 {
     const h = haystack orelse return 0;
     const n = needle orelse return 0;
@@ -396,6 +406,7 @@ pub fn ko_result_map(fn_val: i64, result: i64) callconv(.c) i64 {
 
 // ko_alloc_result(tag, value): allocate a Result struct on the heap
 fn ko_alloc_result(tag: i64, value: i64) i64 {
+    // Use raw malloc for now (TODO: integrate with ko_alloc)
     const p: *[2]i64 = @ptrCast(@alignCast(std.heap.page_allocator.alloc(i64, 2) catch return 0));
     p[0] = tag;
     p[1] = value;

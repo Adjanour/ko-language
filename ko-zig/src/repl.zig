@@ -134,8 +134,9 @@ const ko_builtins = [_][]const u8{
     "println", "print", "inspect", "panic", "assert", "assert_eq",
     "String.length", "String.append", "String.contains", "String.charAt",
     "String.toUpperCase", "String.toLowerCase", "String.trim", "String.replace", "String.split",
+    "String.startsWith", "String.endsWith", "String.substring", "String.indexOf",
     "Int.toString", "Int.abs", "Int.min", "Int.max", "Int.pow", "Int.gcd", "Int.lcm",
-    "Int.factorial", "Int.isqrt",
+    "Int.factorial", "Int.isqrt", "Int.addChecked", "Int.subChecked", "Int.mulChecked", "Int.divChecked", "Int.modChecked", "Int.negChecked", "Int.divOr",
     "Float.ofInt", "Float.toInt", "Float.sqrt", "Float.pow",
     "Float.sin", "Float.cos", "Float.tan", "Float.log", "Float.floor", "Float.ceil", "Float.abs",
     "Result.is_ok", "Result.is_err", "Result.unwrap", "Result.unwrapOr",
@@ -709,6 +710,7 @@ pub const Repl = struct {
             cg.quiet = true;
             cg.expr_type_tags = &inferer.expr_type_tags;
             cg.param_arity = &inferer.param_arity;
+            cg.var_type_tags = &inferer.var_type_tags;
             try cg.codegenProgram(prog);
 
             var jit = try codegen_mod.Jit.init(cg.module, 0);

@@ -153,6 +153,7 @@ pub const Inferer = struct {
     used_names: std.StringHashMap(void),
     bound_names: std.StringHashMap(parser.Loc),
     param_arity: std.StringHashMap(u32), // function parameter name → arity (for function-typed params)
+    var_type_tags: std.StringHashMap(i64), // variable name → type_tag (for closure capture decref)
 
     pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
     const diagnostics_mod = @import("diagnostics.zig");
@@ -178,6 +179,7 @@ pub const Inferer = struct {
             .used_names = std.StringHashMap(void).init(allocator),
             .bound_names = std.StringHashMap(parser.Loc).init(allocator),
             .param_arity = std.StringHashMap(u32).init(allocator),
+            .var_type_tags = std.StringHashMap(i64).init(allocator),
         };
         // Pre-register built-in type IDs to match codegen's type_ids
         inferer.type_ids.put("Bool", 0) catch {};
@@ -210,6 +212,7 @@ pub const Inferer = struct {
         self.used_names.deinit();
         self.bound_names.deinit();
         self.param_arity.deinit();
+        self.var_type_tags.deinit();
     }
 
     /// Resolve a name: try the bare name first, then try module-qualified if inside a module.
@@ -854,6 +857,56 @@ pub const Inferer = struct {
         }
         try self.global.set("String.split", .{ .quantified = &.{}, .body = string_split_to });
 
+        // String.startsWith : String -> String -> Bool
+        // String.endsWith : String -> String -> Bool
+        {
+            const sa = try self.newType(.string);
+            const sb = try self.newType(.string);
+            const ret = try self.newType(.bool);
+            const inner_arrow_sa = try self.allocator.create(Type);
+            inner_arrow_sa.* = .{ .arrow = .{ .from = sb, .to = ret } };
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = sa, .to = inner_arrow_sa } };
+            try self.global.set("String.startsWith", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const sa = try self.newType(.string);
+            const sb = try self.newType(.string);
+            const ret = try self.newType(.bool);
+            const inner_arrow_sb = try self.allocator.create(Type);
+            inner_arrow_sb.* = .{ .arrow = .{ .from = sb, .to = ret } };
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = sa, .to = inner_arrow_sb } };
+            try self.global.set("String.endsWith", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // String.substring : String -> Int -> Int -> String
+        {
+            const sa = try self.newType(.string);
+            const si = try self.newType(.int);
+            const sj = try self.newType(.int);
+            const ret = try self.newType(.string);
+            const inner2 = try self.allocator.create(Type);
+            inner2.* = .{ .arrow = .{ .from = sj, .to = ret } };
+            const inner1 = try self.allocator.create(Type);
+            inner1.* = .{ .arrow = .{ .from = si, .to = inner2 } };
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = sa, .to = inner1 } };
+            try self.global.set("String.substring", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // String.indexOf : String -> String -> Int
+        {
+            const sa = try self.newType(.string);
+            const sb = try self.newType(.string);
+            const ret = try self.newType(.int);
+            const inner_arrow_si = try self.allocator.create(Type);
+            inner_arrow_si.* = .{ .arrow = .{ .from = sb, .to = ret } };
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = sa, .to = inner_arrow_si } };
+            try self.global.set("String.indexOf", .{ .quantified = &.{}, .body = ft });
+        }
+
         // Int module builtins
         const int_ty = try self.newType(.int);
         const int_to_int = try self.allocator.create(Type);
@@ -878,6 +931,209 @@ pub const Inferer = struct {
         const int_to_string = try self.allocator.create(Type);
         int_to_string.* = .{ .arrow = .{ .from = int_ty, .to = try self.newType(.string) } };
         try self.global.set("Int.toString", .{ .quantified = &.{}, .body = int_to_string });
+
+        // Float module builtins — each gets its own type node to avoid shared mutation
+        const float_ty = try self.newType(.float);
+
+        // Float -> Float functions (each needs its own node)
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.sqrt", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.sin", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.cos", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.tan", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.log", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.log2", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.log10", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.exp", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.floor", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.ceil", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.float) } };
+            try self.global.set("Float.abs", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Int -> Float
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.int), .to = try self.newType(.float) } };
+            try self.global.set("Float.ofInt", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Float -> Int (toInt and sign each get their own node)
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.int) } };
+            try self.global.set("Float.toInt", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Float -> Float -> Float
+        {
+            const fa = try self.newType(.float);
+            const fb = try self.newType(.float);
+            const fr = try self.newType(.float);
+            const inner = try self.allocator.create(Type);
+            inner.* = .{ .arrow = .{ .from = fb, .to = fr } };
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = fa, .to = inner } };
+            try self.global.set("Float.pow", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Float constants (value type — resolved by codegen as global constants)
+        try self.global.set("Float.pi", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.e", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.infinity", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.nan", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.maxValue", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.minValue", .{ .quantified = &.{}, .body = float_ty });
+        try self.global.set("Float.epsilon", .{ .quantified = &.{}, .body = float_ty });
+
+        // Float predicates: Float -> Bool (each gets its own node)
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.bool) } };
+            try self.global.set("Float.isNaN", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.bool) } };
+            try self.global.set("Float.isInfinite", .{ .quantified = &.{}, .body = ft });
+        }
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.bool) } };
+            try self.global.set("Float.isFinite", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Float.sign: Float -> Int (own node, not shared with Float.toInt)
+        {
+            const ft = try self.allocator.create(Type);
+            ft.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.int) } };
+            try self.global.set("Float.sign", .{ .quantified = &.{}, .body = ft });
+        }
+
+        // Int.fromString : String -> Result Overflow Int
+        // (Uses a simple Result type for now)
+        {
+            const str_ty = try self.newType(.string);
+            const ra = try self.newVarType("a");
+            const rb = try self.newVarType("b");
+            const result_a_b = try self.allocator.create(Type);
+            const args_a_b = try self.allocator.alloc(*Type, 2);
+            args_a_b[0] = ra;
+            args_a_b[1] = rb;
+            result_a_b.* = .{ .con = .{ .name = "Result", .args = args_a_b } };
+            const str_to_result = try self.allocator.create(Type);
+            str_to_result.* = .{ .arrow = .{ .from = str_ty, .to = result_a_b } };
+            const qa = ra.variable.id;
+            const qb = rb.variable.id;
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = qa;
+            q[1] = qb;
+            try self.global.set("Int.fromString", .{ .quantified = q, .body = str_to_result });
+        }
+
+        // Checked arithmetic: Int -> Int -> Result Int Overflow
+        {
+            const overflow_ty = try self.allocator.create(Type);
+            overflow_ty.* = .{ .con = .{ .name = "Overflow", .args = &.{} } };
+            const int_ty2 = try self.newType(.int);
+            const result_int_overflow = try self.allocator.create(Type);
+            const result_args = try self.allocator.alloc(*Type, 2);
+            result_args[0] = int_ty2;
+            result_args[1] = overflow_ty;
+            result_int_overflow.* = .{ .con = .{ .name = "Result", .args = result_args } };
+            const int_to_result = try self.allocator.create(Type);
+            int_to_result.* = .{ .arrow = .{ .from = try self.newType(.int), .to = result_int_overflow } };
+            const int_int_to_result = try self.allocator.create(Type);
+            int_int_to_result.* = .{ .arrow = .{ .from = try self.newType(.int), .to = int_to_result } };
+            try self.global.set("Int.addChecked", .{ .quantified = &.{}, .body = int_int_to_result });
+            try self.global.set("Int.subChecked", .{ .quantified = &.{}, .body = int_int_to_result });
+            try self.global.set("Int.mulChecked", .{ .quantified = &.{}, .body = int_int_to_result });
+        }
+
+        // Checked division: Int -> Int -> Result Int DivisionByZero
+        {
+            const divbyzero_ty = try self.allocator.create(Type);
+            divbyzero_ty.* = .{ .con = .{ .name = "DivisionByZero", .args = &.{} } };
+            const int_ty2 = try self.newType(.int);
+            const result_int_divbyzero = try self.allocator.create(Type);
+            const result_args = try self.allocator.alloc(*Type, 2);
+            result_args[0] = int_ty2;
+            result_args[1] = divbyzero_ty;
+            result_int_divbyzero.* = .{ .con = .{ .name = "Result", .args = result_args } };
+            const int_to_result = try self.allocator.create(Type);
+            int_to_result.* = .{ .arrow = .{ .from = try self.newType(.int), .to = result_int_divbyzero } };
+            const int_int_to_result = try self.allocator.create(Type);
+            int_int_to_result.* = .{ .arrow = .{ .from = try self.newType(.int), .to = int_to_result } };
+            try self.global.set("Int.divChecked", .{ .quantified = &.{}, .body = int_int_to_result });
+            try self.global.set("Int.modChecked", .{ .quantified = &.{}, .body = int_int_to_result });
+        }
+
+        // Int.negChecked : Int -> Result Int Overflow
+        {
+            const overflow_ty = try self.allocator.create(Type);
+            overflow_ty.* = .{ .con = .{ .name = "Overflow", .args = &.{} } };
+            const int_ty2 = try self.newType(.int);
+            const result_int_overflow = try self.allocator.create(Type);
+            const result_args = try self.allocator.alloc(*Type, 2);
+            result_args[0] = int_ty2;
+            result_args[1] = overflow_ty;
+            result_int_overflow.* = .{ .con = .{ .name = "Result", .args = result_args } };
+            const int_to_result = try self.allocator.create(Type);
+            int_to_result.* = .{ .arrow = .{ .from = try self.newType(.int), .to = result_int_overflow } };
+            try self.global.set("Int.negChecked", .{ .quantified = &.{}, .body = int_to_result });
+        }
+
+        // Int.divOr : Int -> Int -> Int -> Int (safe division with default)
+        {
+            const int_int_int_to_int = try self.allocator.create(Type);
+            const inner2 = try self.allocator.create(Type);
+            inner2.* = .{ .arrow = .{ .from = try self.newType(.int), .to = try self.newType(.int) } };
+            const inner1 = try self.allocator.create(Type);
+            inner1.* = .{ .arrow = .{ .from = try self.newType(.int), .to = inner2 } };
+            int_int_int_to_int.* = .{ .arrow = .{ .from = try self.newType(.int), .to = inner1 } };
+            try self.global.set("Int.divOr", .{ .quantified = &.{}, .body = int_int_int_to_int });
+        }
 
         // Result operations (built-in)
         // Result.is_ok : forall a b. Result a b -> Int
@@ -1126,6 +1382,8 @@ pub const Inferer = struct {
                 }
                 const scheme = try self.generalize(&self.global, t);
                 try self.global.set(prefixed_name, scheme);
+                // Record type tag for the variable (used for closure capture decref)
+                self.var_type_tags.put(prefixed_name, self.typeToTag(t)) catch {};
             },
             .type_def => |t| {
                 const prefixed_name = if (prefix.len > 0)
@@ -1227,34 +1485,45 @@ pub const Inferer = struct {
         // Reset usage tracking for this function
         self.resetUsageTracking();
 
+        // ── Bidirectional: walk the function type arrow-by-arrow,
+        //    using annotations to constrain parameter types. ──
         var cur = fn_type;
         for (f.params) |param| {
             switch (cur.*) {
                 .arrow => |a| {
+                    // If the parameter has a type annotation, unify it with the
+                    // arrow's domain. This lets the signature drive inference.
                     if (param.type_ann) |ann| {
                         const ann_ty = try self.typeExprToType(ann);
                         try self.unify(a.from, ann_ty);
                     }
-                switch (param.pattern) {
-                    .identifier => |name| {
-                        try local.set(name, .{ .quantified = &.{}, .body = a.from });
-                        self.bindName(name, f.loc);
-                    },
-                    else => {
-                        try self.inferPattern(&local, param.pattern, a.from);
-                    },
-                }
+                    switch (param.pattern) {
+                        .identifier => |name| {
+                            try local.set(name, .{ .quantified = &.{}, .body = a.from });
+                            self.bindName(name, f.loc);
+                            // Record type tag for the parameter (used for closure capture decref)
+                            self.var_type_tags.put(name, self.typeToTag(a.from)) catch {};
+                        },
+                        else => {
+                            try self.inferPattern(&local, param.pattern, a.from);
+                        },
+                    }
                     cur = a.to;
                 },
                 else => break,
             }
         }
 
-        const body_ty = try self.inferExpr(&local, f.body);
-        try self.unify(cur, body_ty);
+        // ── Bidirectional: check the body against the return type. ──
+        // If the function has a return type annotation, check the body against it.
+        // Otherwise, infer the body and unify with the arrow's codomain.
         if (f.return_type) |ann| {
             const ann_ty = try self.typeExprToType(ann);
+            try self.checkExpr(&local, f.body, ann_ty);
             try self.unify(cur, ann_ty);
+        } else {
+            const body_ty = try self.inferExpr(&local, f.body);
+            try self.unify(cur, body_ty);
         }
 
         // Now that type variables are resolved, compute arities for function-typed parameters.
@@ -1379,11 +1648,16 @@ pub const Inferer = struct {
     }
 
     fn inferLetExpr(self: *Inferer, env: *Env, name: []const u8, value: *parser.Expr, body: *parser.Expr, type_ann: ?parser.TypeExpr, pattern: ?parser.Pattern) Error!*Type {
-        const val_ty = try self.inferExpr(env, value);
-        if (type_ann) |ann| {
+        // Bidirectional: if annotation present, check value against it
+        const val_ty = if (type_ann) |ann| blk: {
             const ann_ty = try self.typeExprToType(ann);
-            try self.unify(val_ty, ann_ty);
-        }
+            try self.checkExpr(env, value, ann_ty);
+            break :blk ann_ty;
+        } else try self.inferExpr(env, value);
+
+        // Record type tag for the variable (used for closure capture decref)
+        self.var_type_tags.put(name, self.typeToTag(val_ty)) catch {};
+
         var local = Env.init(self.allocator, env);
         defer local.deinit();
         if (pattern) |pat| {
@@ -1406,6 +1680,245 @@ pub const Inferer = struct {
             return then_ty;
         }
         return then_ty;
+    }
+
+    // ── Bidirectional checking mode ──────────────────────────────────
+    // checkExpr verifies that `expr` has type `expected`.
+    // For expressions with known shapes (lambdas, ifs, matches, lets),
+    // we push the expected type inward (checking mode).
+    // For expressions that don't consume expected types, we fall through
+    // to inferExpr and unify the result (synthesis mode).
+
+    fn checkExpr(self: *Inferer, env: *Env, expr: *const parser.Expr, expected: *Type) Error!void {
+        self.current_loc = expr.getLoc();
+        switch (expr.*) {
+            // ── Literals: unify with expected ──
+            .int_literal => try self.unify(expected, try self.newType(.int)),
+            .float_literal => try self.unify(expected, try self.newType(.float)),
+            .string_literal => try self.unify(expected, try self.newType(.string)),
+            .char_literal => try self.unify(expected, try self.newType(.char)),
+            .bool_literal => try self.unify(expected, try self.newType(.bool)),
+
+            // ── Variables / constructors: instantiate and unify ──
+            .identifier => |id| {
+                const scheme = self.resolveName(env, id.name) orelse {
+                    var help_msg: ?[]const u8 = null;
+                    if (findSimilarName(id.name, env)) |suggestion| {
+                        help_msg = std.fmt.allocPrint(self.allocator, "did you mean '{s}'?", .{suggestion}) catch null;
+                    }
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "undefined name '{s}'", .{id.name}) catch null,
+                        .loc = self.current_loc,
+                        .help = help_msg,
+                    };
+                    return error.UndefinedName;
+                };
+                self.markNameUsed(id.name);
+                const inst = try self.instantiate(scheme);
+                try self.unify(inst, expected);
+                self.recordExprType(expr, expected);
+            },
+            .constructor => |c| {
+                const scheme = self.resolveName(env, c.name) orelse {
+                    var help_msg: ?[]const u8 = null;
+                    if (findSimilarName(c.name, env)) |suggestion| {
+                        help_msg = std.fmt.allocPrint(self.allocator, "did you mean '{s}'?", .{suggestion}) catch null;
+                    }
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "undefined constructor '{s}'", .{c.name}) catch null,
+                        .loc = self.current_loc,
+                        .help = help_msg,
+                    };
+                    return error.UndefinedName;
+                };
+                const inst = try self.instantiate(scheme);
+                try self.unify(inst, expected);
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Tuples: check each element against expected element type ──
+            .tuple => |t| {
+                const resolved = self.resolve(expected);
+                switch (resolved.*) {
+                    .tuple => |expected_elems| {
+                        if (t.items.len != expected_elems.len) {
+                            self.last_error = .{
+                                .message = std.fmt.allocPrint(self.allocator, "tuple has {d} elements, expected {d}", .{ t.items.len, expected_elems.len }) catch null,
+                                .loc = self.current_loc,
+                            };
+                            return error.TypeMismatch;
+                        }
+                        for (t.items, expected_elems) |item, exp_ty| {
+                            try self.checkExpr(env, item, exp_ty);
+                        }
+                    },
+                    else => {
+                        // Can't push expected into tuple; infer and unify
+                        const inferred = try self.inferExpr(env, expr);
+                        try self.unify(inferred, expected);
+                    },
+                }
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Records: check each field against expected field type ──
+            .record_literal => |rec| {
+                const resolved = self.resolve(expected);
+                switch (resolved.*) {
+                    .record => |expected_rec| {
+                        for (expected_rec.fields) |expected_field| {
+                            var found: ?*parser.Expr = null;
+                            for (rec.fields) |field| {
+                                if (std.mem.eql(u8, field.name, expected_field.name)) {
+                                    found = field.value;
+                                    break;
+                                }
+                            }
+                            const field_expr = found orelse {
+                                self.last_error = .{
+                                    .message = std.fmt.allocPrint(self.allocator, "missing field '{s}' in record", .{expected_field.name}) catch null,
+                                    .loc = self.current_loc,
+                                };
+                                return error.UnknownType;
+                            };
+                            try self.checkExpr(env, field_expr, expected_field.ty);
+                        }
+                    },
+                    else => {
+                        const inferred = try self.inferExpr(env, expr);
+                        try self.unify(inferred, expected);
+                    },
+                }
+                self.recordExprType(expr, expected);
+            },
+
+            // ── If: check condition is Bool, check branches against expected ──
+            .if_expr => |i| {
+                const cond_ty = try self.inferExpr(env, i.condition);
+                try self.unify(cond_ty, try self.newType(.bool));
+                try self.checkExpr(env, i.then_branch, expected);
+                if (i.else_branch) |else_expr| {
+                    try self.checkExpr(env, else_expr, expected);
+                }
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Match: check scrutinee, check all arm bodies against expected ──
+            .match_expr => |m| {
+                _ = try self.inferExpr(env, m.value);
+                for (m.arms) |arm| {
+                    var arm_env = Env.init(self.allocator, env);
+                    defer arm_env.deinit();
+                    const scrut_ty = try self.inferExpr(env, m.value);
+                    try self.inferPattern(&arm_env, arm.pattern, scrut_ty);
+                    try self.checkExpr(&arm_env, arm.body, expected);
+                }
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Lambda: check against expected arrow type ──
+            .lambda => |lam| {
+                const resolved = self.resolve(expected);
+                switch (resolved.*) {
+                    .arrow => |arr| {
+                        if (lam.params.len != 1) {
+                            // Multi-param lambda vs single arrow: fall through to infer
+                            const inferred = try self.inferLambda(env, lam.params, lam.body);
+                            try self.unify(inferred, expected);
+                        } else {
+                            var local = Env.init(self.allocator, env);
+                            defer local.deinit();
+                            switch (lam.params[0]) {
+                                .identifier => |name| {
+                                    try local.set(name, .{ .quantified = &.{}, .body = arr.from });
+                                },
+                                else => {
+                                    try self.inferPattern(&local, lam.params[0], arr.from);
+                                },
+                            }
+                            try self.checkExpr(&local, lam.body, arr.to);
+                        }
+                    },
+                    else => {
+                        // Expected type is not an arrow: fall back to infer
+                        const inferred = try self.inferLambda(env, lam.params, lam.body);
+                        try self.unify(inferred, expected);
+                    },
+                }
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Let: check body against expected ──
+            .let_expr => |l| {
+                try self.checkLetExpr(env, l.name, l.value, l.body, l.type_ann, l.pattern, expected);
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Block: check last item against expected ──
+            .block => |b| {
+                try self.checkBlock(env, b.items, expected);
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Comptime: forward to inner ──
+            .comptime_expr => |inner| {
+                try self.checkExpr(env, inner, expected);
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Ref: infer inner, unify ref T with expected ──
+            .ref_expr => |inner| {
+                const inner_ty = try self.inferExpr(env, inner);
+                try self.unify(expected, try self.newType(.{ .@"ref" = inner_ty }));
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Assign: infer target and value, result is unit ──
+            .assign_expr => |a| {
+                _ = try self.inferExpr(env, a.target);
+                _ = try self.inferExpr(env, a.value);
+                try self.unify(expected, try self.newType(.unit));
+                self.recordExprType(expr, expected);
+            },
+
+            // ── Fallthrough: synthesize and unify ──
+            else => {
+                const inferred = try self.inferExpr(env, expr);
+                try self.unify(inferred, expected);
+            },
+        }
+    }
+
+    fn checkBlock(self: *Inferer, env: *Env, items: []const *parser.Expr, expected: *Type) Error!void {
+        if (items.len == 0) {
+            try self.unify(expected, try self.newType(.unit));
+            return;
+        }
+        // Check all but the last item in synthesis mode (their values are discarded)
+        for (items[0 .. items.len - 1]) |item| {
+            _ = try self.inferExpr(env, item);
+        }
+        // Check the last item against the expected type
+        try self.checkExpr(env, items[items.len - 1], expected);
+    }
+
+    fn checkLetExpr(self: *Inferer, env: *Env, name: []const u8, value: *parser.Expr, body: *parser.Expr, type_ann: ?parser.TypeExpr, pattern: ?parser.Pattern, expected: *Type) Error!void {
+        const val_ty = if (type_ann) |ann| blk: {
+            const ann_ty = try self.typeExprToType(ann);
+            try self.checkExpr(env, value, ann_ty);
+            break :blk ann_ty;
+        } else try self.inferExpr(env, value);
+
+        var local = Env.init(self.allocator, env);
+        defer local.deinit();
+        if (pattern) |pat| {
+            try self.inferPattern(&local, pat, val_ty);
+        } else {
+            const scheme = try self.generalize(env, val_ty);
+            try local.set(name, scheme);
+            self.bindName(name, value.getLoc());
+        }
+        try self.checkExpr(&local, body, expected);
     }
 
     fn inferUnary(self: *Inferer, env: *Env, op: parser.UnaryOp, inner: *parser.Expr) Error!*Type {
@@ -1471,6 +1984,17 @@ pub const Inferer = struct {
             .and_op, .or_op => blk: {
                 try self.unify(lt, try self.newType(.bool));
                 try self.unify(rt, try self.newType(.bool));
+                break :blk try self.newType(.bool);
+            },
+            // Float operators (dot-suffixed) — force Float operands
+            .add_dot, .sub_dot, .mul_dot, .div_dot => blk: {
+                try self.unify(lt, try self.newType(.float));
+                try self.unify(rt, try self.newType(.float));
+                break :blk try self.newType(.float);
+            },
+            .lte_dot, .gte_dot => blk: {
+                try self.unify(lt, try self.newType(.float));
+                try self.unify(rt, try self.newType(.float));
                 break :blk try self.newType(.bool);
             },
             .pipe => blk: {

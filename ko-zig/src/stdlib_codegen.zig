@@ -162,6 +162,11 @@ pub const StdlibCodegen = struct {
         const strcmp_type = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &strcmp_params, 2, 0);
         _ = core.LLVMAddFunction(self.module, "strcmp", strcmp_type);
 
+        // strncmp(ptr, ptr, i64) -> i32
+        var strncmp_params: [3]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType(), self.i64Type() };
+        const strncmp_type = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &strncmp_params, 3, 0);
+        _ = core.LLVMAddFunction(self.module, "strncmp", strncmp_type);
+
         // toupper(i32) -> i32
         var toupper_params: [1]types.LLVMTypeRef = .{core.LLVMInt32TypeInContext(self.context)};
         const toupper_type = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &toupper_params, 1, 0);
@@ -424,6 +429,218 @@ pub const StdlibCodegen = struct {
     }
 
     // ============================================================
+    // Checked arithmetic: Int -> Int -> Result Overflow/DivisionByZero Int
+    // ============================================================
+
+    fn codegenCheckedArithOverflow(self: *StdlibCodegen, ko_name: [*:0]const u8, intrinsic_name: [*:0]const u8) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction(ko_name, self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const overflow_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "overflow");
+        const ok_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ok");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const a = core.LLVMGetParam(fn_val, 0);
+        const b = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(a, "a");
+        core.LLVMSetValueName(b, "b");
+
+        // Declare the overflow intrinsic: (i64, i64) -> { i64, i1 }
+        var intrinsic = core.LLVMGetNamedFunction(self.module, intrinsic_name);
+        if (intrinsic == null) {
+            var intrinsic_params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+            var struct_fields: [2]types.LLVMTypeRef = .{ self.i64Type(), core.LLVMInt1TypeInContext(self.context) };
+            const result_struct = core.LLVMStructTypeInContext(self.context, @ptrCast(&struct_fields), 2, 0);
+            const intrinsic_type = core.LLVMFunctionType(result_struct, &intrinsic_params, 2, 0);
+            intrinsic = core.LLVMAddFunction(self.module, intrinsic_name, intrinsic_type);
+        }
+        var call_args: [2]types.LLVMValueRef = .{ a, b };
+        const result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(intrinsic), intrinsic, &call_args, 2, "arith_result");
+        const sum = core.LLVMBuildExtractValue(self.builder, result, 0, "sum");
+        const overflow = core.LLVMBuildExtractValue(self.builder, result, 1, "overflow_flag");
+        self.buildCondBranch(overflow, overflow_bb, ok_bb);
+
+        // Overflow branch: Err Overflow — box Overflow tag (0) into {0, 0}, then Err it
+        core.LLVMPositionBuilderAtEnd(self.builder, overflow_bb);
+        {
+            // Box Overflow: alloc 16 bytes, store tag=0 at offset 0
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            var box_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const box_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &box_args, 2, "overflow_box");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), box_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            const boxed_overflow = core.LLVMBuildPtrToInt(self.builder, box_ptr, self.i64Type(), "boxed_overflow");
+            // Err(boxed_overflow): alloc 16 bytes, tag=1 at offset 0, value at offset 1
+            var err_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const err_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &err_args, 2, "err_ptr");
+            var err_tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const err_tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_tag_gep_idx), 1, "err_tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), err_tag_ptr);
+            var err_val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const err_val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_val_gep_idx), 1, "err_val_ptr");
+            _ = core.LLVMBuildStore(self.builder, boxed_overflow, err_val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, err_ptr, self.i64Type(), "err_result"));
+        }
+
+        // Ok branch: Ok(sum)
+        core.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+        {
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            var ok_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const ok_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &ok_args, 2, "ok_ptr");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            var val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&val_gep_idx), 1, "val_ptr");
+            _ = core.LLVMBuildStore(self.builder, sum, val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, ok_ptr, self.i64Type(), "ok_result"));
+        }
+    }
+
+    fn codegenCheckedDivMod(self: *StdlibCodegen, ko_name: [*:0]const u8, is_mod: bool) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction(ko_name, self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const div_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "div");
+        const err_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "err");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const a = core.LLVMGetParam(fn_val, 0);
+        const b = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(a, "a");
+        core.LLVMSetValueName(b, "b");
+
+        const is_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, b, core.LLVMConstInt(self.i64Type(), 0, 0), "is_zero");
+        self.buildCondBranch(is_zero, err_bb, div_bb);
+
+        // Division/modulo branch: Ok(a / b) or Ok(a % b)
+        core.LLVMPositionBuilderAtEnd(self.builder, div_bb);
+        const quot = if (is_mod)
+            core.LLVMBuildSRem(self.builder, a, b, "rem")
+        else
+            core.LLVMBuildSDiv(self.builder, a, b, "div");
+        {
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            var ok_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const ok_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &ok_args, 2, "ok_ptr");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            var val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&val_gep_idx), 1, "val_ptr");
+            _ = core.LLVMBuildStore(self.builder, quot, val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, ok_ptr, self.i64Type(), "ok_result"));
+        }
+
+        // Error branch: Err DivisionByZero — box DivisionByZero tag (0), then Err it
+        core.LLVMPositionBuilderAtEnd(self.builder, err_bb);
+        {
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            // Box DivisionByZero: alloc 16 bytes, store tag=0 at offset 0
+            var box_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const box_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &box_args, 2, "divbyzero_box");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), box_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            const boxed_err = core.LLVMBuildPtrToInt(self.builder, box_ptr, self.i64Type(), "boxed_divbyzero");
+            // Err(boxed_err): alloc 16 bytes, tag=1 at offset 0, value at offset 1
+            var err_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const err_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &err_args, 2, "err_ptr");
+            var err_tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const err_tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_tag_gep_idx), 1, "err_tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), err_tag_ptr);
+            var err_val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const err_val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_val_gep_idx), 1, "err_val_ptr");
+            _ = core.LLVMBuildStore(self.builder, boxed_err, err_val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, err_ptr, self.i64Type(), "err_result"));
+        }
+    }
+
+    fn codegenIntNegChecked(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_int_neg_checked", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const ok_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ok");
+        const overflow_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "overflow");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const a = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(a, "a");
+
+        // Overflow if a == INT64_MIN (-9223372036854775808)
+        const int64_min = core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -9223372036854775808)), 0);
+        const is_min = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, a, int64_min, "is_min");
+        self.buildCondBranch(is_min, overflow_bb, ok_bb);
+
+        // Ok: return negated value
+        core.LLVMPositionBuilderAtEnd(self.builder, ok_bb);
+        const neg = core.LLVMBuildNeg(self.builder, a, "neg");
+        {
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            var ok_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const ok_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &ok_args, 2, "ok_ptr");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            var val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ok_ptr, @ptrCast(&val_gep_idx), 1, "val_ptr");
+            _ = core.LLVMBuildStore(self.builder, neg, val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, ok_ptr, self.i64Type(), "ok_result"));
+        }
+
+        // Overflow: Err Overflow
+        core.LLVMPositionBuilderAtEnd(self.builder, overflow_bb);
+        {
+            const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+            var box_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const box_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &box_args, 2, "overflow_box");
+            var tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), box_ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), tag_ptr);
+            const boxed_overflow = core.LLVMBuildPtrToInt(self.builder, box_ptr, self.i64Type(), "boxed_overflow");
+            var err_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+            const err_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &err_args, 2, "err_ptr");
+            var err_tag_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const err_tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_tag_gep_idx), 1, "err_tag_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), err_tag_ptr);
+            var err_val_gep_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+            const err_val_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), err_ptr, @ptrCast(&err_val_gep_idx), 1, "err_val_ptr");
+            _ = core.LLVMBuildStore(self.builder, boxed_overflow, err_val_ptr);
+            _ = core.LLVMBuildRet(self.builder, core.LLVMBuildPtrToInt(self.builder, err_ptr, self.i64Type(), "err_result"));
+        }
+    }
+
+    fn codegenIntDivOr(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_int_div_or", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const default_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "default");
+        const div_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "div");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const a = core.LLVMGetParam(fn_val, 0);
+        const b = core.LLVMGetParam(fn_val, 1);
+        const default = core.LLVMGetParam(fn_val, 2);
+        core.LLVMSetValueName(a, "a");
+        core.LLVMSetValueName(b, "b");
+        core.LLVMSetValueName(default, "default");
+
+        const is_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, b, core.LLVMConstInt(self.i64Type(), 0, 0), "is_zero");
+        self.buildCondBranch(is_zero, default_bb, div_bb);
+
+        // default_bb: return default
+        core.LLVMPositionBuilderAtEnd(self.builder, default_bb);
+        _ = core.LLVMBuildRet(self.builder, default);
+
+        // div_bb: return a / b
+        core.LLVMPositionBuilderAtEnd(self.builder, div_bb);
+        const quot = core.LLVMBuildSDiv(self.builder, a, b, "div");
+        _ = core.LLVMBuildRet(self.builder, quot);
+    }
+
+    // ============================================================
     // String functions
     // ============================================================
 
@@ -515,6 +732,28 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i8Type(), 0, 0), last_ptr);
 
         self.buildRet(buf);
+    }
+
+    pub fn codegenStringEq(self: *StdlibCodegen) void {
+        // ko_string_eq(a: ptr, b: ptr) -> i64
+        // Returns 1 if strings are equal (strcmp == 0), 0 otherwise
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const fn_val = self.createFunction("ko_string_eq", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const a = core.LLVMGetParam(fn_val, 0);
+        const b = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(a, "a");
+        core.LLVMSetValueName(b, "b");
+
+        const strcmp_fn = core.LLVMGetNamedFunction(self.module, "strcmp");
+        var cmp_args: [2]types.LLVMValueRef = .{ a, b };
+        const cmp_result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_args, 2, "cmp");
+        const zero = core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 0, 0);
+        const is_eq = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, cmp_result, zero, "is_eq");
+        const result = core.LLVMBuildZExt(self.builder, is_eq, self.i64Type(), "result");
+        self.buildRet(result);
     }
 
     // ============================================================
@@ -858,6 +1097,23 @@ pub const StdlibCodegen = struct {
         const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
         const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
 
+        // Allocas must be in the entry block (before any terminator)
+        const result_buf_alloca = core.LLVMBuildAlloca(self.builder, self.ptrType(), "result_buf");
+        const result_len_alloca = core.LLVMBuildAlloca(self.builder, self.i64Type(), "result_len");
+        const current_alloca = core.LLVMBuildAlloca(self.builder, self.ptrType(), "current");
+
+        _ = core.LLVMBuildStore(self.builder, str, current_alloca);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), result_len_alloca);
+
+        // Allocate initial result buffer
+        var str_strlen_args: [1]types.LLVMValueRef = .{str};
+        const str_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &str_strlen_args, 1, "str_len");
+        const extra_space = core.LLVMConstInt(self.i64Type(), 64, 0);
+        const buf_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildMul(self.builder, str_len, core.LLVMConstInt(self.i64Type(), 2, 0), "str_len_x2"), extra_space, "buf_size");
+        var malloc_args: [1]types.LLVMValueRef = .{buf_size};
+        const init_buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "init_buf");
+        _ = core.LLVMBuildStore(self.builder, init_buf, result_buf_alloca);
+
         // from_len = strlen(from)
         var from_strlen_args: [1]types.LLVMValueRef = .{from};
         const from_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &from_strlen_args, 1, "from_len");
@@ -866,38 +1122,9 @@ pub const StdlibCodegen = struct {
         var to_strlen_args: [1]types.LLVMValueRef = .{to};
         const to_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &to_strlen_args, 1, "to_len");
 
-        // If from is empty, return str unchanged
+        // If from is empty, return str unchanged (this is the LAST instruction in entry block)
         const from_empty = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, from_len, core.LLVMConstInt(self.i64Type(), 0, 0), "from_empty");
         self.buildCondBranch(from_empty, loop_done, loop_check);
-
-        // First pass: count occurrences to compute output size
-        // We'll use a simpler approach: build result incrementally
-        // current = str, result = ""
-        // While (pos = strstr(current, from)) found:
-        //   append(current[..pos-current]) to result
-        //   append(to) to result
-        //   current = pos + from_len
-        // append(current) to result
-
-        // Initialize: result_buf = empty, result_len = 0, current = str
-        const result_buf_alloca = core.LLVMBuildAlloca(self.builder, self.ptrType(), "result_buf");
-        const result_len_alloca = core.LLVMBuildAlloca(self.builder, self.i64Type(), "result_len");
-        const current_alloca = core.LLVMBuildAlloca(self.builder, self.ptrType(), "current");
-
-        _ = core.LLVMBuildStore(self.builder, str, current_alloca);
-        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), result_len_alloca);
-
-        // Allocate initial result buffer (same size as str + extra for replacements)
-        var str_strlen_args: [1]types.LLVMValueRef = .{str};
-        const str_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &str_strlen_args, 1, "str_len");
-        // Extra space: to_len * count could be larger; allocate str_len * 2 + 64 as safety
-        const extra_space = core.LLVMConstInt(self.i64Type(), 64, 0);
-        const buf_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildMul(self.builder, str_len, core.LLVMConstInt(self.i64Type(), 2, 0), "str_len_x2"), extra_space, "buf_size");
-        var malloc_args: [1]types.LLVMValueRef = .{buf_size};
-        const init_buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "init_buf");
-        _ = core.LLVMBuildStore(self.builder, init_buf, result_buf_alloca);
-
-        self.buildBranch(loop_check);
 
         // loop_check: find = strstr(current, from)
         core.LLVMPositionBuilderAtEnd(self.builder, loop_check);
@@ -971,6 +1198,183 @@ pub const StdlibCodegen = struct {
         // ko_string_split(str: ptr, delimiter: ptr) -> i64 (list pointer)
         var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
         _ = self.createFunction("ko_string_split", self.i64Type(), &params);
+    }
+
+    // ============================================================
+    // String prefix/suffix/search builtins
+    // ============================================================
+
+    pub fn codegenStringStartsWith(self: *StdlibCodegen) void {
+        // ko_string_starts_with(str: ptr, prefix: ptr) -> i64
+        // Returns 1 if str starts with prefix, 0 otherwise
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const fn_val = self.createFunction("ko_string_starts_with", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const str = core.LLVMGetParam(fn_val, 0);
+        const prefix = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(str, "str");
+        core.LLVMSetValueName(prefix, "prefix");
+
+        // prefix_len = strlen(prefix)
+        const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
+        var strlen_args: [1]types.LLVMValueRef = .{prefix};
+        const prefix_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, 1, "prefix_len");
+
+        // result = strncmp(str, prefix, prefix_len) == 0
+        const strncmp_fn = core.LLVMGetNamedFunction(self.module, "strncmp");
+        var strncmp_args: [3]types.LLVMValueRef = .{ str, prefix, prefix_len };
+        const cmp_result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strncmp_fn), strncmp_fn, &strncmp_args, 3, "cmp_result");
+        const zero_i32 = core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 0, 0);
+        const is_match = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, cmp_result, zero_i32, "is_match");
+        const result = core.LLVMBuildZExt(self.builder, is_match, self.i64Type(), "result");
+        self.buildRet(result);
+    }
+
+    pub fn codegenStringEndsWith(self: *StdlibCodegen) void {
+        // ko_string_ends_with(str: ptr, suffix: ptr) -> i64
+        // Returns 1 if str ends with suffix, 0 otherwise
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const fn_val = self.createFunction("ko_string_ends_with", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const str = core.LLVMGetParam(fn_val, 0);
+        const suffix = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(str, "str");
+        core.LLVMSetValueName(suffix, "suffix");
+
+        const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
+
+        // str_len = strlen(str)
+        var strlen_args1: [1]types.LLVMValueRef = .{str};
+        const str_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args1, 1, "str_len");
+
+        // suffix_len = strlen(suffix)
+        var strlen_args2: [1]types.LLVMValueRef = .{suffix};
+        const suffix_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args2, 1, "suffix_len");
+
+        // If suffix_len > str_len, return 0
+        const cmp_len = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, suffix_len, str_len, "cmp_len");
+
+        // offset = str_len - suffix_len
+        const offset = core.LLVMBuildSub(self.builder, str_len, suffix_len, "offset");
+
+        // result_ptr = str + offset (GEP into str)
+        var gep_idx: [1]types.LLVMValueRef = .{offset};
+        const result_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), str, &gep_idx, 1, "result_ptr");
+
+        // cmp = strncmp(result_ptr, suffix, suffix_len) == 0
+        const strncmp_fn = core.LLVMGetNamedFunction(self.module, "strncmp");
+        var strncmp_args: [3]types.LLVMValueRef = .{ result_ptr, suffix, suffix_len };
+        const cmp_result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strncmp_fn), strncmp_fn, &strncmp_args, 3, "cmp_result");
+        const zero_i32 = core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 0, 0);
+        const suffix_matches = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, cmp_result, zero_i32, "suffix_matches");
+
+        // If str_len < suffix_len, return 0; else return suffix_matches
+        const zero = core.LLVMConstInt(self.i64Type(), 0, 0);
+        const suffix_i64 = core.LLVMBuildZExt(self.builder, suffix_matches, self.i64Type(), "suffix_i64");
+        const result = core.LLVMBuildSelect(self.builder, cmp_len, zero, suffix_i64, "result_ext");
+        self.buildRet(result);
+    }
+
+    pub fn codegenStringSubstring(self: *StdlibCodegen) void {
+        // ko_string_substring(str: ptr, start: i64, len: i64) -> ptr
+        // Returns a new null-terminated string from start for len bytes
+        var params: [3]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_string_substring", self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const str = core.LLVMGetParam(fn_val, 0);
+        const start = core.LLVMGetParam(fn_val, 1);
+        const len = core.LLVMGetParam(fn_val, 2);
+        core.LLVMSetValueName(str, "str");
+        core.LLVMSetValueName(start, "start");
+        core.LLVMSetValueName(len, "len");
+
+        const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
+        const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
+        const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
+
+        // str_len = strlen(str)
+        var strlen_args: [1]types.LLVMValueRef = .{str};
+        const str_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, 1, "str_len");
+
+        // Clamp start to [0, str_len]
+        const start_negative = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, start, core.LLVMConstInt(self.i64Type(), 0, 0), "start_neg");
+        const clamped_start = core.LLVMBuildSelect(self.builder, start_negative, core.LLVMConstInt(self.i64Type(), 0, 0), start, "clamped_start");
+        const start_too_big = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, clamped_start, str_len, "start_big");
+        const safe_start = core.LLVMBuildSelect(self.builder, start_too_big, str_len, clamped_start, "safe_start");
+
+        // available = str_len - safe_start
+        const available = core.LLVMBuildSub(self.builder, str_len, safe_start, "available");
+
+        // actual_len = min(len, available)
+        const len_too_big = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, len, available, "len_big");
+        const actual_len = core.LLVMBuildSelect(self.builder, len_too_big, available, len, "actual_len");
+
+        // If actual_len < 0, set to 0
+        const len_negative = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, actual_len, core.LLVMConstInt(self.i64Type(), 0, 0), "len_neg");
+        const final_len = core.LLVMBuildSelect(self.builder, len_negative, core.LLVMConstInt(self.i64Type(), 0, 0), actual_len, "final_len");
+
+        // alloc_size = final_len + 1 (for null terminator)
+        const one = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const alloc_size = core.LLVMBuildAdd(self.builder, final_len, one, "alloc_size");
+
+        // buf = malloc(alloc_size)
+        var malloc_args: [1]types.LLVMValueRef = .{alloc_size};
+        const buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "buf");
+
+        // src_ptr = str + safe_start
+        var src_gep: [1]types.LLVMValueRef = .{safe_start};
+        const src_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), str, &src_gep, 1, "src_ptr");
+
+        // memcpy(buf, src_ptr, final_len)
+        var memcpy_args: [3]types.LLVMValueRef = .{ buf, src_ptr, final_len };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, 3, "");
+
+        // buf[final_len] = '\0'
+        var null_gep: [1]types.LLVMValueRef = .{final_len};
+        const null_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), buf, &null_gep, 1, "null_ptr");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(core.LLVMInt8TypeInContext(self.context), 0, 0), null_ptr);
+
+        self.buildRet(buf);
+    }
+
+    pub fn codegenStringIndexOf(self: *StdlibCodegen) void {
+        // ko_string_index_of(haystack: ptr, needle: ptr) -> i64
+        // Returns the index of the first occurrence, or -1 if not found
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const fn_val = self.createFunction("ko_string_index_of", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const haystack = core.LLVMGetParam(fn_val, 0);
+        const needle = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(haystack, "haystack");
+        core.LLVMSetValueName(needle, "needle");
+
+        const strstr_fn = core.LLVMGetNamedFunction(self.module, "strstr");
+
+        // result_ptr = strstr(haystack, needle)
+        var strstr_args: [2]types.LLVMValueRef = .{ haystack, needle };
+        const result_ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strstr_fn), strstr_fn, &strstr_args, 2, "result_ptr");
+
+        // is_not_found = (result_ptr == null)
+        const null_ptr = core.LLVMConstPointerNull(self.ptrType());
+        const is_not_found = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, result_ptr, null_ptr, "is_not_found");
+
+        // not_found_result = -1
+        const neg1 = core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -1)), 0);
+
+        // found_index = result_ptr - haystack
+        const found_index = core.LLVMBuildPtrDiff2(self.builder, core.LLVMInt8TypeInContext(self.context), result_ptr, haystack, "found_index");
+
+        // result = is_not_found ? -1 : found_index
+        const result = core.LLVMBuildSelect(self.builder, is_not_found, neg1, found_index, "result");
+        self.buildRet(result);
     }
 
     // ============================================================
@@ -1090,6 +1494,107 @@ pub const StdlibCodegen = struct {
     }
 
     // ============================================================
+    // Float constants (zero-arg functions returning f64 as i64)
+    // ============================================================
+
+    fn codegenFloatConstants(self: *StdlibCodegen) void {
+        self.codegenFloatConst("ko_float_pi", std.math.pi);
+        self.codegenFloatConst("ko_float_e", std.math.e);
+        self.codegenFloatConst("ko_float_infinity", std.math.inf(f64));
+        self.codegenFloatConst("ko_float_nan", std.math.nan(f64));
+        self.codegenFloatConst("ko_float_max_value", std.math.floatMax(f64));
+        self.codegenFloatConst("ko_float_min_value", -std.math.floatMax(f64));
+        self.codegenFloatConst("ko_float_epsilon", std.math.floatEps(f64));
+    }
+
+    fn codegenFloatConst(self: *StdlibCodegen, name: [*:0]const u8, value: f64) void {
+        const fn_val = self.createFunction(name, self.i64Type(), &.{});
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const double_val = core.LLVMConstReal(self.doubleType(), value);
+        const i64_val = core.LLVMConstBitCast(double_val, self.i64Type());
+        self.buildRet(i64_val);
+    }
+
+    // ============================================================
+    // Float predicates (unary functions returning i64 0/1)
+    // ============================================================
+
+    fn codegenFloatPredicates(self: *StdlibCodegen) void {
+        self.codegenFloatIsNan();
+        self.codegenFloatIsInfinite();
+        self.codegenFloatIsFinite();
+        self.codegenFloatSign();
+    }
+
+    fn codegenFloatIsNan(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_float_is_nan", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const i64_val = core.LLVMGetParam(fn_val, 0);
+        const double_val = core.LLVMBuildBitCast(self.builder, i64_val, self.doubleType(), "dbl");
+        const nan_val = core.LLVMConstReal(self.doubleType(), std.math.nan(f64));
+        const cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealUNE, double_val, nan_val, "is_nan");
+        const result = core.LLVMBuildZExt(self.builder, cmp, self.i64Type(), "result");
+        self.buildRet(result);
+    }
+
+    fn codegenFloatIsInfinite(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_float_is_infinite", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const i64_val = core.LLVMGetParam(fn_val, 0);
+        const double_val = core.LLVMBuildBitCast(self.builder, i64_val, self.doubleType(), "dbl");
+        const pos_inf = core.LLVMConstReal(self.doubleType(), std.math.inf(f64));
+        const neg_inf = core.LLVMConstReal(self.doubleType(), -std.math.inf(f64));
+        const pos_cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealOEQ, double_val, pos_inf, "eq_pos");
+        const neg_cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealOEQ, double_val, neg_inf, "eq_neg");
+        const cmp = core.LLVMBuildOr(self.builder, pos_cmp, neg_cmp, "is_inf");
+        const result = core.LLVMBuildZExt(self.builder, cmp, self.i64Type(), "result");
+        self.buildRet(result);
+    }
+
+    fn codegenFloatIsFinite(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_float_is_finite", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const i64_val = core.LLVMGetParam(fn_val, 0);
+        const double_val = core.LLVMBuildBitCast(self.builder, i64_val, self.doubleType(), "dbl");
+        // x == x (NaN check) && !isinf(x)
+        const self_cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealOEQ, double_val, double_val, "eq_self");
+        const pos_inf = core.LLVMConstReal(self.doubleType(), std.math.inf(f64));
+        const neg_inf = core.LLVMConstReal(self.doubleType(), -std.math.inf(f64));
+        const pos_inf_cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealOEQ, double_val, pos_inf, "eq_pos");
+        const neg_inf_cmp = core.LLVMBuildFCmp(self.builder, .LLVMRealOEQ, double_val, neg_inf, "eq_neg");
+        const inf_cmp = core.LLVMBuildOr(self.builder, pos_inf_cmp, neg_inf_cmp, "is_inf");
+        const not_inf = core.LLVMBuildNot(self.builder, inf_cmp, "not_inf");
+        const cmp = core.LLVMBuildAnd(self.builder, self_cmp, not_inf, "is_finite");
+        const result = core.LLVMBuildZExt(self.builder, cmp, self.i64Type(), "result");
+        self.buildRet(result);
+    }
+
+    fn codegenFloatSign(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_float_sign", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const i64_val = core.LLVMGetParam(fn_val, 0);
+        const double_val = core.LLVMBuildBitCast(self.builder, i64_val, self.doubleType(), "dbl");
+        const zero = core.LLVMConstReal(self.doubleType(), 0.0);
+        const one = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const neg_one = core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -1)), 0);
+        const zero_i64 = core.LLVMConstInt(self.i64Type(), 0, 0);
+        const gt = core.LLVMBuildFCmp(self.builder, .LLVMRealOGT, double_val, zero, "gt");
+        const lt = core.LLVMBuildFCmp(self.builder, .LLVMRealOLT, double_val, zero, "lt");
+        const select_neg = core.LLVMBuildSelect(self.builder, lt, neg_one, zero_i64, "neg_or_zero");
+        const select_pos = core.LLVMBuildSelect(self.builder, gt, one, select_neg, "result");
+        self.buildRet(select_pos);
+    }
+
+    // ============================================================
     // Int toString (using snprintf)
     // ============================================================
 
@@ -1162,16 +1667,18 @@ pub const StdlibCodegen = struct {
     // ============================================================
 
     pub fn codegenKoAlloc(self: *StdlibCodegen) void {
-        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
         const fn_val = self.createFunction("ko_alloc", self.ptrType(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
 
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const user_size = core.LLVMGetParam(fn_val, 0);
         core.LLVMSetValueName(user_size, "user_size");
+        const type_tag = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(type_tag, "type_tag");
 
-        // total = user_size + 8
-        const total = core.LLVMBuildAdd(self.builder, user_size, core.LLVMConstInt(self.i64Type(), 8, 0), "total");
+        // total = user_size + 32 (8 for rc + 8 for type_tag + 8 for arity + 8 for field_bitmap)
+        const total = core.LLVMBuildAdd(self.builder, user_size, core.LLVMConstInt(self.i64Type(), 32, 0), "total");
 
         // raw = malloc(total)
         const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
@@ -1182,8 +1689,26 @@ pub const StdlibCodegen = struct {
         const rc_ptr = core.LLVMBuildBitCast(self.builder, raw, self.ptrType(), "rc_ptr");
         _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), rc_ptr);
 
-        // Return raw + 8 (skip RC header)
-        var user_ptr_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        // Store type_tag at offset 8
+        const tag_ptr_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), raw, @constCast(&tag_ptr_idx), 1, "tag_ptr");
+        const tag_ptr_typed = core.LLVMBuildBitCast(self.builder, tag_ptr, self.ptrType(), "tag_ptr_typed");
+        _ = core.LLVMBuildStore(self.builder, type_tag, tag_ptr_typed);
+
+        // Initialize arity (offset 16) and field_bitmap (offset 24) to 0
+        // These are set by the caller after allocation (constructor/tuple/record codegen)
+        var arity_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const arity_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), raw, @constCast(&arity_idx), 1, "arity_ptr");
+        const arity_ptr_typed = core.LLVMBuildBitCast(self.builder, arity_ptr, self.ptrType(), "arity_ptr_typed");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), arity_ptr_typed);
+
+        var bitmap_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 24, 0)};
+        const bitmap_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), raw, @constCast(&bitmap_idx), 1, "bitmap_ptr");
+        const bitmap_ptr_typed = core.LLVMBuildBitCast(self.builder, bitmap_ptr, self.ptrType(), "bitmap_ptr_typed");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), bitmap_ptr_typed);
+
+        // Return raw + 32 (skip rc, type_tag, arity, field_bitmap headers)
+        var user_ptr_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 32, 0)};
         const user_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), raw, @ptrCast(&user_ptr_idx), 1, "user_ptr");
         self.buildRet(user_ptr);
     }
@@ -1192,6 +1717,8 @@ pub const StdlibCodegen = struct {
         var params: [1]types.LLVMTypeRef = .{self.ptrType()};
         const fn_val = self.createFunction("ko_incref", self.ptrType(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const compute_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "compute");
+        const null_return = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "null_return");
 
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const ptr = core.LLVMGetParam(fn_val, 0);
@@ -1199,17 +1726,14 @@ pub const StdlibCodegen = struct {
 
         // if ptr == null, return null
         const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, ptr, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, null_return, compute_block);
 
-        const null_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "null_return");
-        const compute_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "compute");
-        self.buildCondBranch(is_null, null_block, compute_block);
-
-        core.LLVMPositionBuilderAtEnd(self.builder, null_block);
+        core.LLVMPositionBuilderAtEnd(self.builder, null_return);
         self.buildRet(core.LLVMConstNull(self.ptrType()));
 
         core.LLVMPositionBuilderAtEnd(self.builder, compute_block);
-        // rc_ptr = ptr - 8
-        var rc_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)};
+        // rc_ptr = ptr - 32 (rc is 32 bytes before user data: 8 rc + 8 type_tag + 8 arity + 8 bitmap)
+        var rc_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -32)), 0)};
         const rc_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&rc_idx), 1, "rc_ptr");
         const rc_ptr_typed = core.LLVMBuildBitCast(self.builder, rc_ptr, self.ptrType(), "rc_ptr_typed");
 
@@ -1223,8 +1747,7 @@ pub const StdlibCodegen = struct {
     }
 
     pub fn codegenKoDecref(self: *StdlibCodegen) void {
-        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
-        const fn_val = self.createFunction("ko_decref", self.voidType(), &params);
+        const fn_val = core.LLVMGetNamedFunction(self.module, "ko_decref").?;
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
         const check_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check");
         const free_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "free_block");
@@ -1238,9 +1761,9 @@ pub const StdlibCodegen = struct {
         const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, ptr, core.LLVMConstNull(self.ptrType()), "is_null");
         self.buildCondBranch(is_null, done_block, check_block);
 
-        // rc_ptr = ptr - 8
+        // rc_ptr = ptr - 32 (rc is 32 bytes before user data: 8 rc + 8 type_tag + 8 arity + 8 bitmap)
         core.LLVMPositionBuilderAtEnd(self.builder, check_block);
-        var rc_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)};
+        var rc_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -32)), 0)};
         const rc_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&rc_idx), 1, "rc_ptr");
         const rc_ptr_typed = core.LLVMBuildBitCast(self.builder, rc_ptr, self.ptrType(), "rc_ptr_typed");
 
@@ -1253,11 +1776,383 @@ pub const StdlibCodegen = struct {
         const should_free = core.LLVMBuildICmp(self.builder, .LLVMIntSLE, new_rc, core.LLVMConstInt(self.i64Type(), 0, 0), "should_free");
         self.buildCondBranch(should_free, free_block, done_block);
 
-        // free(ptr - 8)
+        // free(ptr - 32)
         core.LLVMPositionBuilderAtEnd(self.builder, free_block);
+        
+        // Read type_tag from ptr - 24 before freeing (type_tag is 24 bytes before user data)
+        var tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -24)), 0)};
+        const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&tag_idx), 1, "tag_ptr");
+        const tag_ptr_typed = core.LLVMBuildBitCast(self.builder, tag_ptr, self.ptrType(), "tag_ptr_typed");
+        const type_tag = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_typed, "type_tag");
+        
+        // Read arity from ptr - 16
+        var arity_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -16)), 0)};
+        const arity_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&arity_idx), 1, "arity_ptr");
+        const arity_ptr_typed = core.LLVMBuildBitCast(self.builder, arity_ptr, self.ptrType(), "arity_ptr_typed");
+        const arity = core.LLVMBuildLoad2(self.builder, self.i64Type(), arity_ptr_typed, "arity");
+        
+        // Read field_bitmap from ptr - 8
+        var bitmap_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)};
+        const bitmap_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&bitmap_idx), 1, "bitmap_ptr");
+        const bitmap_ptr_typed = core.LLVMBuildBitCast(self.builder, bitmap_ptr, self.ptrType(), "bitmap_ptr_typed");
+        const field_bitmap = core.LLVMBuildLoad2(self.builder, self.i64Type(), bitmap_ptr_typed, "field_bitmap");
+        
+        // Check if type_tag == 10 (closure) — different layout from normal values
+        const is_closure = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 10, 0), "is_closure");
+        const closure_walk_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "closure_walk");
+        const decref_value_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "decref_value");
+        
+        // Hoist free_fn before the branch so both paths can use it
         const free_fn = core.LLVMGetNamedFunction(self.module, "free");
+        
+        self.buildCondBranch(is_closure, closure_walk_bb, decref_value_bb);
+        
+        // In closure_walk_bb: call ko_decref_closure(ptr) to walk captured values, then free
+        core.LLVMPositionBuilderAtEnd(self.builder, closure_walk_bb);
+        const decref_closure_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_closure");
+        var dc_args: [1]types.LLVMValueRef = .{ptr};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_closure_fn), decref_closure_fn, &dc_args, 1, "");
+        // Skip ko_decref_value (closure has custom layout), go straight to free
+        var free_args_closure: [1]types.LLVMValueRef = .{rc_ptr};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(free_fn), free_fn, &free_args_closure, 1, "");
+        self.buildBranch(done_block);
+        
+        // In decref_value_bb: normal path — call ko_decref_value then free
+        core.LLVMPositionBuilderAtEnd(self.builder, decref_value_bb);
+        
+        // Call ko_decref_value(ptr, type_tag, arity, field_bitmap) to recursively decrement fields
+        const decref_value_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_value");
+        var decref_args: [4]types.LLVMValueRef = .{ ptr, type_tag, arity, field_bitmap };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_value_fn), decref_value_fn, &decref_args, 4, "");
+        
+        // free(ptr - 32)
         var free_args: [1]types.LLVMValueRef = .{rc_ptr};
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, 1, "");
+        self.buildBranch(done_block);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_block);
+        self.buildRetVoid();
+    }
+
+    /// ko_decref_closure(ptr) - Walk captured values in a closure and decref each heap-allocated one.
+    /// Does NOT free the closure struct itself — caller (ko_decref) handles that.
+    /// Unified closure layout: [ fn_ptr(8) | count(8) | kind(8) | data... | type_tags... ]
+    ///   kind=0 (lambda):   count=num_captures, data=captured values, type_tags after data
+    ///   kind=1 (partial):  count=total_arity, data=applied_count(8)+applied_args, type_tags after applied_args
+    pub fn codegenKoDecrefClosure(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_decref_closure", self.voidType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const check_count = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_count");
+        const read_kind = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "read_kind");
+        const kind_lambda = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "kind_lambda");
+        const kind_partial = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "kind_partial");
+        const loop_check = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_check");
+        const loop_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_body");
+        const loop_next = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_next");
+        const loop_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_done");
+        const done_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(ptr, "ptr");
+
+        // if ptr == null, return
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, ptr, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, done_block, check_count);
+
+        // Read count from offset 8 (num_captures for lambda, total_arity for partial app)
+        core.LLVMPositionBuilderAtEnd(self.builder, check_count);
+        var count_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const count_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&count_idx), 1, "count_ptr");
+        const count_ptr_typed = core.LLVMBuildBitCast(self.builder, count_ptr, self.ptrType(), "count_ptr_typed");
+        const count_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), count_ptr_typed, "count_val");
+
+        // If count == 0, no captures → skip loop
+        const is_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, count_val, core.LLVMConstInt(self.i64Type(), 0, 0), "is_zero");
+        self.buildCondBranch(is_zero, loop_done, read_kind);
+
+        // Read kind from offset 16 (0=lambda, 1=partial app)
+        core.LLVMPositionBuilderAtEnd(self.builder, read_kind);
+        var kind_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const kind_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&kind_idx), 1, "kind_ptr");
+        const kind_ptr_typed = core.LLVMBuildBitCast(self.builder, kind_ptr, self.ptrType(), "kind_ptr_typed");
+        const kind_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), kind_ptr_typed, "kind_val");
+
+        // Branch on kind
+        const is_lambda = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, kind_val, core.LLVMConstInt(self.i64Type(), 0, 0), "is_lambda");
+        self.buildCondBranch(is_lambda, kind_lambda, kind_partial);
+
+        // Lambda path: compute data_base and tag_base as regular values (not phi)
+        core.LLVMPositionBuilderAtEnd(self.builder, kind_lambda);
+        const lambda_data_base = core.LLVMConstInt(self.i64Type(), 24, 0);
+        const lambda_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 24, 0),
+            core.LLVMBuildMul(self.builder, count_val, core.LLVMConstInt(self.i64Type(), 8, 0), "mul1"), "lambda_tag_base");
+        // Lambda: idx starts at 0
+        const lambda_init_idx = core.LLVMConstInt(self.i64Type(), 0, 0);
+        self.buildBranch(loop_check);
+
+        // Partial app path: read applied_count from offset 24, data_base=32, tag_base=32+applied_count*8
+        core.LLVMPositionBuilderAtEnd(self.builder, kind_partial);
+        var pcount_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 24, 0)};
+        const pcount_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&pcount_idx), 1, "pcount_ptr");
+        const pcount_ptr_typed = core.LLVMBuildBitCast(self.builder, pcount_ptr, self.ptrType(), "pcount_ptr_typed");
+        const partial_applied = core.LLVMBuildLoad2(self.builder, self.i64Type(), pcount_ptr_typed, "partial_applied");
+        const partial_data_base = core.LLVMConstInt(self.i64Type(), 32, 0);
+        const partial_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 32, 0),
+            core.LLVMBuildMul(self.builder, partial_applied, core.LLVMConstInt(self.i64Type(), 8, 0), "mul2"), "partial_tag_base");
+        // Partial: idx starts at 0
+        const partial_init_idx = core.LLVMConstInt(self.i64Type(), 0, 0);
+        self.buildBranch(loop_check);
+
+        // Loop check: merge data_base, tag_base, and idx from both paths via phi
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_check);
+        const phi_data_base = core.LLVMBuildPhi(self.builder, self.i64Type(), "data_base");
+        const phi_tag_base = core.LLVMBuildPhi(self.builder, self.i64Type(), "tag_base");
+        const phi_idx = core.LLVMBuildPhi(self.builder, self.i64Type(), "idx");
+        {
+            var incoming_vals: [2]types.LLVMValueRef = .{ lambda_data_base, partial_data_base };
+            var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ kind_lambda, kind_partial };
+            core.LLVMAddIncoming(phi_data_base, @ptrCast(&incoming_vals), @ptrCast(&incoming_bbs), 2);
+        }
+        {
+            var incoming_vals: [2]types.LLVMValueRef = .{ lambda_tag_base, partial_tag_base };
+            var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ kind_lambda, kind_partial };
+            core.LLVMAddIncoming(phi_tag_base, @ptrCast(&incoming_vals), @ptrCast(&incoming_bbs), 2);
+        }
+        {
+            var incoming_vals: [2]types.LLVMValueRef = .{ lambda_init_idx, partial_init_idx };
+            var incoming_bbs: [2]types.LLVMBasicBlockRef = .{ kind_lambda, kind_partial };
+            core.LLVMAddIncoming(phi_idx, @ptrCast(&incoming_vals), @ptrCast(&incoming_bbs), 2);
+        }
+
+        // Check if idx < count
+        const should_continue = core.LLVMBuildICmp(self.builder, .LLVMIntULT, phi_idx, count_val, "should_continue");
+        self.buildCondBranch(should_continue, loop_body, loop_done);
+
+        // Loop body: read type tag from tag_base + idx*8
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_body);
+        const tag_offset = core.LLVMBuildAdd(self.builder, phi_tag_base,
+            core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul3"), "tag_offset");
+
+        var tag_gep_idx: [1]types.LLVMValueRef = .{tag_offset};
+        const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
+        const tag_ptr_typed = core.LLVMBuildBitCast(self.builder, tag_ptr, self.ptrType(), "tag_ptr_typed");
+        const type_tag = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_typed, "type_tag");
+
+        // Check if type_tag == -1 (skip) or 0 (raw/ref with no fields) → skip decref
+        const is_skip = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -1)), 0), "is_skip");
+        const is_raw = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw");
+        const should_skip = core.LLVMBuildOr(self.builder, is_skip, is_raw, "should_skip");
+
+        // If type_tag is 1 (constructor), 2 (tuple), or 3 (record) → call ko_decref_value
+        const is_ctor = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 1, 0), "is_ctor");
+        const is_tuple = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 2, 0), "is_tuple");
+        const is_record = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 3, 0), "is_record");
+        const is_heap = core.LLVMBuildOr(self.builder,
+            core.LLVMBuildOr(self.builder, is_ctor, is_tuple, "or1"),
+            is_record, "is_heap");
+        const should_decref = core.LLVMBuildAnd(self.builder, is_heap,
+            core.LLVMBuildNot(self.builder, should_skip, "not_skip"), "should_decref");
+
+        const decref_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "decref_val");
+        self.buildCondBranch(should_decref, decref_bb, loop_next);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, decref_bb);
+        // Read value from data_base + idx*8
+        const cap_offset = core.LLVMBuildAdd(self.builder, phi_data_base,
+            core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul4"), "cap_offset");
+        var cap_gep_idx: [1]types.LLVMValueRef = .{cap_offset};
+        const cap_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&cap_gep_idx), 1, "cap_ptr");
+        const cap_ptr_typed = core.LLVMBuildBitCast(self.builder, cap_ptr, self.ptrType(), "cap_ptr_typed");
+        const cap_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), cap_ptr_typed, "cap_val");
+
+        const cap_ptr_val = core.LLVMBuildIntToPtr(self.builder, cap_val, self.ptrType(), "cap_ptr_val");
+        // Read arity from cap_ptr_val - 16 (captured value's own header)
+        var cap_arity_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -16)), 0)};
+        const cap_arity_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), cap_ptr_val, @ptrCast(&cap_arity_idx), 1, "cap_arity_ptr");
+        const cap_arity_ptr_typed = core.LLVMBuildBitCast(self.builder, cap_arity_ptr, self.ptrType(), "cap_arity_ptr_typed");
+        const cap_arity = core.LLVMBuildLoad2(self.builder, self.i64Type(), cap_arity_ptr_typed, "cap_arity");
+        // Read field_bitmap from cap_ptr_val - 8
+        var cap_bmp_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)};
+        const cap_bmp_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), cap_ptr_val, @ptrCast(&cap_bmp_idx), 1, "cap_bmp_ptr");
+        const cap_bmp_ptr_typed = core.LLVMBuildBitCast(self.builder, cap_bmp_ptr, self.ptrType(), "cap_bmp_ptr_typed");
+        const cap_bitmap = core.LLVMBuildLoad2(self.builder, self.i64Type(), cap_bmp_ptr_typed, "cap_bitmap");
+        var decref_args: [4]types.LLVMValueRef = .{ cap_ptr_val, type_tag, cap_arity, cap_bitmap };
+        const decref_value_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_value");
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_value_fn), decref_value_fn, &decref_args, 4, "");
+        self.buildBranch(loop_next);
+
+        // Loop increment
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_next);
+        const next_idx = core.LLVMBuildAdd(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
+        {
+            var next_incoming: [1]types.LLVMValueRef = .{next_idx};
+            var next_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+            core.LLVMAddIncoming(phi_idx, &next_incoming, &next_blocks, 1);
+        }
+        // data_base and tag_base don't change in the loop — add incoming from loop_next with their own values
+        {
+            var next_incoming: [1]types.LLVMValueRef = .{phi_data_base};
+            var next_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+            core.LLVMAddIncoming(phi_data_base, &next_incoming, &next_blocks, 1);
+        }
+        {
+            var next_incoming: [1]types.LLVMValueRef = .{phi_tag_base};
+            var next_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+            core.LLVMAddIncoming(phi_tag_base, &next_incoming, &next_blocks, 1);
+        }
+        self.buildBranch(loop_check);
+
+        // Loop done: just return (caller handles freeing the closure struct)
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_done);
+        self.buildBranch(done_block);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_block);
+        self.buildRetVoid();
+    }
+
+    /// ko_decref_value(ptr, type_tag, arity, field_bitmap) - Recursively decrement fields.
+    /// type_tag: 0=raw/ref, 1=constructor, 2=tuple, 3=record
+    /// arity: number of fields/elements (passed by caller, read from header)
+    /// field_bitmap: bitmask of which fields are pointers (1=pointer, 0=scalar)
+    pub fn codegenKoDecrefValue(self: *StdlibCodegen) void {
+        var params: [4]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_decref_value", self.voidType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const check_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check");
+        const check_block2 = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_block2");
+        const check_block3 = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_block3");
+        const constructor_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "constructor");
+        const tuple_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tuple");
+        const record_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "record");
+        const loop_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
+        const loop_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_body");
+        const loop_decref = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_decref");
+        const loop_next = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_next");
+        const loop_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_done");
+        const done_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(ptr, "ptr");
+        const type_tag = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(type_tag, "type_tag");
+        const arity_param = core.LLVMGetParam(fn_val, 2);
+        core.LLVMSetValueName(arity_param, "arity");
+        const field_bitmap = core.LLVMGetParam(fn_val, 3);
+        core.LLVMSetValueName(field_bitmap, "field_bitmap");
+
+        // if ptr == null, return
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, ptr, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, done_block, check_block);
+
+        // Check type_tag
+        core.LLVMPositionBuilderAtEnd(self.builder, check_block);
+        const is_constructor = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 1, 0), "is_constructor");
+        self.buildCondBranch(is_constructor, constructor_block, check_block2);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, check_block2);
+        const is_tuple = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 2, 0), "is_tuple");
+        self.buildCondBranch(is_tuple, tuple_block, check_block3);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, check_block3);
+        const is_record = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 3, 0), "is_record");
+        self.buildCondBranch(is_record, record_block, done_block);
+
+        // Constructor: tag at index 0, args at indices 1..arity
+        core.LLVMPositionBuilderAtEnd(self.builder, constructor_block);
+        self.buildBranch(loop_block);
+
+        // Tuple: length at index 0, elements at indices 1..arity
+        core.LLVMPositionBuilderAtEnd(self.builder, tuple_block);
+        self.buildBranch(loop_block);
+
+        // Record: fields at indices 0..arity-1
+        core.LLVMPositionBuilderAtEnd(self.builder, record_block);
+        self.buildBranch(loop_block);
+
+        // Loop header: phi nodes for idx, count, and start_idx
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_block);
+        const phi_idx = core.LLVMBuildPhi(self.builder, self.i64Type(), "idx");
+        const phi_count = core.LLVMBuildPhi(self.builder, self.i64Type(), "count");
+        const phi_start_idx = core.LLVMBuildPhi(self.builder, self.i64Type(), "start_idx");
+        
+        // Add incoming values for phi nodes from the type-specific blocks
+        var idx_incoming: [3]types.LLVMValueRef = .{
+            core.LLVMConstInt(self.i64Type(), 1, 0), // constructor: skip tag
+            core.LLVMConstInt(self.i64Type(), 1, 0), // tuple: skip length
+            core.LLVMConstInt(self.i64Type(), 0, 0), // record: fields start at 0
+        };
+        var idx_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
+        core.LLVMAddIncoming(phi_idx, &idx_incoming, &idx_blocks, 3);
+        
+        var count_incoming: [3]types.LLVMValueRef = .{ arity_param, arity_param, arity_param };
+        var count_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
+        core.LLVMAddIncoming(phi_count, &count_incoming, &count_blocks, 3);
+        
+        var start_incoming: [3]types.LLVMValueRef = .{
+            core.LLVMConstInt(self.i64Type(), 1, 0), // constructor: skip tag
+            core.LLVMConstInt(self.i64Type(), 1, 0), // tuple: skip length
+            core.LLVMConstInt(self.i64Type(), 0, 0), // record: fields start at 0
+        };
+        var start_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
+        core.LLVMAddIncoming(phi_start_idx, &start_incoming, &start_blocks, 3);
+        
+        // Check if idx < count
+        const should_continue = core.LLVMBuildICmp(self.builder, .LLVMIntULT, phi_idx, phi_count, "should_continue");
+        self.buildCondBranch(should_continue, loop_body, loop_done);
+
+        // Loop body: check bitmap, decref field at index if pointer
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_body);
+        
+        // Compute bitmap bit position: for constructor/tuple, bit = idx - start_idx; for record, bit = idx - 0
+        const bitmap_idx = core.LLVMBuildSub(self.builder, phi_idx, phi_start_idx, "bitmap_idx");
+        
+        // Check if bit is set: (field_bitmap >> bitmap_idx) & 1
+        const shift_amt = core.LLVMBuildShl(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), bitmap_idx, "shift_amt");
+        const masked = core.LLVMBuildAnd(self.builder, field_bitmap, shift_amt, "masked");
+        const is_pointer = core.LLVMBuildICmp(self.builder, .LLVMIntNE, masked, core.LLVMConstInt(self.i64Type(), 0, 0), "is_pointer");
+        
+        // Compute next_idx and branch
+        const next_idx = core.LLVMBuildAdd(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
+        
+        // If pointer, decref the field
+        self.buildCondBranch(is_pointer, loop_decref, loop_next);
+
+        // decref block: load field, convert i64 to ptr, call ko_decref recursively
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_decref);
+        const idx_times_8 = core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "idx_times_8");
+        const field_idx_arr: [1]types.LLVMValueRef = .{idx_times_8};
+        const field_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @constCast(&field_idx_arr), 1, "field_ptr");
+        const field_ptr_typed = core.LLVMBuildBitCast(self.builder, field_ptr, self.ptrType(), "field_ptr_typed");
+        const field_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), field_ptr_typed, "field_val");
+        
+        // Convert i64 to ptr and call ko_decref (which reads header and recurses)
+        const field_as_ptr = core.LLVMBuildIntToPtr(self.builder, field_val, self.ptrType(), "field_as_ptr");
+        const ko_decref_fn = core.LLVMGetNamedFunction(self.module, "ko_decref");
+        var field_decref_args: [1]types.LLVMValueRef = .{field_as_ptr};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_decref_fn), ko_decref_fn, &field_decref_args, 1, "");
+        
+        self.buildBranch(loop_next);
+
+        // next block: increment idx and loop back
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_next);
+        self.buildBranch(loop_block);
+
+        // Add incoming for phi_idx in loop (from loop_next which loops back)
+        var loop_idx_incoming: [1]types.LLVMValueRef = .{next_idx};
+        var loop_idx_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+        core.LLVMAddIncoming(phi_idx, &loop_idx_incoming, &loop_idx_blocks, 1);
+        var loop_count_incoming: [1]types.LLVMValueRef = .{phi_count};
+        var loop_count_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+        core.LLVMAddIncoming(phi_count, &loop_count_incoming, &loop_count_blocks, 1);
+        var loop_start_incoming: [1]types.LLVMValueRef = .{phi_start_idx};
+        var loop_start_blocks: [1]types.LLVMBasicBlockRef = .{loop_next};
+        core.LLVMAddIncoming(phi_start_idx, &loop_start_incoming, &loop_start_blocks, 1);
+
+        // Loop done
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_done);
         self.buildBranch(done_block);
 
         core.LLVMPositionBuilderAtEnd(self.builder, done_block);
@@ -1424,10 +2319,6 @@ pub const StdlibCodegen = struct {
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
         const ilt_fn = core.LLVMGetNamedFunction(self.module, "inspect_list_tail");
 
-        // Shared cons struct type { i64, i64, i64 }
-        const cons_struct_fields: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
-        const cons_struct_type = core.LLVMStructTypeInContext(self.context, @constCast(&cons_struct_fields), 3, 0);
-
         // Check if name_ptr is null → fallback to "Constructor(%ld)"
         const ctor_has_name = core.LLVMBuildICmp(self.builder, .LLVMIntNE, name_ptr, core.LLVMConstNull(self.ptrType()), "has_name");
         const ctor_fallback_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ctor_fallback");
@@ -1445,8 +2336,8 @@ pub const StdlibCodegen = struct {
         // try_list: dereference ptr[0], check if it's 0 (Cons tag)
         core.LLVMPositionBuilderAtEnd(self.builder, try_list_block);
         const deref_ptr_try = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "deref_ptr_try");
-        var tag_idx_try: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
-        const tag_ptr_try = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr_try, @ptrCast(&tag_idx_try), 2, "tag_ptr_try");
+        var tag_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const tag_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&tag_idx_try), 1, "tag_ptr_try");
         const tag_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_try, "tag_val_try");
         const is_cons_try = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag_val_try, core.LLVMConstInt(self.i64Type(), 0, 0), "is_cons_try");
         const print_as_list = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_as_list");
@@ -1454,11 +2345,11 @@ pub const StdlibCodegen = struct {
 
         // print_as_list: print [head, tail...]
         core.LLVMPositionBuilderAtEnd(self.builder, print_as_list);
-        var head_idx_try: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
-        const head_ptr_try = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr_try, @ptrCast(&head_idx_try), 2, "head_ptr_try");
+        var head_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const head_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&head_idx_try), 1, "head_ptr_try");
         const head_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr_try, "head_val_try");
-        var tail_idx_try: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 2, 0) };
-        const tail_ptr_try = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr_try, @ptrCast(&tail_idx_try), 2, "tail_ptr_try");
+        var tail_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const tail_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&tail_idx_try), 1, "tail_ptr_try");
         const tail_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr_try, "tail_val_try");
         const fmt_lbracket_try = self.globalStringConstant("[");
         var lbracket_args_try: [2]types.LLVMValueRef = .{ fmt_lbracket_try, core.LLVMConstInt(self.i64Type(), 0, 0) };
@@ -1510,11 +2401,11 @@ pub const StdlibCodegen = struct {
         // print_cons: dereference val, printf("["), inspect(head, 100, null, raw), inspect_list_tail(tail, raw), printf("]")
         core.LLVMPositionBuilderAtEnd(self.builder, cons_block);
         const deref_ptr = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "deref_ptr");
-        var head_idx_cons: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
-        const head_ptr = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr, @ptrCast(&head_idx_cons), 2, "head_ptr");
+        var head_idx_cons: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const head_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&head_idx_cons), 1, "head_ptr");
         const head_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr, "head_val");
-        var tail_idx_cons: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 2, 0) };
-        const tail_ptr = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr, @ptrCast(&tail_idx_cons), 2, "tail_ptr");
+        var tail_idx_cons: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const tail_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tail_idx_cons), 1, "tail_ptr");
         const tail_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr, "tail_val");
         // printf("[")
         const fmt_lbracket = self.globalStringConstant("[");
@@ -1572,8 +2463,9 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, ctor_after_sep);
         // GEP to arg at ptr[i+1], load, call inspect(val, 100, null, 0, 0)
         const arg_offset = core.LLVMBuildAdd(self.builder, ctor_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "arg_offset");
-        var arg_idx: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), arg_offset };
-        const arg_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMArrayType(self.i64Type(), 0), ctor_ptr, @ptrCast(&arg_idx), 2, "arg_ptr");
+        const arg_byte_offset = core.LLVMBuildMul(self.builder, arg_offset, core.LLVMConstInt(self.i64Type(), 8, 0), "arg_byte");
+        var arg_idx: [1]types.LLVMValueRef = .{arg_byte_offset};
+        const arg_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ctor_ptr, @ptrCast(&arg_idx), 1, "arg_ptr");
         const arg_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), arg_ptr, "arg_val");
         var arg_inspect_args: [5]types.LLVMValueRef = .{ arg_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &arg_inspect_args, 5, "");
@@ -1591,10 +2483,6 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, nil_done);
         self.buildBranch(ctor_merge);
         core.LLVMPositionBuilderAtEnd(self.builder, cons_done);
-        self.buildBranch(ctor_merge);
-        core.LLVMPositionBuilderAtEnd(self.builder, ctor_name_done);
-        self.buildBranch(ctor_merge);
-        core.LLVMPositionBuilderAtEnd(self.builder, ctor_fallback_done);
         self.buildBranch(ctor_merge);
 
         core.LLVMPositionBuilderAtEnd(self.builder, ctor_merge);
@@ -1651,8 +2539,9 @@ pub const StdlibCodegen = struct {
         self.buildBranch(rec_after_sep);
         core.LLVMPositionBuilderAtEnd(self.builder, rec_after_sep);
         // GEP to field i, load, call inspect(val, 100, null, 0, 0)
-        var rec_field_idx: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), rec_idx_val };
-        const rec_field_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMArrayType(self.i64Type(), 0), rec_ptr, @ptrCast(&rec_field_idx), 2, "field_ptr");
+        const rec_byte_offset = core.LLVMBuildMul(self.builder, rec_idx_val, core.LLVMConstInt(self.i64Type(), 8, 0), "rec_byte");
+        var rec_field_idx: [1]types.LLVMValueRef = .{rec_byte_offset};
+        const rec_field_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), rec_ptr, @ptrCast(&rec_field_idx), 1, "field_ptr");
         const rec_field_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), rec_field_ptr, "field_val");
         var rec_field_args: [5]types.LLVMValueRef = .{ rec_field_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &rec_field_args, 5, "");
@@ -1728,8 +2617,9 @@ pub const StdlibCodegen = struct {
         self.buildBranch(after_sep);
         core.LLVMPositionBuilderAtEnd(self.builder, after_sep);
         // GEP to element i, load, call inspect(val, 100, null, 0, 0)
-        var elem_idx: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), tuple_idx_val };
-        const elem_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMArrayType(self.i64Type(), 0), tuple_ptr, @ptrCast(&elem_idx), 2, "elem_ptr");
+        const tuple_byte_offset = core.LLVMBuildMul(self.builder, tuple_idx_val, core.LLVMConstInt(self.i64Type(), 8, 0), "tuple_byte");
+        var elem_idx: [1]types.LLVMValueRef = .{tuple_byte_offset};
+        const elem_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), tuple_ptr, @ptrCast(&elem_idx), 1, "elem_ptr");
         const elem_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), elem_ptr, "elem_val");
         var elem_args: [5]types.LLVMValueRef = .{ elem_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &elem_args, 5, "");
@@ -1849,10 +2739,8 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, print_comma_bb);
 
         const deref_ptr = core.LLVMBuildIntToPtr(self.builder, tail, self.ptrType(), "deref_ptr");
-        const cons_struct_fields: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
-        const cons_struct_type = core.LLVMStructTypeInContext(self.context, @constCast(&cons_struct_fields), 3, 0);
-        var tag_idx: [1]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0) };
-        const tag_ptr = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr, @ptrCast(&tag_idx), 1, "tag_ptr");
+        var tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tag_idx), 1, "tag_ptr");
         const tag_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr, "tag_val");
         const is_cons = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag_val, core.LLVMConstInt(self.i64Type(), 0, 0), "is_cons");
 
@@ -1864,11 +2752,11 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, cons_tail_bb);
         var comma_args: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &comma_args, 2, "");
-        var head_idx: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
-        const head_ptr = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr, @ptrCast(&head_idx), 2, "head_ptr");
+        var head_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const head_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&head_idx), 1, "head_ptr");
         const head_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr, "head_val");
-        var tail_idx: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 2, 0) };
-        const next_tail_ptr = core.LLVMBuildGEP2(self.builder, cons_struct_type, deref_ptr, @ptrCast(&tail_idx), 2, "next_tail_ptr");
+        var tail_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const next_tail_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tail_idx), 1, "next_tail_ptr");
         const next_tail = core.LLVMBuildLoad2(self.builder, self.i64Type(), next_tail_ptr, "next_tail");
         // inspect(head, 100, null, raw, 0)
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
@@ -1910,6 +2798,7 @@ pub const StdlibCodegen = struct {
 
         self.codegenStringLength();
         self.codegenStringAppend();
+        self.codegenStringEq();
         self.codegenStringContains();
         self.codegenStringCharAt();
         self.codegenStringToUpper();
@@ -1917,16 +2806,41 @@ pub const StdlibCodegen = struct {
         self.codegenStringTrim();
         self.codegenStringReplace();
         self.codegenStringSplit();
+        self.codegenStringStartsWith();
+        self.codegenStringEndsWith();
+        self.codegenStringSubstring();
+        self.codegenStringIndexOf();
         self.codegenIntToString();
         self.codegenStringToInt();
 
         self.codegenFloatOfInt();
         self.codegenFloatToInt();
         self.codegenAllFloatMath();
+        self.codegenFloatConstants();
+        self.codegenFloatPredicates();
 
         self.codegenKoAlloc();
         self.codegenKoIncref();
+
+        // Pre-declare ko_decref so ko_decref_value can call it recursively.
+        // ko_decref_value calls ko_decref (recursive field decref).
+        // We must declare ko_decref first, then generate ko_decref_value body, then ko_decref body.
+        if (core.LLVMGetNamedFunction(self.module, "ko_decref") == null) {
+            const fn_type = core.LLVMFunctionType(self.voidType(), @ptrCast(@constCast(&.{self.ptrType()})), 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_decref", fn_type);
+        }
+
+        self.codegenKoDecrefValue();
+        self.codegenKoDecrefClosure();
         self.codegenKoDecref();
+
+        self.codegenCheckedArithOverflow("ko_int_add_checked", "llvm.sadd.with.overflow.i64");
+        self.codegenCheckedArithOverflow("ko_int_sub_checked", "llvm.ssub.with.overflow.i64");
+        self.codegenCheckedArithOverflow("ko_int_mul_checked", "llvm.smul.with.overflow.i64");
+        self.codegenCheckedDivMod("ko_int_div_checked", false);
+        self.codegenCheckedDivMod("ko_int_mod_checked", true);
+        self.codegenIntNegChecked();
+        self.codegenIntDivOr();
 
         self.codegenInitStack();
         self.codegenCheckStack();

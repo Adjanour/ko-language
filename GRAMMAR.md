@@ -37,10 +37,11 @@ variant         = CONSTRUCTOR { type_atom } ;
 record_body     = "{" [ field_decl { "," field_decl } [ "," ] ] "}" ;
 field_decl      = LOWER_IDENT ":" type_expr ;
 
-fn_def          = "fn" IDENT { param } [ ":" type_expr ] "=" body ;
+fn_def          = "fn" IDENT { param } [ "->" type_expr ] "=" body ;
 let_def         = "let" IDENT [ ":" type_expr ] "=" expr ;
 
-param           = pattern ;
+param           = IDENT
+                | "(" IDENT ":" type_expr ")" ;
 
 body            = expr | block ;
 block           = NEWLINE INDENT { statement NEWLINE } DEDENT ;
@@ -108,7 +109,8 @@ literal         = INT | FLOAT | STRING | CHAR_LITERAL | "true" | "false" ;
 
 type_expr       = type_atom [ "->" type_expr ] ;
 type_atom       = type_primary { type_primary } ;
-type_primary    = IDENT | CONSTRUCTOR | "(" type_expr ")" | record_body ;
+type_primary    = IDENT | CONSTRUCTOR | "(" type_expr ")" | record_body
+                | "ref" type_primary ;
 
 path            = IDENT { "." IDENT } ;
 
@@ -150,6 +152,8 @@ NEWLINE         = "\n" ;
 - Record patterns use `..` for intentional partial matches.
 - `or` and `and` are keyword alternatives to `||` and `&&`.
 - `?` is postfix try operator for Result error propagation.
+- `ref T` is the type for reference-counted values. `ref expr` creates one. `!expr` dereferences.
+- Function parameters can have optional type annotations: `fn f (x : Int) = ...`
 
 ## Compile-Time Evaluation (`comptime`)
 

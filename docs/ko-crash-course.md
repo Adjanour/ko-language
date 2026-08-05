@@ -97,7 +97,7 @@ fn double x = x * 2
 fn add a b = a + b
 
 # Function with type annotation
-fn double x : Int = x * 2
+fn double (x : Int) -> Int = x * 2
 ```
 
 ### Calling Functions

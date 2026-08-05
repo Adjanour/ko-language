@@ -647,26 +647,37 @@ pub const Parser = struct {
             if (self.current().tag == .tilde) {
                 break;
             }
+            // Typed param: (name : type)
+            if (self.current().tag == .lparen) {
+                _ = self.advance(); // consume (
+                const param_name = self.slice(try self.expect(.identifier));
+                _ = try self.expect(.colon);
+                const type_ann = try self.parse_type_expr();
+                _ = try self.expect(.rparen);
+                try params.append(self.allocator, .{
+                    .pattern = .{ .identifier = param_name },
+                    .type_ann = type_ann,
+                });
+                continue;
+            }
+            // Untyped param: bare pattern
             if (self.current().tag == .keyword_ref or self.current().tag == .minus or
                 self.current().tag == .keyword_not or self.current().tag == .underscore or
                 self.current().tag == .number or self.current().tag == .string or
                 self.current().tag == .char or self.current().tag == .keyword_true or
-                self.current().tag == .keyword_false or self.current().tag == .lparen or
+                self.current().tag == .keyword_false or
                 (self.current().tag == .identifier) or (self.current().tag == .constructor))
             {
                 const pat = try self.parse_pattern();
-                var type_ann: ?TypeExpr = null;
-                if (self.match(.colon)) {
-                    type_ann = try self.parse_type_expr();
-                }
-                try params.append(self.allocator, .{ .pattern = pat, .type_ann = type_ann });
+                try params.append(self.allocator, .{ .pattern = pat, .type_ann = null });
                 continue;
             }
             break;
         }
 
+        // Return type: -> Type (after all params, before =)
         var return_type: ?TypeExpr = null;
-        if (self.match(.colon)) {
+        if (self.match(.arrow)) {
             return_type = try self.parse_type_expr();
         }
 
@@ -954,6 +965,8 @@ pub const Parser = struct {
                 .less_equal => .lte,
                 .greater_than => .gt,
                 .greater_equal => .gte,
+                .less_equal_dot => .lte_dot,
+                .greater_equal_dot => .gte_dot,
                 else => null,
             };
             if (op == null) break;
@@ -966,8 +979,14 @@ pub const Parser = struct {
 
     fn parse_term(self: *Parser) Error!*Expr {
         var left = try self.parse_factor();
-        while (self.current().tag == .plus or self.current().tag == .minus) {
-            const op = if (self.current().tag == .plus) BinaryOp.add else BinaryOp.sub;
+        while (self.current().tag == .plus or self.current().tag == .minus or self.current().tag == .plus_dot or self.current().tag == .minus_dot) {
+            const op = switch (self.current().tag) {
+                .plus => BinaryOp.add,
+                .minus => BinaryOp.sub,
+                .plus_dot => BinaryOp.add_dot,
+                .minus_dot => BinaryOp.sub_dot,
+                else => unreachable,
+            };
             _ = self.advance();
             const right = try self.parse_factor_no_prefix();
             left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
@@ -977,11 +996,14 @@ pub const Parser = struct {
 
     fn parse_factor(self: *Parser) Error!*Expr {
         var left = try self.parse_unary();
-        while (self.current().tag == .star or self.current().tag == .slash or self.current().tag == .percent) {
+        while (self.current().tag == .star or self.current().tag == .slash or self.current().tag == .percent or self.current().tag == .star_dot or self.current().tag == .slash_dot) {
             const op = switch (self.current().tag) {
                 .star => BinaryOp.mul,
                 .slash => BinaryOp.div,
-                else => BinaryOp.mod,
+                .percent => BinaryOp.mod,
+                .star_dot => BinaryOp.mul_dot,
+                .slash_dot => BinaryOp.div_dot,
+                else => unreachable,
             };
             _ = self.advance();
             const right = try self.parse_unary_no_prefix();
@@ -1004,11 +1026,14 @@ pub const Parser = struct {
 
     fn parse_factor_no_prefix(self: *Parser) Error!*Expr {
         var left = try self.parse_unary_no_prefix();
-        while (self.current().tag == .star or self.current().tag == .slash or self.current().tag == .percent) {
+        while (self.current().tag == .star or self.current().tag == .slash or self.current().tag == .percent or self.current().tag == .star_dot or self.current().tag == .slash_dot) {
             const op = switch (self.current().tag) {
                 .star => BinaryOp.mul,
                 .slash => BinaryOp.div,
-                else => BinaryOp.mod,
+                .percent => BinaryOp.mod,
+                .star_dot => BinaryOp.mul_dot,
+                .slash_dot => BinaryOp.div_dot,
+                else => unreachable,
             };
             _ = self.advance();
             const right = try self.parse_unary_no_prefix();

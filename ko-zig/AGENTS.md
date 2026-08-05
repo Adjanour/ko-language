@@ -1,5 +1,32 @@
 # AGENTS.md - Zig Development Patterns for Kō Compiler
 
+## Vision & Design Documents
+
+Before implementing anything, understand what Kō is and where it's going:
+
+- **`VISION.md`** — The north star. What Kō aspires to be. Read this first.
+- **`PHILOSOPHY.md`** — Core principles. Small, explicit, pure by default.
+- **`DESIGN-linear-types.md`** — **The design center.** Linear types, ownership, borrowing, Rc. Everything depends on this.
+- **`DESIGN-memory-runtime.md`** — RC bugs, string RC, recursive decref, allocator abstraction
+- **`DESIGN-strings-characters.md`** — Bytes as primitive, std.text for Unicode, KoString wrapper
+- **`DESIGN-data-structures.md`** — Array, Map, Set types with explicit allocators
+- **`DESIGN-io-model.md`** — IO module, println returns Unit, Result for file ops
+- **`DESIGN-math-semantics.md`** — Overflow wraps, IEEE 754 propagation, checked arithmetic
+- **`DESIGN-runtime-independence.md`** — Roadmap to eliminate libc dependency
+
+## The Philosophy: Functional Pragmatism + Mechanical Sympathy
+
+Kō is functional by default: immutable data, pure functions, algebraic types. But it also compiles to native code via LLVM. The design center is **linear types**: the type system proves single-ownership at compile time, eliminating reference counting for tree-shaped data.
+
+- **Purity gives the compiler information** (no hidden side effects, no aliasing → aggressive optimization)
+- **Linear types give the compiler ownership** (single-owner → zero-cost, no RC, no GC)
+- **Mechanical sympathy gives the compiler control** (direct syscalls, explicit allocators, no hidden overhead)
+- **Together they enable optimizations neither paradigm alone can achieve**
+
+When implementing, ask: "Does this preserve purity? Does this respect ownership? Does this work with the hardware?" If all three are yes, it's a Kō solution.
+
+**The performance boundary:** Tree-shaped ownership is C-competitive (no asterisk). Shared/graph ownership uses explicit `Rc` (still fast, but not zero-cost). State this boundary honestly in all documentation.
+
 ## Workflow Pattern: Research → Design → Implement
 
 **MUST DO:** Before implementing any feature or fix, follow this process:
@@ -228,18 +255,21 @@ Without `--summary all`, the output may look like it failed even when all tests 
   - `=>` for match arms (NOT `->`)
   - `!expr` for deref (NOT boolean negation)
   - `not expr` for boolean negation
-  - `ref expr` for creating references
+  - `ref expr` for creating references (also used for Rc types: `ref T`)
   - `:=` for assignment
   - `::` for infix constructor (right-associative, desugars to `Cons a b`)
   - `type List a = Cons a (List a) | Nil` syntax (type params before `=`)
   - Constructor params are individual type primaries, not applied types
-  - `fn f x : Int = ...` — `: Int` is param annotation, not return type
-  - Return type annotation uses separate syntax (TBD)
+  - `fn f (x : Int) -> Int = ...` — `(x : Int)` is typed param, `-> Int` is return type
+  - Return type uses `-> Type` after params: `fn f (x : Int) -> Int = x + 1`
 
-### Language Charter
+### Language Charter & Vision
 
-- `LANGUAGE_CHARTER.md` is the source of truth for what Kō should become.
-- Use it to decide whether a syntax change is a fix, a feature, or churn.
+- **`VISION.md`** is the north star — what Kō aspires to be.
+- **`LANGUAGE_CHARTER.md`** is the source of truth for what Kō should become.
+- **`DESIGN-runtime-independence.md`** is the roadmap for eliminating libc.
+- Use these to decide whether a change is a fix, a feature, or churn.
+- When in doubt, ask: "Does this make Kō smaller, faster, or more explicit?" If no, reconsider.
 
 ### Data Model
 
@@ -253,7 +283,133 @@ Without `--summary all`, the output may look like it failed even when all tests 
 - Kō uses `#` for comments (not //)
 - Comments extend to end of line
 
+## Design Decisions (v0.3.0+)
+
+These decisions are documented in the DESIGN-*.md files. Summary for quick reference:
+
+### The Design Center: Linear Types
+
+The core thesis: "immutable by default" + "no GC" only coexist if the type system proves single-ownership at compile time. This is the entire design center — it dictates the type checker's shape, the codegen strategy, and the stdlib API.
+
+**Kō isn't a language project with a memory-management feature. It's a linear-type-system project with a language attached.**
+
+- **Linear consumption**: `match` consumes values. Functions consume arguments. Values are single-owner by default.
+- **Rebuild pattern**: Destructure, modify, reconstruct. The old value is gone. The type system proves it.
+- **`ref` as first-class citizen**: Explicit shared ownership. Clearly marked in the type system. Not bolted on later.
+- **Zero-cost trees**: Linear `List`, `Tree`, `Expr` — no RC overhead. The compiler eliminates allocation entirely.
+
+### Type System (Frozen)
+
+- **Bidirectional local inference** (not HM). Function signatures mandatory for public functions, optional for private.
+- **Monomorphization before linearity checking.** Pipeline: `parse → monomorphize → bidirectional-typecheck → linearity-check → codegen`.
+- **No polymorphic linearity in v1.** Generic functions are fully instantiated before linearity checking.
+- **Static typing, fully.** No runtime type tags, no `any`/`dynamic` escape hatch.
+- **Ownership-aware monomorphization**: Specialized versions for linear vs ref patterns. See DESIGN-polymorphism.md.
+
+### Signature Rules
+
+- **Public functions**: signature mandatory (forms module API)
+- **Private functions**: signature optional (inferred from body)
+- **Recursive functions**: signature recommended (helps compiler)
+- **Partial annotations**: allowed (annotate some params, infer the rest)
+
+### Syntax
+
+- `ref T` is the type for reference-counted values
+- `ref expr` creates a shared value
+- `!expr` dereferences (already exists)
+- Function parameters can have optional type annotations: `fn f (x : Int) = ...`
+- Type variables in signatures indicate polymorphism: `fn id (x : a) -> a = x`
+
+### Linearity Checker (Implemented)
+
+A HIR pass (`src/linearity.zig`) that verifies linear variable usage:
+
+- **Function parameters are linear** (must be used exactly once). Exception: `main`'s params are unrestricted (called by runtime).
+- **Let-bound variables are linear** (must be used exactly once in the body).
+- **Pattern match bindings are linear** (consumed by the match arm).
+- **Lambda params are linear** (except `main`).
+- **Consumed state is global** — once a variable is consumed, it cannot be used again anywhere in the program.
+- **Bindings are scoped** — variables are removed from scope when leaving a let/lambda/match.
+- **Runs before HIR optimizations** — let_simpl, fold, etc. can create duplicate bindings that cause false positives.
+- **`--skip-linearity` flag** — skips the linearity check (for debugging).
+- **Known limitations**: Source spans for error messages may point to wrong locations (HIR span tracking is imprecise). 7 existing test programs fail because they use variables more than once (legitimate violations of strict linearity).
+
+### Memory & Runtime
+
+- **Fix string RC**: Add `KoString` wrapper (refcount + byte_length + data). Current strings leak.
+- **Fix recursive decref**: `ko_decref` must walk constructor fields, tuple elements, record fields. Use type tags stored alongside values.
+- **Allocator abstraction**: Add `KoAllocator` type. Default wraps malloc. Arena and fixed-buffer allocators available. Codegen passes allocator to allocation functions.
+- **Cycles**: Ignore for now. Document the limitation. Add `Weak a` in v0.4.0 if needed.
+
+### Strings & Characters
+
+- **Char = byte** (i64). Not a codepoint. Fast, O(1), correct for ASCII.
+- **String = KoString** (refcount + byte_length + data). UTF-8 bytes. Not null-terminated.
+- **len = O(1)** via byte_length field. Not O(n) strlen.
+- **std.text module** (v0.4.0) for codepoint-aware operations. O(n) but correct for Unicode.
+- **String interpolation** desugars to `concat` calls at parse time.
+
+### Data Structures
+
+- **Array**: Mutable, contiguous, RC'd. O(1) index, amortized O(1) push. For performance.
+- **Map**: Hash map, insertion-ordered, RC'd. O(1) lookup. For key-value data.
+- **Set**: Thin wrapper over Map. For unique elements.
+- **List**: Keep as-is. Functional linked list. For pattern matching.
+- All use explicit allocator (from Phase 1) or default allocator (wraps malloc).
+
+### I/O
+
+- **println returns Unit**, not the argument. Honest about side effects.
+- **IO module**: All I/O goes through `std.io`. Auditable, testable, mockable.
+- **File ops return Result**: `readFile : String -> Result Error String`.
+- **Error type**: `FileNotFound | PermissionDenied | InvalidPath | IOError String | CommandFailed Int String`.
+- **No effect system**: Module-based, not type-level tracking. Simple, pragmatic.
+
+### Math
+
+- **Int = i64**: Wraps on overflow. Matches hardware.
+- **Float = f64**: IEEE 754. NaN propagates. No panic.
+- **Checked arithmetic**: `Int.addChecked`, `Int.subChecked`, `Int.mulChecked` return `Result Overflow Int`.
+- **Division**: `Int.div` panics on /0. `Int.divChecked` returns `Result DivisionByZero Int`.
+- **Float operators**: Use `.` suffix (`+.`, `-.`, `*.`, `/.`). Prevents accidental mixing with Int.
+- **No numeric tower**: `Int` and `Float` are separate types. Explicit conversion required.
+
+### Runtime Independence (Roadmap)
+
+The sequencing is strict. Dependencies are real.
+
+- **Phase 1 (v0.3.0-v0.4.0)**: Prove the thesis — linear types on Linux/x86-64. This is the existential risk.
+- **Phase 2 (v0.5.0)**: Widen the platform — macOS, Windows, cross-compilation. Backend labor.
+- **Phase 3 (v1.0.0)**: Ecosystem — package manager, self-hosting, docs. Depends on stability.
+
+Do not parallelize these. Phase 1 proves the type system works. Phase 2 widens it. Phase 3 builds on it.
+
+The generated code currently calls malloc, printf, sin, etc. from libc. Keep libc for now. Replace it step by step AFTER the type system is proven.
+
 ## Lessons Learned (Hard-Won)
+
+### Linear Types Are the Design Center
+
+The most important lesson: "immutable by default" + "no GC" only coexist if the type system proves single-ownership at compile time. This means Kō is, at its core, a **linear-type-system project with a language attached.**
+
+Everything else — the ADTs, the pattern matching, the comptime, the I/O — exists to make linear types ergonomic in practice.
+
+When implementing, always ask: "Does this preserve the linear ownership invariant? Does this respect the performance boundary (tree = zero-cost, graph = Rc)?" If yes, it's a Kō solution.
+
+### Linearity Checker: Scope vs Consumption
+
+When implementing the linearity checker (`linearity.zig`), the key insight was: **consumed state must be global, but bindings must be scoped.**
+
+- If consumed state is scoped (saved/restored per let), variables consumed in inner scopes appear unconsumed in outer scopes, causing false "used twice" errors.
+- If bindings are not scoped, variables from inner scopes leak into outer scopes, causing false "unused" errors.
+- Solution: consumed state is a flat map that persists across the entire program. Bindings are added when entering a scope and removed when leaving.
+
+Also: **function parameters should be linear** (per SPEC-0.md), but `main`'s parameters must be unrestricted (called by the runtime, not by user code). The checker identifies `main` by name and marks its params as unrestricted.
+
+**Run linearity check BEFORE HIR optimizations.** The let_simpl pass propagates constants, creating duplicate bindings that shadow originals. If the linearity checker runs after optimization, it sees the shadowed originals as unused (false positives).
+
+**`let _ = e1 in e2` discard binding:** The parser doesn't support `let _ = ...` syntax yet (`_` is only valid in pattern positions). When it does, the HIR lowering sets `is_discard = true` on the let expression, and the linearity checker treats the binding as unrestricted (no usage requirement). This is implemented in `hir.zig` (LetExpr.is_discard flag) and `hir_lower.zig` (sets the flag when name is `"_"`).
 
 ### The Grammar Is the Contract
 
@@ -341,7 +497,7 @@ When testing compiler features, write tests in this order:
 2. **Parser test**: parse the input, verify AST structure
 3. **Typechecker test**: typecheck the parsed AST, verify no errors
 4. **Codegen test**: generate LLVM IR, verify output
-5. **Integration test**: `ko --run` the program, verify output
+5. **Integration test**: `ko` the program, verify output
 
 Never skip stages. A test that only does codegen without verifying parsing is fragile.
 
@@ -372,11 +528,14 @@ zig build
 # Run tests (use --summary all to see clean output)
 zig build test --summary all
 
-# JIT-execute a program
-ko --run file.ko
-
-# Dump LLVM IR
+# Run a program (JIT-execute main and print return value)
 ko file.ko
+
+# Type-check only (no codegen)
+ko --check file.ko
+
+# Dump LLVM IR (Kō compiles to LLVM IR directly, NOT C)
+ko --dump-ir file.ko
 
 # Emit LLVM IR to file
 ko --emit-ir out.ll file.ko
@@ -384,7 +543,7 @@ ko --emit-ir out.ll file.ko
 # Emit object file
 ko --emit-obj out.o file.ko
 
-# Emit linked executable
+# Emit linked executable (currently links against libc, roadmap to eliminate)
 ko --emit-exe out file.ko
 ```
 
@@ -401,7 +560,8 @@ ko-zig/
 │   ├── ast.zig        # AST node types (canonical definitions)
 │   ├── errors.zig     # Error types
 │   ├── typecheck.zig  # HM type inference
-│   ├── codegen.zig    # LLVM IR generation
+│   ├── linearity.zig  # Linearity checker (HIR pass)
+│   ├── codegen.zig    # LLVM IR generation (compiles to LLVM IR directly, NOT C)
 │   ├── stdlib.zig     # Zig stdlib implementations (math, string, int ops)
 │   ├── stdlib_codegen.zig # LLVM IR generation for ALL stdlib functions
 │   ├── comptime.zig   # Compile-time evaluator
@@ -429,6 +589,7 @@ ko-zig/
 main.zig → parser.zig → lexer.zig
                        → ast.zig
          → typecheck.zig → parser.zig (re-exports ast types)
+         → linearity.zig → hir.zig, hir_lower.zig, diagnostics.zig
          → codegen.zig → parser.zig, typecheck.zig
                        → stdlib.zig (JIT function implementations)
                        → llvm/ (kassane/llvm-zig bindings)
@@ -486,7 +647,8 @@ main.zig → parser.zig → lexer.zig
 ### How It Works
 - **JIT mode**: All functions are generated as LLVM IR in the module; only libc externals (printf, malloc, etc.) and LLVM intrinsics are linked at JIT time
 - **AOT mode**: Same LLVM IR is emitted as object file; all runtime functions are LLVM IR
-- The canonical implementation is in stdlib_codegen.zig — no C copies needed
+- The canonical implementation is in stdlib_codegen.zig — generates LLVM IR directly, no C code needed
+- **Future**: Replace libc calls (malloc, printf, sin) with direct syscalls and pure implementations (see DESIGN-runtime-independence.md)
 
 ### Built-in Functions (auto-available)
 - `println x`, `print x`, `inspect x` — polymorphic I/O
@@ -509,9 +671,18 @@ main.zig → parser.zig → lexer.zig
 ### Kō Stdlib Files (`std/`)
 - `std/List.ko` — List type and operations (25 ops: foldl, foldr, head, tail, length, append, reverse, map, filter, any, all, find, take, drop, elem, zip, concat, sum, product, maximum, minimum, etc.)
 - `std/Int.ko` — Extra Int operations (even, odd, clamp, sign, div, mod, max, min)
-- `std/String.ko` — Extra String operations (isEmpty)
+- `std/String.ko` — Extra String operations (isEmpty). **Planned**: split, replace, trim, contains, charAt, toUpper, toLower, substring, indexOf, startsWith, endsWith
 - `std/Bool.ko` — Bool operations (not)
 - `std/Math.ko` — Pure Kō math operations (abs, max, min, gcd, lcm, factorial, pow, isqrt, sum, product, average)
+
+### Planned Stdlib Modules (v0.3.0+)
+
+- `std/io.ko` — I/O operations (readFile, writeFile, println, args, etc.)
+- `std/array.ko` — Array operations (make, get, set, push, map, filter, fold)
+- `std/map.ko` — Map operations (new, get, set, delete, keys, values)
+- `std/set.ko` — Set operations (empty, insert, contains, union, intersection)
+- `std/error.ko` — Error types (FileNotFound, PermissionDenied, etc.)
+- `std/text.ko` — Unicode-aware string operations (v0.4.0)
 
 ### How to Add New Builtins
 1. Add implementation to `src/stdlib_codegen.zig` (generates LLVM IR directly in module)
@@ -526,6 +697,12 @@ main.zig → parser.zig → lexer.zig
 ### Known Limitations
 - Multi-line closures capturing free variables cause LLVM codegen errors
 - `True`/`False` only work as match patterns or top-level values, not inside lambdas
+- **Strings leak memory**: Heap-allocated strings use raw malloc, never freed. Fix: DESIGN-memory-runtime.md Phase 1.
+- **Recursive decref missing**: `ko_decref` doesn't walk constructor fields. Nested structures leak. Fix: DESIGN-memory-runtime.md Phase 2.
+- **No Array/Map/Set types**: Only List exists. Fix: DESIGN-data-structures.md.
+- **println returns argument**: Confusing polymorphic type. Fix: DESIGN-io-model.md (change to Unit).
+- **File I/O doesn't return Result**: Panics on error. Fix: DESIGN-io-model.md.
+- **Float arithmetic unsupported by typechecker**: Only builtins work. Fix: DESIGN-math-semantics.md.
 
 ## LLVM Codegen (kassane/llvm-zig bindings)
 
@@ -626,8 +803,8 @@ engine.LLVMAddGlobalMapping(self.engine, llvm_func, @ptrCast(&my_c_func));
 
 #### CLI usage
 ```bash
-ko --run file.ko    # JIT-execute main() and print return value
-ko file.ko          # Dump LLVM IR (default)
+ko file.ko              # JIT-execute main() and print return value
+ko --dump-ir file.ko    # Dump LLVM IR
 ko --emit-ir out.ll file.ko   # Dump LLVM IR to file
 ko --emit-obj out.o file.ko   # Emit object file only
 ko --emit-exe out file.ko     # Emit object file + link to executable
@@ -876,6 +1053,15 @@ target_machine.LLVMTargetMachineEmitToFile(tm, mod, "out.o", .LLVMObjectFile, &e
 
 #### Linking
 The CLI links object files with `ld` using CRT startup files (`crt1.o`, `crti.o`, `crtn.o`), libc, and libm. GCC's LTO configuration can interfere — use `ld` directly.
+
+**Roadmap:** This libc dependency will be eliminated step by step (see DESIGN-runtime-independence.md):
+- Phase 1: Replace malloc with custom allocator
+- Phase 2: Replace printf with direct syscalls
+- Phase 3: Replace string operations (use allocator, not raw malloc)
+- Phase 4: Replace libm with LLVM intrinsics
+- Phase 5: Replace CRT with custom _start
+
+After Phase 5, generated binaries will have zero libc dependency on Linux.
 
 #### CLI usage
 ```bash

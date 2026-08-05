@@ -253,7 +253,7 @@ Add IR generation in `codegenBinaryOp()` (line ~680):
 
 ```bash
 echo 'fn main = println (5 ??: 3)' > /tmp/test_myop.ko
-ko --run /tmp/test_myop.ko
+ko /tmp/test_myop.ko
 ko --emit-ir /tmp/test_myop.ll /tmp/test_myop.ko
 zig build test --summary all
 ```
@@ -364,7 +364,7 @@ _ = self.named_values.put("my_fn", my_fn) catch {};
 
 ```bash
 echo 'fn main = println (my_fn 3 4)' > /tmp/test_builtin.ko
-ko --run /tmp/test_builtin.ko
+ko /tmp/test_builtin.ko
 zig build test --summary all
 ```
 
@@ -568,11 +568,11 @@ src/tests_ko/          -- .ko test programs (47+ files)
 # Full test suite (ALWAYS use --summary all)
 zig build test --summary all
 
-# JIT-execute a program
-ko --run file.ko
-
-# Dump LLVM IR to stdout
+# Run a program (JIT execute)
 ko file.ko
+
+# Dump LLVM IR
+ko --dump-ir file.ko
 
 # Emit LLVM IR to file
 ko --emit-ir out.ll file.ko
@@ -589,7 +589,7 @@ ko --emit-exe out file.ko
 1. **Lexer test**: Add token test in `tests.zig` lexer section
 2. **Parser test**: Add `.ko` file, add `@embedFile` entry
 3. **Typechecker test**: Add `testInfer()` call in `tests.zig`
-4. **Codegen test**: Use `ko --run` or `ko --emit-ir`
+4. **Codegen test**: Use `ko` or `ko --emit-ir`
 5. **Integration test**: Full `.ko` program that exercises the feature
 
 ---

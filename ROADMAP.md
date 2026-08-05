@@ -1,7 +1,7 @@
 # Kō Language Roadmap
 
-> **Version:** 0.2.0-alpha  
-> **Date:** 2026-07-12  
+> **Version:** 0.3.0-alpha  
+> **Date:** 2026-08-02  
 > **Status:** Alpha Release
 
 ---
@@ -10,7 +10,7 @@
 
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Current state (v0.2.0-alpha):** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with pretty-printing, Result operations, and 78 passing tests.
+**Current state (v0.3.0-alpha):** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with pretty-printing, Result operations, linearity checker, and 247 passing tests.
 
 ---
 
@@ -26,7 +26,7 @@ This document outlines the development of Kō from a Python prototype to a produ
 
 ## Part 1: Language Feature Roadmap
 
-### 1.1 Current State (v0.2.0-alpha)
+### 1.1 Current State (v0.3.0-alpha)
 
 **Zig Compiler (complete):**
 
@@ -45,42 +45,44 @@ This document outlines the development of Kō from a Python prototype to a produ
   - `?` operator codegen (unwraps Ok values, propagates Err)
   - Result operations as built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
   - File-based module imports with selective import support
+- Linearity checker (`linearity.zig`) — verifies linear variable usage, 35/42 test files pass
 - Pretty-printer (`prettyprint.zig`) — type-directed value display for REPL/results
 - LSP server (`lsp.zig`) — hover, completion, diagnostics, documentSymbol, go-to-definition
 - REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands
 - VS Code extension (v0.5.0) with LSP client
 - Tree-sitter grammar (~450 lines) with nvim integration
-- 78 tests passing, 53 .ko test programs, 12 examples
+- 247 tests passing, 42 .ko test programs
 
 ### 1.2 Next Milestones
 
 #### v0.3.0 — Language Maturity
 
-**A. Staged Compilation & AST Construction**
+**A. Monomorphization (In Progress)**
 
-Design documents written:
-- `DESIGN-staged-compilation.md` — `stage expr` for compile-time code generation
-- `DESIGN-ast-construction.md` — `code expr` for AST construction helpers
+- Add type annotation syntax for function parameters
+- Implement monomorphization pass (before typechecking)
+- Ownership-aware monomorphization (linear vs ref)
+- See DESIGN-polymorphism.md for details
 
-**B. Type System Enhancements**
+**B. Linear Types (In Progress)**
+
+- Linear type checker (implemented: `linearity.zig`)
+- `ref` types for shared data
+- Ownership-aware codegen (zero-cost for linear values)
+- See DESIGN-linear-types.md for details
+
+**C. Bidirectional Type Inference**
+
+- Replace HM with bidirectional inference
+- Function signatures mandatory for public, optional for private
+- See SPEC-0.md for details
+
+**D. Type System Enhancements**
 
 - Record type syntax: `type Point = { x: Int, y: Int }` with field access on values
 - Pattern matching on records in match arms
 - Named/struct parameters for constructors
 - Better error messages with source locations
-
-**B. Generics v1 (Monomorphization)**
-
-```ko
-type List[T] = Cons(T, List[T]) | Nil
-
-fn map[T, U] xs f =
-  match xs
-    Cons h t -> Cons (f h) (map t f)
-    Nil -> Nil
-
-let doubled = map [1, 2, 3] (\x -> x * 2)
-```
 
 **C. Module System v2**
 

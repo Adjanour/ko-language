@@ -59,6 +59,7 @@ pub const LetExpr = struct {
     name: LocalVarId,
     value: HirId,
     body: HirId,
+    is_discard: bool = false,
 };
 
 pub const LetRecBinding = struct {

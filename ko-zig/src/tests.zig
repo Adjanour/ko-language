@@ -536,7 +536,7 @@ test "typechecker: type annotation on fn return" {
     const allocator = arena.allocator();
 
     const source = try allocator.dupeZ(u8,
-        "fn double x : Int = x + x\n");
+        "fn double (x : Int) = x + x\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -548,7 +548,7 @@ test "typechecker: type annotation on fn return" {
 
     const scheme = infer.global.getScheme("double").?;
     const ty = infer.resolve(scheme.body);
-    // fn double x : Int = x + x
+    // fn double (x : Int) = x + x
     // x has type annotation Int, body x+x is Int
     // so double : Int -> Int
     try std.testing.expect(ty.* == .arrow);
@@ -756,7 +756,8 @@ test "lexer: ref and colon_equal tokens" {
 
 test "typecheck: tuple pattern in fn param" {
     try typecheck.testInfer(
-        \\fn fst (a, b) =
+        \\fn fst pair =
+        \\    let (a, b) = pair
         \\    a
     );
 }
@@ -848,7 +849,7 @@ test "typecheck: type annotation mismatch on let" {
 
 test "typecheck: type annotation on fn return" {
     try typecheck.testInfer(
-        \\fn f : Int = 42
+        \\fn f -> Int = 42
     );
 }
 
@@ -1142,6 +1143,11 @@ test "parser: all .ko test files parse successfully" {
         .{ .name = "comptime_list.ko", .source = @embedFile("tests_ko/comptime_list.ko") },
         .{ .name = "comptime_string.ko", .source = @embedFile("tests_ko/comptime_string.ko") },
         .{ .name = "comptime_match.ko", .source = @embedFile("tests_ko/comptime_match.ko") },
+        .{ .name = "48_float_ops.ko", .source = @embedFile("tests_ko/48_float_ops.ko") },
+        .{ .name = "49_float_builtins.ko", .source = @embedFile("tests_ko/49_float_builtins.ko") },
+        .{ .name = "50_string_builtins.ko", .source = @embedFile("tests_ko/50_string_builtins.ko") },
+        .{ .name = "51_string_eq.ko", .source = @embedFile("tests_ko/51_string_eq.ko") },
+        .{ .name = "52_checked_arithmetic.ko", .source = @embedFile("tests_ko/52_checked_arithmetic.ko") },
     };
 
     for (files) |f| {
@@ -3035,7 +3041,7 @@ test "codegen_lir: alloc + is_unique + incref/decref roundtrip" {
                 .id = 0,
                 .params = &.{},
                 .body = &.{
-                    .{ .assign = .{ .dest = 0, .value = .{ .alloc = cell_ty } } },
+                    .{ .assign = .{ .dest = 0, .value = .{ .alloc = .{ .ty = cell_ty } } } },
                     .{ .assign = .{ .dest = 1, .value = .{ .is_unique = 0 } } },
                     .{ .assign = .{ .dest = 2, .value = .{ .int = 42 } } },
                     .{ .assign = .{ .dest = 3, .value = .{ .int = 0 } } },
@@ -3653,5 +3659,14 @@ test "lir_lower+hir: tuple destructuring with optimization" {
         \\fn main =
         \\  let (x, y) = (10, 20)
         \\  x + y
+    ));
+}
+
+test "runtime: closure capture decref" {
+    try std.testing.expectEqual(@as(i64, 52), try testRuntime(
+        \\fn main =
+        \\  let r = ref 42
+        \\  let f = \x -> !r + x
+        \\  f 10
     ));
 }

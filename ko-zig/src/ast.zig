@@ -85,6 +85,13 @@ pub const BinaryOp = enum {
     or_op,
     pipe,
     cons,
+    // Float operators (dot-suffixed)
+    add_dot,
+    sub_dot,
+    mul_dot,
+    div_dot,
+    lte_dot,
+    gte_dot,
 };
 
 pub const UnaryOp = enum {

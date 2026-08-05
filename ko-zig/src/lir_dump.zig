@@ -118,9 +118,10 @@ fn dumpValue(value: lir.LirValue, buf: *std.ArrayList(u8), allocator: std.mem.Al
         .string => |v| try buf.print(allocator, "\"{s}\"", .{v.ptr[0..v.len]}),
         .local => |v| try buf.print(allocator, "%{d}", .{v}),
         .fn_ref => |v| try buf.print(allocator, "@{s}", .{v}),
-        .alloc => |v| {
+        .alloc => |av| {
             try buf.appendSlice(allocator, "alloc ");
-            try dumpType(v, buf, allocator);
+            try dumpType(av.ty, buf, allocator);
+            try buf.print(allocator, " type_tag={d}", .{av.type_tag});
         },
         .load => |v| try buf.print(allocator, "load %{}", .{v}),
         .alloc_stack => |v| {

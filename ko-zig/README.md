@@ -18,9 +18,6 @@ zig build -Doptimize=ReleaseFast
 echo 'fn main = println "Hello, World!"' > hello.ko
 ./zig-out/bin/ko hello.ko
 
-# JIT execute
-./zig-out/bin/ko --run hello.ko
-
 # Start REPL
 ./zig-out/bin/ko --repl
 ```
@@ -122,8 +119,8 @@ Float.cos f
 ## Compiler Usage
 
 ```bash
-ko file.ko                 # Dump LLVM IR (default)
-ko --run file.ko           # JIT execute
+ko file.ko                 # Run program (JIT execute)
+ko --dump-ir file.ko       # Dump LLVM IR
 ko --repl                  # Interactive REPL
 ko --emit-ir out.ll file   # Write LLVM IR to file
 ko --emit-obj out.o file   # Emit object file

@@ -12,9 +12,9 @@
 //!   matching incoming edges to the successor's phis.
 //! - `incref`/`decref` map to the shared runtime (`ko_incref`/`ko_decref`,
 //!   emitted into the module by `StdlibCodegen`, same as the legacy path).
-//! - `is_unique` is emitted inline: the RC header is the i64 stored 8 bytes
+//! - `is_unique` is emitted inline: the RC header is the i64 stored 32 bytes
 //!   before the user pointer (see `stdlib_codegen.codegenKoAlloc`), so
-//!   `is_unique(p)` becomes `load i64 (gep i8 p, -8) == 1`. This is the
+//!   `is_unique(p)` becomes `load i64 (gep i8 p, -32) == 1`. This is the
 //!   Perceus fast-path test; it needs no runtime support.
 //! - Closures are heap structs `{ ptr fn, cap0, cap1, ... }` allocated with
 //!   `ko_alloc` (provisional representation; closure conversion in the LIR
@@ -334,7 +334,7 @@ pub const CodegenLir = struct {
             .string => |s| core.LLVMBuildGlobalStringPtr(self.builder, try self.dupeZ(s.ptr), "str"),
             .local => |id| self.locals.get(id) orelse error.UndefinedLocal,
             .fn_ref => |name| core.LLVMGetNamedFunction(self.module, try self.dupeZ(name)) orelse error.UndefinedFunction,
-            .alloc => |ty| try self.codegenAlloc(try self.lirType(ty)),
+            .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag),
             .alloc_stack => |ty| core.LLVMBuildAlloca(self.builder, try self.lirType(ty), "stack"),
             .load => |id| try self.codegenLoad(id),
             .incref => |id| try self.codegenRcCall("ko_incref", id),
@@ -376,13 +376,17 @@ pub const CodegenLir = struct {
         };
     }
 
-    /// `alloc(T)` → `call ko_alloc(sizeof(T))` (returns an untyped ptr).
-    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef) CodegenError!types.LLVMValueRef {
+    /// `alloc(T)` → `call ko_alloc(sizeof(T), type_tag)` (returns an untyped ptr).
+    /// type_tag: 0=raw, 1=constructor, 2=tuple, 3=record
+    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef, type_tag: i64) CodegenError!types.LLVMValueRef {
         const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse return error.UndefinedFunction;
         const dl = target.LLVMGetModuleDataLayout(self.module);
         const size = target.LLVMStoreSizeOfType(dl, llvm_ty);
-        var args = [1]types.LLVMValueRef{core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(size), 0)};
-        return core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &args, 1, "");
+        var args = [2]types.LLVMValueRef{
+            core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(size), 0),
+            core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(type_tag), 0),
+        };
+        return core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &args, 2, "");
     }
 
     /// `load(p)` — the element type comes from the local's `ptr(T)` LIR type.
@@ -404,12 +408,12 @@ pub const CodegenLir = struct {
         return core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(rc_fn), rc_fn, &args, 1, "");
     }
 
-    /// `is_unique(p)` → `load i64 (gep i8 p, -8) == 1` — inlined Perceus
+    /// `is_unique(p)` → `load i64 (gep i8 p, -32) == 1` — inlined Perceus
     /// fast-path uniqueness test over the RC header (no runtime call).
     fn codegenIsUnique(self: *CodegenLir, id: lir.LocalId) CodegenError!types.LLVMValueRef {
         const ptr = self.locals.get(id) orelse return error.UndefinedLocal;
         const i64_type = core.LLVMInt64TypeInContext(self.context);
-        var idx = [1]types.LLVMValueRef{core.LLVMConstInt(i64_type, @bitCast(@as(i64, -8)), 0)};
+        var idx = [1]types.LLVMValueRef{core.LLVMConstInt(i64_type, @bitCast(@as(i64, -32)), 0)};
         const rc_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), ptr, &idx, 1, "rc_ptr");
         const rc = core.LLVMBuildLoad2(self.builder, i64_type, rc_ptr, "rc");
         return core.LLVMBuildICmp(self.builder, .LLVMIntEQ, rc, core.LLVMConstInt(i64_type, 1, 0), "is_unique");
@@ -434,7 +438,7 @@ pub const CodegenLir = struct {
             field_types[i] = try self.lirType(self.local_types[cap]);
         }
         const closure_ty = core.LLVMStructTypeInContext(self.context, field_types.ptr, @intCast(field_types.len), 0);
-        const raw = try self.codegenAlloc(closure_ty);
+        const raw = try self.codegenAlloc(closure_ty, 0);
 
         // Store the function pointer and each captured value.
         const i32_type = core.LLVMInt32TypeInContext(self.context);

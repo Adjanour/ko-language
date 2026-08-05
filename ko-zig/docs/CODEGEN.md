@@ -13,7 +13,7 @@ Source → Lexer → Parser → AST → Typechecker → Codegen → LLVM IR → 
 ```
 
 **Two modes:**
-- **JIT** (`ko --run`): LLVM compiles to memory, you call the function pointer directly
+- **JIT** (`ko`): LLVM compiles to memory, you call the function pointer directly
 - **AOT** (`ko --emit-obj`): LLVM writes a `.o` file, you link with `ld`
 
 ## Core Data Structures

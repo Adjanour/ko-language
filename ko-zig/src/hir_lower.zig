@@ -550,7 +550,8 @@ pub const HirLower = struct {
                 const name = le.name;
                 const lid = try self.newLocal(name);
                 const body_id = try self.lowerExpr(le.body);
-                return self.allocExpr(.{ .let = .{ .name = lid, .value = val_id, .body = body_id } }, ty, expr);
+                const is_discard = std.mem.eql(u8, name, "_");
+                return self.allocExpr(.{ .let = .{ .name = lid, .value = val_id, .body = body_id, .is_discard = is_discard } }, ty, expr);
             },
             .if_expr => |ife| {
                 const cond_id = try self.lowerExpr(ife.condition);
@@ -712,17 +713,17 @@ pub const HirLower = struct {
 
 fn astBinaryToPrimOp(op: ast.BinaryOp) hir.PrimOp {
     return switch (op) {
-        .add => .add,
-        .sub => .sub,
-        .mul => .mul,
-        .div => .div,
+        .add, .add_dot => .add,
+        .sub, .sub_dot => .sub,
+        .mul, .mul_dot => .mul,
+        .div, .div_dot => .div,
         .mod => .rem,
         .eq => .eq,
         .neq => .neq,
         .lt => .lt,
-        .lte => .le,
+        .lte, .lte_dot => .le,
         .gt => .gt,
-        .gte => .ge,
+        .gte, .gte_dot => .ge,
         .and_op => .and_,
         .or_op => .or_,
         .pipe => .add,

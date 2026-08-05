@@ -584,8 +584,8 @@ fn main =
 ## Compiler Usage
 
 ```ko
-ko --run file.ko           # JIT execute
-ko file.ko                 # Dump LLVM IR
+ko file.ko                 # Run program (JIT execute)
+ko --dump-ir file.ko       # Dump LLVM IR
 ko --emit-ir out.ll file.ko    # Write LLVM IR to file
 ko --emit-obj out.o file.ko    # Emit object file
 ko --emit-exe out file.ko      # Emit linked executable

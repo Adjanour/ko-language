@@ -21,9 +21,11 @@ const lir_lower = @import("lir_lower.zig");
 const codegen_lir = @import("codegen_lir.zig");
 const hir_dump = @import("hir_dump.zig");
 const lir_dump = @import("lir_dump.zig");
+const linearity_mod = @import("linearity.zig");
 const repl_mod = @import("repl.zig");
 const module_loader_mod = @import("module_loader.zig");
 const diagnostics_mod = @import("diagnostics.zig");
+const monomorphize_mod = @import("monomorphize.zig");
 
 const VERSION = "0.3.0-alpha";
 
@@ -213,6 +215,7 @@ pub fn main(init: std.process.Init) !void {
     var output: ?[]const u8 = null;
 
     var use_lir = false;
+    var skip_linearity = false;
     var enabled_warnings = diagnostics_mod.WarningSet{};
     var warnings_as_errors = false;
     while (args.next()) |arg| {
@@ -238,6 +241,8 @@ pub fn main(init: std.process.Init) !void {
             output = args.next();
         } else if (std.mem.eql(u8, arg, "--use-lir")) {
             use_lir = true;
+        } else if (std.mem.eql(u8, arg, "--skip-linearity")) {
+            skip_linearity = true;
         } else if (std.mem.eql(u8, arg, "--emit-ir")) {
             mode = .emit_ir;
             output = args.next();
@@ -304,7 +309,7 @@ pub fn main(init: std.process.Init) !void {
     var p = try parser.Parser.init(init.arena.allocator(), source);
     defer p.deinit();
     p.diagnostics = &diags;
-    const prog = p.parse_program() catch |err| blk: {
+    var prog = p.parse_program() catch |err| blk: {
         if (p.last_error) |ec| {
             try diags.addError(ec.message, ec.loc);
         } else {
@@ -324,6 +329,26 @@ pub fn main(init: std.process.Init) !void {
         diags.emitAll(io, fname, source);
         std.process.exit(1);
     }
+
+    // Monomorphization: instantiate polymorphic functions to concrete types
+    // Per frozen pipeline: parse → monomorphize → bidirectional-typecheck → linearity-check → codegen
+    var mono = monomorphize_mod.Monomorphizer.init(init.arena.allocator());
+    defer mono.deinit();
+    const mono_result = mono.run(prog) catch |err| {
+        std.log.err("Monomorphization error: {}", .{err});
+        return err;
+    };
+
+    // Replace program definitions with monomorphized versions
+    // and append specialized function definitions
+    const combined = try init.arena.allocator().alloc(parser.Definition, mono_result.definitions.len + mono_result.specialized_fns.len);
+    for (mono_result.definitions, 0..) |def, i| {
+        combined[i] = def;
+    }
+    for (mono_result.specialized_fns, 0..) |spec_fn, i| {
+        combined[mono_result.definitions.len + i] = .{ .fn_def = spec_fn };
+    }
+    prog.definitions = combined;
 
     // Typecheck
     // Extract base directory from filename for module resolution
@@ -358,11 +383,6 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 
-    // --check mode: type-check only, no codegen
-    if (mode == .check) {
-        return;
-    }
-
     // HIR lowering (needed for both --dump-hir and --use-lir paths)
     var hl = hir_lower.HirLower.init(init.arena.allocator(), &inferer);
     defer hl.deinit();
@@ -370,6 +390,19 @@ pub fn main(init: std.process.Init) !void {
         reportError(io, fname, null, "HIR lowering error: {s}", .{@errorName(err)});
         std.process.exit(1);
     };
+
+    // Linearity check: verify linear variables are used exactly once
+    // Must run BEFORE optimization passes (let_simpl, fold, etc.) which may
+    // create duplicate bindings that shadow originals, causing false positives.
+    if (!skip_linearity) {
+        var linearity = linearity_mod.LinearityChecker.init(init.arena.allocator(), &hl.expressions, &diags);
+        defer linearity.deinit();
+        linearity.run(hl.roots.items, hl.defs.items);
+        if (diags.has_errors) {
+            diags.emitAll(io, fname, source);
+            std.process.exit(1);
+        }
+    }
 
     // HIR optimization passes
     var beta = hir_beta.HirBeta.init(init.arena.allocator(), &hl.expressions);
@@ -407,6 +440,11 @@ pub fn main(init: std.process.Init) !void {
         try hir_dump.dumpHir(init.arena.allocator(), &hl, &hir_dump_buf);
         try writer.interface.writeAll(hir_dump_buf.items);
         try writer.interface.flush();
+        return;
+    }
+
+    // --check mode: type-check + linearity-check only, no codegen
+    if (mode == .check) {
         return;
     }
 
@@ -472,6 +510,7 @@ pub fn main(init: std.process.Init) !void {
     defer cg.deinit();
     cg.expr_type_tags = &inferer.expr_type_tags;
     cg.param_arity = &inferer.param_arity;
+    cg.var_type_tags = &inferer.var_type_tags;
     cg.module_loader = &loader;
     cg.codegenProgram(prog) catch |err| {
         reportError(io, fname, null, "codegen error: {s}", .{@errorName(err)});

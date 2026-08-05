@@ -150,7 +150,7 @@ Output:
 You can annotate parameter types with `:` after the parameter name:
 
 ```
-fn double x : Int = x * 2
+fn double (x : Int) -> Int = x * 2
 
 fn main =
   inspect (double 5)

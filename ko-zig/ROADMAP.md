@@ -320,7 +320,7 @@ fn main =
 fn add x y = x + y
 
 # Effectful function
-fn readFile path : IO String =
+fn readFile (path : String) -> IO String =
   let content = IO.perform (ReadFile path)
   content
 

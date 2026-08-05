@@ -69,6 +69,13 @@ pub const Token = struct {
         backslash,
         tilde,
         question,
+        // Float operators (dot-suffixed)
+        plus_dot,
+        minus_dot,
+        star_dot,
+        slash_dot,
+        less_equal_dot,
+        greater_equal_dot,
 
         // Delimiters
         lparen,
@@ -146,6 +153,12 @@ pub const Token = struct {
                 .backslash => "\\",
                 .tilde => "~",
                 .question => "?",
+                .plus_dot => "+.",
+                .minus_dot => "-.",
+                .star_dot => "*.",
+                .slash_dot => "/.",
+                .less_equal_dot => "<=.",
+                .greater_equal_dot => ">=.",
 
                 .lparen => "(",
                 .rparen => ")",
@@ -220,6 +233,12 @@ pub const Token = struct {
                 .backslash => "'\\'",
                 .tilde => "'~'",
                 .question => "'?'",
+                .plus_dot => "'+.'",
+                .minus_dot => "'-.'",
+                .star_dot => "'*.'",
+                .slash_dot => "'/.'",
+                .less_equal_dot => "'<=.'",
+                .greater_equal_dot => "'>=.'",
 
                 .lparen => "'('",
                 .rparen => "')'",
@@ -660,8 +679,13 @@ pub const Tokenizer = struct {
                 self.index += 1;
                 switch (self.source[self.index]) {
                     '=' => {
-                        result.tag = .less_equal;
                         self.index += 1;
+                        if (self.source[self.index] == '.') {
+                            result.tag = .less_equal_dot;
+                            self.index += 1;
+                        } else {
+                            result.tag = .less_equal;
+                        }
                     },
                     else => result.tag = .less_than,
                 }
@@ -671,8 +695,13 @@ pub const Tokenizer = struct {
                 self.index += 1;
                 switch (self.source[self.index]) {
                     '=' => {
-                        result.tag = .greater_equal;
                         self.index += 1;
+                        if (self.source[self.index] == '.') {
+                            result.tag = .greater_equal_dot;
+                            self.index += 1;
+                        } else {
+                            result.tag = .greater_equal;
+                        }
                     },
                     else => result.tag = .greater_than,
                 }
@@ -700,23 +729,42 @@ pub const Tokenizer = struct {
                         result.tag = .arrow;
                         self.index += 1;
                     },
+                    '.' => {
+                        result.tag = .minus_dot;
+                        self.index += 1;
+                    },
                     else => result.tag = .minus,
                 }
             },
 
             .plus => {
                 self.index += 1;
-                result.tag = .plus;
+                if (self.source[self.index] == '.') {
+                    result.tag = .plus_dot;
+                    self.index += 1;
+                } else {
+                    result.tag = .plus;
+                }
             },
 
             .star => {
                 self.index += 1;
-                result.tag = .star;
+                if (self.source[self.index] == '.') {
+                    result.tag = .star_dot;
+                    self.index += 1;
+                } else {
+                    result.tag = .star;
+                }
             },
 
             .slash => {
                 self.index += 1;
-                result.tag = .slash;
+                if (self.source[self.index] == '.') {
+                    result.tag = .slash_dot;
+                    self.index += 1;
+                } else {
+                    result.tag = .slash;
+                }
             },
 
             .percent => {

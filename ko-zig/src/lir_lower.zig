@@ -36,7 +36,7 @@ const CtorEntry = struct {
     type_name: []const u8,
 };
 
-const GlobalKind = enum { user_fn, ctor, std_fn, std_special };
+    const GlobalKind = enum { user_fn, ctor, std_fn, std_special, constant };
 
 const GlobalEntry = struct {
     arity: usize,
@@ -51,6 +51,13 @@ const BlockBuilder = struct {
     term: ?lir.LirTerminator = null,
 };
 
+/// Tracks a heap allocation with its type tag for ownership reasoning.
+const HeapAllocEntry = struct {
+    id: lir.LocalId,
+    /// Type tag: 0=ref (needs RC), 1=constructor, 2=tuple, 3=record (linear, no RC).
+    type_tag: i64,
+};
+
 /// Per-function emission state; saved/restored around nested lambda lifting.
 const FnState = struct {
     locals: std.ArrayList(lir.LirType) = .empty,
@@ -58,6 +65,12 @@ const FnState = struct {
     hir_map: std.AutoHashMap(hir.LocalVarId, lir.LocalId),
     current: usize = 0,
     next_block: lir.BlockId = 0,
+    /// Heap-allocated values to decref on scope exit.
+    /// Only ref values (type_tag=0) need decref — linear values (type_tag=1/2/3) are single-owner.
+    scope_heap_values: std.ArrayList(HeapAllocEntry) = .empty,
+    /// Heap values consumed by parent structures (constructors, tuples, records, closures).
+    /// These are NOT decreffed at scope exit — the parent owns them.
+    consumed_heap_values: std.AutoHashMap(lir.LocalId, void) = undefined,
 };
 
 const Binding = union(enum) {
@@ -118,7 +131,10 @@ pub const LirLower = struct {
             .fn_sigs = std.StringHashMap(lir.LirFnType).init(allocator),
             .std_names = std.StringHashMap([]const u8).init(allocator),
             .fns = .empty,
-            .state = .{ .hir_map = std.AutoHashMap(hir.LocalVarId, lir.LocalId).init(allocator) },
+            .state = .{
+                .hir_map = std.AutoHashMap(hir.LocalVarId, lir.LocalId).init(allocator),
+                .consumed_heap_values = std.AutoHashMap(lir.LocalId, void).init(allocator),
+            },
         };
     }
 
@@ -126,6 +142,8 @@ pub const LirLower = struct {
         self.state.locals.deinit(self.allocator);
         self.state.blocks.deinit(self.allocator);
         self.state.hir_map.deinit();
+        self.state.scope_heap_values.deinit(self.allocator);
+        self.state.consumed_heap_values.deinit();
         self.fns.deinit(self.allocator);
         self.std_names.deinit();
         self.fn_sigs.deinit();
@@ -141,13 +159,19 @@ pub const LirLower = struct {
         self.state.locals = .empty;
         self.state.blocks = .empty;
         self.state.hir_map.clearRetainingCapacity();
+        self.state.scope_heap_values.clearRetainingCapacity();
+        self.state.consumed_heap_values.clearRetainingCapacity();
         self.state.current = 0;
         self.state.next_block = 0;
     }
 
     fn saveState(self: *LirLower) FnState {
         const saved = self.state;
-        self.state = .{ .hir_map = std.AutoHashMap(hir.LocalVarId, lir.LocalId).init(self.allocator) };
+        self.state = .{
+            .hir_map = std.AutoHashMap(hir.LocalVarId, lir.LocalId).init(self.allocator),
+            .scope_heap_values = .empty,
+            .consumed_heap_values = std.AutoHashMap(lir.LocalId, void).init(self.allocator),
+        };
         return saved;
     }
 
@@ -155,6 +179,8 @@ pub const LirLower = struct {
         self.state.locals.deinit(self.allocator);
         self.state.blocks.deinit(self.allocator);
         self.state.hir_map.deinit();
+        self.state.scope_heap_values.deinit(self.allocator);
+        self.state.consumed_heap_values.deinit();
         self.state = saved;
     }
 
@@ -460,17 +486,65 @@ pub const LirLower = struct {
             .{ "String.toUpperCase", "ko_string_to_upper" },
             .{ "String.toLowerCase", "ko_string_to_lower" },
             .{ "String.trim", "ko_string_trim" },
+            .{ "String.replace", "ko_string_replace" },
+            .{ "String.split", "ko_string_split" },
+            .{ "String.startsWith", "ko_string_starts_with" },
+            .{ "String.endsWith", "ko_string_ends_with" },
+            .{ "String.substring", "ko_string_substring" },
+            .{ "String.indexOf", "ko_string_index_of" },
+            .{ "String.eq", "ko_string_eq" },
             .{ "Int.toString", "ko_int_to_string" },
+            .{ "Int.fromString", "ko_string_to_int" },
             .{ "Int.pow", "ko_int_pow" },
             .{ "Int.gcd", "ko_int_gcd" },
             .{ "Int.lcm", "ko_int_lcm" },
             .{ "Int.factorial", "ko_int_factorial" },
             .{ "Int.isqrt", "ko_int_isqrt" },
-
+            .{ "Int.addChecked", "ko_int_add_checked" },
+            .{ "Int.subChecked", "ko_int_sub_checked" },
+            .{ "Int.mulChecked", "ko_int_mul_checked" },
+            .{ "Int.divChecked", "ko_int_div_checked" },
+            .{ "Int.modChecked", "ko_int_mod_checked" },
+            .{ "Int.negChecked", "ko_int_neg_checked" },
+            .{ "Int.divOr", "ko_int_div_or" },
+            // Float builtins
+            .{ "Float.ofInt", "ko_float_of_int" },
+            .{ "Float.toInt", "ko_float_to_int" },
+            .{ "Float.sqrt", "ko_float_sqrt" },
+            .{ "Float.sin", "ko_float_sin" },
+            .{ "Float.cos", "ko_float_cos" },
+            .{ "Float.tan", "ko_float_tan" },
+            .{ "Float.log", "ko_float_log" },
+            .{ "Float.log2", "ko_float_log2" },
+            .{ "Float.log10", "ko_float_log10" },
+            .{ "Float.exp", "ko_float_exp" },
+            .{ "Float.floor", "ko_float_floor" },
+            .{ "Float.ceil", "ko_float_ceil" },
+            .{ "Float.abs", "ko_float_abs" },
+            .{ "Float.pow", "ko_float_pow" },
+            // Float predicates
+            .{ "Float.isNaN", "ko_float_is_nan" },
+            .{ "Float.isInfinite", "ko_float_is_infinite" },
+            .{ "Float.isFinite", "ko_float_is_finite" },
+            .{ "Float.sign", "ko_float_sign" },
         };
         for (entries) |e| {
             try self.std_names.put(e[0], e[1]);
             try self.globals.put(e[0], .{ .arity = 0, .kind = .std_fn });
+        }
+        // Float constants — typed as values (not functions), implemented as zero-arg LLVM functions
+        const const_entries = [_][2][]const u8{
+            .{ "Float.pi", "ko_float_pi" },
+            .{ "Float.e", "ko_float_e" },
+            .{ "Float.infinity", "ko_float_infinity" },
+            .{ "Float.nan", "ko_float_nan" },
+            .{ "Float.maxValue", "ko_float_max_value" },
+            .{ "Float.minValue", "ko_float_min_value" },
+            .{ "Float.epsilon", "ko_float_epsilon" },
+        };
+        for (const_entries) |e| {
+            try self.std_names.put(e[0], e[1]);
+            try self.globals.put(e[0], .{ .arity = 0, .kind = .constant });
         }
         // Result operations (mapped to stdlib.zig native implementations)
         const result_entries = [_][2][]const u8{
@@ -523,6 +597,11 @@ pub const LirLower = struct {
         var result = try self.lowerExpr(lam.body);
         const is_main = std.mem.eql(u8, fd.name, "main");
         if (is_main) result = try self.coerce(result, .{ .int = {} });
+
+        // Decref all remaining heap values (except return value and consumed values).
+        // The caller takes ownership of the return value.
+        try self.emitDecrefHeapValues(result, 0);
+
         self.terminateCurrent(.{ .ret = result });
 
         try self.fns.append(self.allocator, .{
@@ -603,6 +682,29 @@ pub const LirLower = struct {
         if (p.args.len != 2) return error.Unsupported;
         const a = try self.lowerExpr(p.args[0]);
         const b = try self.lowerExpr(p.args[1]);
+
+        // String equality: call ko_string_eq instead of pointer comparison
+        if (p.op == .eq or p.op == .neq) {
+            const ty_a = self.localType(a);
+            if (ty_a == .string) {
+                const eq_fn = try self.emit(.{ .fn_ref = "ko_string_eq" }, .{ .opaque_type = {} });
+                const eq_args = try self.dupeIds(&.{ a, b });
+                const eq_result = try self.emit(.{ .call = .{
+                    .func = eq_fn,
+                    .args = eq_args,
+                    .fn_type = .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .returns = .{ .int = {} } },
+                } }, .{ .int = {} });
+                const one = try self.emit(.{ .int = 1 }, .{ .int = {} });
+                if (p.op == .neq) {
+                    // neq = !(eq == 1)
+                    const is_one = try self.emit(.{ .primop = .{ .op = .eq, .args = try self.dupeIds(&.{ eq_result, one }) } }, .{ .bool = {} });
+                    return self.emit(.{ .primop = .{ .op = .not_, .args = try self.dupeIds(&.{is_one}) } }, .{ .bool = {} });
+                }
+                // eq = (result == 1)
+                return self.emit(.{ .primop = .{ .op = .eq, .args = try self.dupeIds(&.{ eq_result, one }) } }, .{ .bool = {} });
+            }
+        }
+
         // Logic ops operate on i1; ADT-encoded bools need truncating.
         switch (p.op) {
             .and_, .or_ => {
@@ -629,19 +731,36 @@ pub const LirLower = struct {
         const then_id = self.rid();
         const else_id = self.rid();
         const merge_id = self.rid();
+
+        // Save scope_heap_values length before branches.
+        // Heap values added inside each branch are decreffed at the branch exit.
+        const saved_len = self.state.scope_heap_values.items.len;
+
         self.terminateCurrent(.{ .cond_br = .{
             .cond = cond,
             .then = .{ .target = then_id },
             .else_ = .{ .target = else_id },
         } });
 
+        // Then branch
         try self.startBlockWithId(then_id, &.{});
         const t = try self.lowerExpr(ife.then);
+        // Decref heap values allocated in then branch (except result and consumed)
+        try self.emitDecrefHeapValues(t, saved_len);
         self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{t}) } });
 
+        // Restore scope_heap_values before else branch (else starts with same scope as then)
+        self.state.scope_heap_values.shrinkRetainingCapacity(saved_len);
+
+        // Else branch
         try self.startBlockWithId(else_id, &.{});
         const el = try self.lowerExpr(ife.else_);
+        // Decref heap values allocated in else branch (except result and consumed)
+        try self.emitDecrefHeapValues(el, saved_len);
         self.terminateCurrent(.{ .br = .{ .target = merge_id, .args = try self.dupeIds(&.{el}) } });
+
+        // Restore scope_heap_values to pre-branch state
+        self.state.scope_heap_values.shrinkRetainingCapacity(saved_len);
 
         const result = try self.newLocal(self.localType(t));
         try self.startBlockWithId(merge_id, try self.dupeIds(&.{result}));
@@ -731,6 +850,13 @@ pub const LirLower = struct {
                 return self.lowerStdPrint(name, args);
             },
             .std_fn => return self.lowerStdFnCall(name, args, result_hir_ty),
+            .constant => {
+                if (args.len > 0) {
+                    std.debug.print("lir_lower: constant '{s}' cannot be called with arguments\n", .{name});
+                    return error.ArityMismatch;
+                }
+                return self.lowerGlobalValue(name);
+            },
             .ctor => return self.lowerConstructorApply(name, args),
             .user_fn => {
                 if (args.len < g.arity) {
@@ -781,6 +907,16 @@ pub const LirLower = struct {
                 std.debug.print("lir_lower: stdlib fn '{s}' used as value not yet supported\n", .{name});
                 return error.Unsupported;
             },
+            .constant => {
+                // Float constants: call zero-arg function to get the value
+                const std_name = self.std_names.get(name) orelse {
+                    std.debug.print("lir_lower: undefined std name for constant '{s}'\n", .{name});
+                    return error.UndefinedGlobal;
+                };
+                const sig = lir.LirFnType{ .params = &.{}, .returns = .{ .int = {} } };
+                const fn_local = try self.emit(.{ .fn_ref = std_name }, .{ .opaque_type = {} });
+                return try self.emit(.{ .call = .{ .func = fn_local, .args = &.{}, .fn_type = sig } }, .{ .int = {} });
+            },
         }
     }
 
@@ -806,6 +942,13 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_int_lcm")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_factorial")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_isqrt")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_add_checked")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_sub_checked")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_mul_checked")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_div_checked")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_mod_checked")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_neg_checked")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_int_div_or")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_is_ok")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_is_err")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_unwrap")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
@@ -813,6 +956,33 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_result_map")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_fold")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_result_and_then")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_replace")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} }, .{ .string = {} } }, .ret = .{ .string = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_split")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_starts_with")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_ends_with")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_substring")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .string = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_index_of")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_eq")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .string = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_string_to_int")) break :blk .{ .params = &.{ .{ .string = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            // Float builtins (all f64 values passed as i64)
+            if (std.mem.eql(u8, runtime, "ko_float_of_int")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_to_int")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_sqrt")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_sin")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_cos")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_tan")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_log")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_log2")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_log10")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_exp")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_floor")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_ceil")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_abs")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_pow")) break :blk .{ .params = &.{ .{ .float = {} }, .{ .float = {} } }, .ret = .{ .float = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_is_nan")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_is_infinite")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_is_finite")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_sign")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
             return error.Unsupported;
         };
         if (args.len != spec.params.len) return error.ArityMismatch;
@@ -1249,7 +1419,7 @@ pub const LirLower = struct {
         if (entry.arity == 0) return self.emit(.{ .int = entry.tag }, .{ .int = {} });
 
         const struct_ty = try self.ctorStructType(entry.arity);
-        const raw = try self.emit(.{ .alloc = struct_ty }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 1 } }, .{ .opaque_type = {} });
         const tag = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
         const tag_slot = try self.gepStruct(struct_ty, raw, 0, .{ .int = {} });
         try self.emitStore(tag_slot, tag);
@@ -1258,7 +1428,12 @@ pub const LirLower = struct {
             const slot = try self.gepStruct(struct_ty, raw, i + 1, .{ .int = {} });
             try self.emitStore(slot, boxed);
         }
-        return self.emit(.{ .ptrtoint = raw }, .{ .int = {} });
+        const result = try self.emit(.{ .ptrtoint = raw }, .{ .int = {} });
+        // Track heap-allocated constructors (arity > 0) for decref at scope exit
+        // Zero-arity constructors are raw tags, not heap-allocated
+        // Type tag 1 = constructor (linear value, no RC needed at exit)
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = result, .type_tag = 1 });
+        return result;
     }
 
     fn ctorStructType(self: *LirLower, arity: usize) LowerError!lir.LirType {
@@ -1823,7 +1998,7 @@ pub const LirLower = struct {
             field_tys[i] = self.localType(vals[i]);
         }
         const struct_ty = lir.LirType{ .struct_ = field_tys };
-        const raw = try self.emit(.{ .alloc = struct_ty }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 2 } }, .{ .opaque_type = {} });
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
             try self.emitStore(slot, v);
@@ -1852,7 +2027,7 @@ pub const LirLower = struct {
             vals[i] = try self.coerce(try self.lowerExpr(hf.value), field_tys[i]);
         }
         const struct_ty = lir.LirType{ .struct_ = field_tys };
-        const raw = try self.emit(.{ .alloc = struct_ty }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 3 } }, .{ .opaque_type = {} });
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
             try self.emitStore(slot, v orelse return error.TypeError);
@@ -1892,16 +2067,24 @@ pub const LirLower = struct {
                 const fn_local = try self.emit(.{ .fn_ref = name }, .{ .opaque_type = {} });
                 return self.emit(.{ .call = .{ .func = fn_local, .args = &.{}, .fn_type = sig } }, sig.returns);
             }
+            if (g.kind == .constant) {
+                return self.lowerGlobalValue(name);
+            }
         }
         return self.lowerExpr(inner);
     }
 
     fn lowerRef(self: *LirLower, inner: hir.HirId) LowerError!lir.LocalId {
         const v = try self.lowerExpr(inner);
-        const vty = self.localType(v);
-        const addr = try self.emit(.{ .alloc_stack = vty }, try self.ptrTo(vty));
+        // Allocate on the heap with ko_alloc (8 bytes for the i64 value)
+        // This gives the ref cell a proper RC header for memory management
+        const addr = try self.emit(.{ .alloc = .{ .ty = .{ .int = {} }, .type_tag = 0 } }, try self.ptrTo(.{ .int = {} }));
         try self.emitStore(addr, v);
-        return self.emit(.{ .ptrtoint = addr }, .{ .int = {} });
+        const result = try self.emit(.{ .ptrtoint = addr }, .{ .int = {} });
+        // Track this heap allocation for decref at scope exit
+        // Type tag 0 = ref value (needs RC — decref at exit)
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = result, .type_tag = 0 });
+        return result;
     }
 
     fn lowerDeref(self: *LirLower, inner: hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
@@ -1913,11 +2096,66 @@ pub const LirLower = struct {
 
     fn lowerAssign(self: *LirLower, a: hir.AssignExpr) LowerError!lir.LocalId {
         const target = try self.lowerExpr(a.target);
+        // Load old value from ref cell before overwriting
+        const ptr_ty = try self.ptrTo(.{ .int = {} });
+        const ptr = try self.emit(.{ .inttoptr = .{ .val = target, .ty = ptr_ty } }, ptr_ty);
+        const old_val = try self.emit(.{ .load = ptr }, .{ .int = {} });
+        
+        // Decref old value if it's a ref value (type_tag=0) — ref cells hold shared data
+        if (self.findHeapAlloc(old_val)) |entry| {
+            if (entry.type_tag == 0) {
+                const decref_ptr = try self.emit(.{ .inttoptr = .{ .val = old_val, .ty = ptr_ty } }, ptr_ty);
+                try self.emitEffect(.{ .decref = decref_ptr });
+            }
+        }
+        
+        // Store new value
         const v = try self.lowerExpr(a.value);
-        const vty = self.localType(v);
-        const ptr = try self.emit(.{ .inttoptr = .{ .val = target, .ty = try self.ptrTo(vty) } }, try self.ptrTo(vty));
         try self.emitStore(ptr, v);
+        
+        // Track new value only if it's a ref value (type_tag=0) — linear values need no RC
+        if (self.findHeapAlloc(v)) |entry| {
+            if (entry.type_tag == 0) {
+                try self.state.scope_heap_values.append(self.allocator, .{ .id = v, .type_tag = 0 });
+            }
+        }
+        
         return self.emit(.{ .int = 0 }, .{ .int = {} });
+    }
+    
+    /// Find a tracked heap allocation by LocalId. Returns null if not found.
+    fn findHeapAlloc(self: *LirLower, id: lir.LocalId) ?HeapAllocEntry {
+        for (self.state.scope_heap_values.items) |entry| {
+            if (entry.id == id) return entry;
+        }
+        return null;
+    }
+
+    /// Check if a LocalId is a tracked heap allocation.
+    fn isHeapAllocated(self: *LirLower, id: lir.LocalId) bool {
+        return self.findHeapAlloc(id) != null;
+    }
+
+    /// Mark a heap value as consumed by a parent structure (constructor, tuple, record, closure).
+    /// Consumed values are NOT decreffed at scope exit — the parent owns them.
+    fn markConsumed(self: *LirLower, heap_id: lir.LocalId) void {
+        self.state.consumed_heap_values.put(heap_id, {}) catch {};
+    }
+
+    /// Emit decref for ref values (type_tag=0) in scope_heap_values[from..] that
+    /// are not the result value and not consumed by parent structures.
+    /// Linear values (type_tag=1/2/3) are NOT decreffed — the compiler proves single-owner.
+    fn emitDecrefHeapValues(self: *LirLower, result: lir.LocalId, from: usize) LowerError!void {
+        const ptr_ty = try self.ptrTo(.{ .int = {} });
+        const items = self.state.scope_heap_values.items;
+        for (items[from..]) |entry| {
+            if (entry.id == result) continue;
+            if (self.state.consumed_heap_values.contains(entry.id)) continue;
+            // Only decref ref values (type_tag=0). Linear values (type_tag=1/2/3) need no RC.
+            if (entry.type_tag != 0) continue;
+            const decref_ptr = try self.emit(.{ .inttoptr = .{ .val = entry.id, .ty = ptr_ty } }, ptr_ty);
+            try self.emitEffect(.{ .decref = decref_ptr });
+        }
     }
 };
 

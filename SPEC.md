@@ -17,7 +17,7 @@ Most functional languages (Haskell, OCaml, Erlang) target managed runtimes. Most
 - Practical: no monads, no type classes, no higher-kinded types in v0.1.0
 
 **What Kō is NOT:**
-- Not a research language (no dependent types, no linear types)
+- Not a research language (no dependent types, no type classes)
 - Not an systems language (no manual memory, no unsafe blocks)
 - Not trying to replace Haskell or Rust
 
@@ -88,8 +88,8 @@ Every new language carries syntax DNA from its ancestors. Fights this and you ge
 ### 3.2 Type System (v0.1.0)
 | Feature | Example | Status |
 |---------|---------|--------|
-| Type inference | Hindley-Milner | Done |
-| Type annotations | `fn add : Int -> Int -> Int` | Done |
+| Type inference | Bidirectional (v0.3.0+) | Done |
+| Type annotations | `fn add (x : Int) (y : Int) -> Int` | Done |
 | ADT constructors | `Just 42`, `Nothing` | Done |
 | Wildcard patterns | `_` | Done |
 | Exhaustiveness check | Compiler warns on missing cases | Done |
@@ -101,10 +101,18 @@ Every new language carries syntax DNA from its ancestors. Fights this and you ge
 | Tuple field access | `tup.0`, `tup.1` | Done |
 | Tuple match patterns | `match t (0, 0) -> "origin"` | Done |
 
-### 3.3 Future
-- Generics: `type List a = Cons * * | Nil`
+### 3.3 Type System (v0.3.0+)
+| Feature | Example | Status |
+|---------|---------|--------|
+| Monomorphization | `map` specialized for `List Int` | Done |
+| Linear types | Values consumed after use | Done |
+| ref types | `ref T` for shared data | Done |
+| Ownership-aware mono | Specialized for linear vs ref | Done |
+| Bidirectional inference | Function signatures mandatory for public | Done |
+| Typed params | `fn f (x : Int) -> Int = x + 1` | Done |
+
+### 3.4 Future
 - Record types: `{ name: String, age: Int }`
-- Type classes: `class Eq a where (==) : a -> a -> Bool`
 - Effect system: `fn read_file : !IO (Result Error String)`
 - Proper modules (separate compilation, namespaces)
 - Self-hosting
@@ -126,10 +134,13 @@ top_stmt        = fn_def
                 | let_def
                 | module_def
 
-fn_def          = 'pub'? 'fn' IDENT+ '=' expr
-                | 'pub'? 'fn' IDENT+ ':' type_expr
+fn_def          = 'pub'? 'fn' IDENT param* '=' expr
+                | 'pub'? 'fn' IDENT param* '->' type_expr '=' expr
 
-type_def        = 'pub'? 'type' IDENT '=' variant ('|' variant)*
+param           = IDENT
+                | '(' IDENT ':' type_expr ')'
+
+type_def        = 'pub'? 'type' IDENT IDENT* '=' variant ('|' variant)*
 
 let_def         = 'pub'? 'let' IDENT '=' expr
 
@@ -146,6 +157,7 @@ import_stmt     = 'import' IDENT ('.' IDENT)*
 type_expr       = type_atom ('->' type_expr)?
 type_atom       = IDENT
                 | '(' type_expr ')'
+                | 'ref' type_atom
 
 (* === Expressions === *)
 expr            = let_expr
@@ -263,10 +275,11 @@ map \x -> x*2 xs
 ## 5. Type System
 
 ### 5.1 Design Goals
-1. **Inferred**: Users rarely need type annotations
+1. **Inferred**: Users rarely need type annotations (private functions)
 2. **Sound**: If it type-checks, no runtime type errors
-3. **Simple**: Hindley-Milner, no extensions in v0.1.0
+3. **Simple**: Hindley-Milner (v0.1.0), bidirectional (v0.3.0+)
 4. **Practical**: ADTs cover most use cases
+5. **Ownership-aware**: Linear types + ref for shared data (v0.3.0+)
 
 ### 5.2 Type Language
 ```
@@ -274,7 +287,8 @@ type ::= Int | Float | Bool | Char | String
        | a                           (* type variable *)
        | type -> type                (* function type *)
        | TypeName                    (* ADT type *)
-       | TypeName type_atom*         (* parameterized ADT, future *)
+       | TypeName type_atom*         (* parameterized ADT *)
+       | ref type                    (* reference-counted type *)
        | '(' type (',' type)+ ')'    (* tuple type *)
 ```
 
@@ -325,17 +339,17 @@ Each `*` marks a data slot in the current sum-type notation. The compiler genera
 
 Record patterns should support `..` for intentional partial matches.
 
-### 5.5 Type Inference (Algorithm W)
-The compiler infers types using unification:
+### 5.5 Type Inference (Bidirectional, v0.3.0+)
+The compiler uses bidirectional type inference with mandatory signatures for public functions:
 
-1. Assign fresh type variables to all expressions
-2. Generate constraints from usage:
-   - `add 1 2`: `add : a -> b -> c`, `1 : Int`, `2 : Int`
-   - Constraint: `a = Int`, `b = Int`
-3. Unify constraints to find most general type
-4. Substitute solved types back
+1. Function signatures drive type checking (checking mode)
+2. Expression types are synthesized when not constrained by signatures (synthesis mode)
+3. Monomorphization runs before typechecking — generic functions are specialized to concrete types
 
-**Result:** `add : Int -> Int -> Int`
+**Signature rules:**
+- Public functions: signature mandatory (forms module API)
+- Private functions: signature optional (inferred from body)
+- Recursive functions: signature recommended (helps compiler)
 
 ### 5.6 Exhaustiveness Checking
 The compiler verifies all match arms cover all constructors:
@@ -348,6 +362,89 @@ fn safe_head xs =
     Nil -> Nothing         (* covers Nil *)
     (* compiler warns if a case is missing *)
 ```
+
+### 5.7 Monomorphization (v0.3.0+)
+
+Kō uses compile-time monomorphization (Rust-style). All generics are fully instantiated to concrete types before typechecking and linearity checking.
+
+**Pipeline:**
+```
+parse → monomorphize → bidirectional-typecheck → linearity-check → codegen
+```
+
+**What gets monomorphized:**
+- Function definitions with quantified type variables
+- Constructor applications with concrete type arguments
+- Pattern matches on concrete types
+
+**What does NOT get monomorphized:**
+- Built-in functions (already concrete)
+- Functions without type variables (already concrete)
+- Local bindings (inferred, not polymorphic)
+
+**Example:**
+```ko
+# Original (polymorphic)
+pub fn map (f : a -> b) (xs : List a) -> List b = ...
+
+# After monomorphization (two call sites)
+fn map__Int__String (f : Int -> String) (xs : List Int) -> List String = ...
+fn map__Bool__Int (f : Bool -> Int) (xs : List Bool) -> List Int = ...
+```
+
+**Signature rules:**
+- Public functions: signature mandatory (forms module API)
+- Private functions: signature optional (inferred from body)
+- Recursive functions: signature recommended (helps compiler)
+
+See DESIGN-polymorphism.md for the full analysis.
+
+### 5.8 Linear Types (v0.3.0+)
+
+Kō uses linear types to prove single-ownership at compile time. Values are linear by default — consumed after use, no reference counting needed.
+
+**Core rules:**
+- Values are linear by default (single owner)
+- Pattern matching consumes values
+- Function arguments are consumed
+- To "modify" a linear value, destructure and reconstruct
+
+**ref types:**
+- `ref T` is the type for reference-counted values
+- `ref expr` creates a shared value
+- `!expr` dereferences
+- Linear is the default; `ref` is explicit opt-in
+
+**Example:**
+```ko
+# Linear (default)
+let xs = Cons 1 (Cons 2 Nil)   # xs owns the list
+let total = sum xs               # xs consumed — no RC needed
+
+# ref (explicit)
+let shared = ref (Cons 1 Nil)   # shared owns the RC'd list
+let a = !shared                  # borrow (RC incremented)
+```
+
+See DESIGN-linear-types.md for the full design.
+
+### 5.9 Ownership-Aware Monomorphization (v0.3.0+)
+
+Instead of monomorphizing only for types, Kō monomorphizes for **ownership patterns**. Functions that consume their arguments differently get different specializations.
+
+**Example:**
+```ko
+# Original
+pub fn process (x : List Int) -> Int = ...
+
+# After ownership-aware monomorphization
+fn process__linear (x : List Int) -> Int = ...    # zero-cost, no RC
+fn process__ref (x : ref (List Int)) -> Int = ... # RC overhead
+```
+
+The caller chooses which version to call based on whether they own or share the data.
+
+See DESIGN-polymorphism.md for the full analysis.
 
 ---
 

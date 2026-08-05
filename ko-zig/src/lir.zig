@@ -48,7 +48,9 @@ pub const LirValue = union(enum) {
     /// Reference to a top-level function by name. Materializes the function
     /// as a value so it can be called directly or stored in a closure.
     fn_ref: []const u8,
-    alloc: LirType,
+    /// Heap allocation with type tag: alloc(type, type_tag)
+    /// type_tag: 0=raw, 1=constructor, 2=tuple, 3=record
+    alloc: AllocValue,
     load: LocalId,
     alloc_stack: LirType,
     incref: LocalId,
@@ -102,6 +104,12 @@ pub const InsertValue = struct {
     index: usize,
     value: LocalId,
     ty: LirType,
+};
+
+pub const AllocValue = struct {
+    ty: LirType,
+    /// Type tag: 0=raw, 1=constructor, 2=tuple, 3=record
+    type_tag: i64 = 0,
 };
 
 pub const GetElementPtr = struct {
