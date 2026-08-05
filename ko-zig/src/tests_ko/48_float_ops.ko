@@ -1,0 +1,17 @@
+# Float dot operator tests
+
+fn main =
+  let x = 3.14
+  let y = 2.0
+  let sum = x +. y
+  let diff = x -. y
+  let prod = x *. y
+  let quot = x /. y
+  let le = x <=. y
+  let ge = x >=. y
+  println sum
+  println diff
+  println prod
+  println quot
+  println le
+  println ge

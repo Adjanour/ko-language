@@ -1,0 +1,11 @@
+fn main =
+  let a = "hello"
+  let b = "hello"
+  let c = "world"
+  let r1 = a == b
+  let r2 = a == c
+  let r3 = a != c
+  println r1
+  println r2
+  println r3
+  0

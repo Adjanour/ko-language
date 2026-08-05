@@ -1,0 +1,30 @@
+# String builtins test: startsWith, endsWith, substring, indexOf
+
+fn main =
+  # startsWith
+  let r1 = String.startsWith "hello world" "hello"
+  println r1
+
+  let r2 = String.startsWith "hello world" "world"
+  println r2
+
+  # endsWith
+  let r3 = String.endsWith "hello world" "world"
+  println r3
+
+  let r4 = String.endsWith "hello world" "hello"
+  println r4
+
+  # substring
+  let r5 = String.substring "hello world" 0 5
+  println r5
+
+  let r6 = String.substring "hello world" 6 5
+  println r6
+
+  # indexOf
+  let r7 = String.indexOf "hello world" "world"
+  println r7
+
+  let r8 = String.indexOf "hello world" "xyz"
+  println r8
