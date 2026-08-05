@@ -724,17 +724,17 @@ pub const Codegen = struct {
                     val[1 .. val.len - 1]
                 else
                     val;
-                // Create a global string constant and return a pointer to it
+                // Create a global string constant
                 const str_val = core.LLVMConstStringInContext(self.context, @ptrCast(inner.ptr), @intCast(inner.len), NULL_TERMINATE);
                 const global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(str_val), "str");
                 core.LLVMSetInitializer(global, str_val);
                 core.LLVMSetGlobalConstant(global, 1);
                 core.LLVMSetLinkage(global, .LLVMPrivateLinkage);
-                // Return a pointer to the first element via GEP
+                // Get pointer to the first element via GEP
                 var indices: [1]types.LLVMValueRef = .{
                     core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0),
                 };
-                break :blk core.LLVMBuildGEP2(
+                const str_ptr = core.LLVMBuildGEP2(
                     self.builder,
                     core.LLVMInt8TypeInContext(self.context),
                     global,
@@ -742,6 +742,20 @@ pub const Codegen = struct {
                     1,
                     "str_ptr",
                 );
+                // Wrap in KoString using ko_string_from_cstr (creates immortal string with RC=0)
+                if (core.LLVMGetNamedFunction(self.module, "ko_string_from_cstr")) |ko_string_from_cstr_fn| {
+                    var args: [1]types.LLVMValueRef = .{str_ptr};
+                    break :blk core.LLVMBuildCall2(
+                        self.builder,
+                        core.LLVMGlobalGetValueType(ko_string_from_cstr_fn),
+                        ko_string_from_cstr_fn,
+                        &args,
+                        1,
+                        "ko_str",
+                    );
+                }
+                // Fallback: return raw pointer (should not happen after KoString is implemented)
+                break :blk str_ptr;
             },
             .identifier => |id| {
                 if (self.named_values.get(id.name)) |val| return val;

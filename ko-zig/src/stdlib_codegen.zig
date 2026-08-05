@@ -108,6 +108,218 @@ pub const StdlibCodegen = struct {
     }
 
     // ============================================================
+    // KoString runtime functions
+    // ============================================================
+
+    /// KoString memory layout (32-byte header, compatible with ko_decref):
+    /// [i64 rc][i64 type_tag=4][i64 arity=0][i64 bitmap=0][i64 byte_length][i8... data]
+    /// rc=0 means immortal (string literal), never freed
+    /// rc>0 means managed, decremented by ko_decref
+    /// Data pointer (returned to user) is at offset 40 from malloc ptr.
+    pub fn codegenKoStringFromCstr(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_string_from_cstr", self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const null_check = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "null_check");
+        const alloc = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "alloc");
+        const done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const cstr = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(cstr, "cstr");
+
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, cstr, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, done, null_check);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, null_check);
+        const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
+        var strlen_args: [1]types.LLVMValueRef = .{cstr};
+        const len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, 1, "len");
+        const header_size = core.LLVMConstInt(self.i64Type(), 40, 0);
+        const one = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const alloc_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildAdd(self.builder, header_size, len, "tmp"), one, "alloc_size");
+        self.buildBranch(alloc);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, alloc);
+        const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
+        var malloc_args: [1]types.LLVMValueRef = .{alloc_size};
+        const buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "buf");
+        const rc_ptr = core.LLVMBuildBitCast(self.builder, buf, core.LLVMPointerTypeInContext(self.context, 0), "rc_ptr");
+
+        const zero = core.LLVMConstInt(self.i64Type(), 0, 0);
+        const one_i64 = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const type_tag_4 = core.LLVMConstInt(self.i64Type(), 4, 0);
+
+        var idx0: [1]types.LLVMValueRef = .{zero};
+        _ = core.LLVMBuildStore(self.builder, one_i64, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx0)), 1, "rc_slot"));
+        var idx1: [1]types.LLVMValueRef = .{one};
+        _ = core.LLVMBuildStore(self.builder, type_tag_4, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx1)), 1, "tag_slot"));
+        var idx2: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 2, 0)};
+        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "arity_slot"));
+        var idx3: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 3, 0)};
+        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx3)), 1, "bitmap_slot"));
+        var idx4: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 4, 0)};
+        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx4)), 1, "len_slot"));
+
+        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
+        const copy_len = core.LLVMBuildAdd(self.builder, len, one, "copy_len");
+        const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
+        var memcpy_args: [3]types.LLVMValueRef = .{ data_ptr, cstr, copy_len };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, 3, "");
+        self.buildBranch(done);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done);
+        const result = core.LLVMBuildPhi(self.builder, self.ptrType(), "result");
+        var phi_vals: [2]types.LLVMValueRef = .{ core.LLVMConstNull(self.ptrType()), data_ptr };
+        var phi_blocks: [2]types.LLVMBasicBlockRef = .{ entry, alloc };
+        core.LLVMAddIncoming(result, &phi_vals, @ptrCast(@constCast(&phi_blocks)), 2);
+        self.buildRet(result);
+    }
+
+    pub fn codegenKoStringAlloc(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type() };
+        const fn_val = self.createFunction("ko_string_alloc", self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const data = core.LLVMGetParam(fn_val, 0);
+        const len = core.LLVMGetParam(fn_val, 1);
+        core.LLVMSetValueName(data, "data");
+        core.LLVMSetValueName(len, "len");
+
+        const header_size = core.LLVMConstInt(self.i64Type(), 40, 0);
+        const one = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const alloc_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildAdd(self.builder, header_size, len, "tmp"), one, "alloc_size");
+        const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
+        var malloc_args: [1]types.LLVMValueRef = .{alloc_size};
+        const buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "buf");
+        const rc_ptr = core.LLVMBuildBitCast(self.builder, buf, core.LLVMPointerTypeInContext(self.context, 0), "rc_ptr");
+
+        const zero = core.LLVMConstInt(self.i64Type(), 0, 0);
+        const one_i64 = core.LLVMConstInt(self.i64Type(), 1, 0);
+        const type_tag_4 = core.LLVMConstInt(self.i64Type(), 4, 0);
+
+        var idx0: [1]types.LLVMValueRef = .{zero};
+        _ = core.LLVMBuildStore(self.builder, one_i64, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx0)), 1, "rc_slot"));
+        var idx1: [1]types.LLVMValueRef = .{one};
+        _ = core.LLVMBuildStore(self.builder, type_tag_4, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx1)), 1, "tag_slot"));
+        var idx2: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 2, 0)};
+        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "arity_slot"));
+        var idx3: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 3, 0)};
+        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx3)), 1, "bitmap_slot"));
+        var idx4: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 4, 0)};
+        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx4)), 1, "len_slot"));
+
+        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
+        const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
+        var memcpy_args: [3]types.LLVMValueRef = .{ data_ptr, data, len };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, 3, "");
+        self.buildRet(data_ptr);
+    }
+
+    pub fn codegenKoStringIncref(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_string_incref", self.voidType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const check_rc = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_rc");
+        const increment = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "increment");
+        const done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const str = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(str, "str");
+
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, str, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, done, check_rc);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, check_rc);
+        const rc_ptr_raw = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -32)), 0)})), 1, "rc_ptr_raw");
+        const rc_ptr = core.LLVMBuildBitCast(self.builder, rc_ptr_raw, core.LLVMPointerTypeInContext(self.context, 0), "rc_ptr");
+        var load_gep: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const rc_slot = core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&load_gep)), 1, "rc_slot");
+        const rc = core.LLVMBuildLoad2(self.builder, self.i64Type(), rc_slot, "rc");
+        const is_immortal = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, rc, core.LLVMConstInt(self.i64Type(), 0, 0), "is_immortal");
+        self.buildCondBranch(is_immortal, done, increment);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, increment);
+        const new_rc = core.LLVMBuildAdd(self.builder, rc, core.LLVMConstInt(self.i64Type(), 1, 0), "new_rc");
+        _ = core.LLVMBuildStore(self.builder, new_rc, rc_slot);
+        self.buildBranch(done);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done);
+        self.buildRetVoid();
+    }
+
+    pub fn codegenKoStringDecref(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_string_decref", self.voidType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const check_rc = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_rc");
+        const free_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "free_bb");
+        const done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const str = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(str, "str");
+
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, str, core.LLVMConstNull(self.ptrType()), "is_null");
+        self.buildCondBranch(is_null, done, check_rc);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, check_rc);
+        const rc_ptr_raw = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -32)), 0)})), 1, "rc_ptr_raw");
+        const rc_ptr = core.LLVMBuildBitCast(self.builder, rc_ptr_raw, core.LLVMPointerTypeInContext(self.context, 0), "rc_ptr");
+        var load_gep: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const rc_slot = core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&load_gep)), 1, "rc_slot");
+        const rc = core.LLVMBuildLoad2(self.builder, self.i64Type(), rc_slot, "rc");
+        const is_immortal = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, rc, core.LLVMConstInt(self.i64Type(), 0, 0), "is_immortal");
+        self.buildCondBranch(is_immortal, done, free_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, free_bb);
+        const new_rc = core.LLVMBuildSub(self.builder, rc, core.LLVMConstInt(self.i64Type(), 1, 0), "new_rc");
+        _ = core.LLVMBuildStore(self.builder, new_rc, rc_slot);
+        const should_free = core.LLVMBuildICmp(self.builder, .LLVMIntSLE, new_rc, core.LLVMConstInt(self.i64Type(), 0, 0), "should_free");
+        const do_free_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "do_free");
+        self.buildCondBranch(should_free, do_free_bb, done);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, do_free_bb);
+        const free_fn = core.LLVMGetNamedFunction(self.module, "free");
+        var free_args: [1]types.LLVMValueRef = .{rc_ptr_raw};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, 1, "");
+        self.buildBranch(done);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done);
+        self.buildRetVoid();
+    }
+
+    pub fn codegenKoStringData(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_string_data", self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const str = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(str, "str");
+        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
+        self.buildRet(data_ptr);
+    }
+
+    pub fn codegenKoStringByteLength(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction("ko_string_byte_length", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const str = core.LLVMGetParam(fn_val, 0);
+        core.LLVMSetValueName(str, "str");
+        const len_ptr_raw = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)})), 1, "len_ptr_raw");
+        const len_ptr = core.LLVMBuildBitCast(self.builder, len_ptr_raw, core.LLVMPointerTypeInContext(self.context, 0), "len_ptr");
+        var load_gep: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const len_slot = core.LLVMBuildGEP2(self.builder, self.i64Type(), len_ptr, @ptrCast(@constCast(&load_gep)), 1, "len_slot");
+        const len = core.LLVMBuildLoad2(self.builder, self.i64Type(), len_slot, "len");
+        self.buildRet(len);
+    }
+
+    // ============================================================
     // External declarations (system calls we can't generate IR for)
     // ============================================================
 
@@ -645,48 +857,26 @@ pub const StdlibCodegen = struct {
     // ============================================================
 
     pub fn codegenStringLength(self: *StdlibCodegen) void {
+        // ko_string_length(str: ptr) -> i64
+        // Returns the byte length of a KoString (O(1) via byte_length field)
         var params: [1]types.LLVMTypeRef = .{self.ptrType()};
         const fn_val = self.createFunction("ko_string_length", self.i64Type(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
-        const null_check = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "null_check");
-        const loop = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
-        const done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
 
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const str = core.LLVMGetParam(fn_val, 0);
         core.LLVMSetValueName(str, "str");
 
-        // if str == null, return 0
-        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, str, core.LLVMConstNull(self.ptrType()), "is_null");
-        self.buildCondBranch(is_null, done, null_check);
-
-        core.LLVMPositionBuilderAtEnd(self.builder, null_check);
-        self.buildBranch(loop);
-
-        // loop: len = 0; while str[len] != 0: len++
-        core.LLVMPositionBuilderAtEnd(self.builder, loop);
-        const len_phi = core.LLVMBuildPhi(self.builder, self.i64Type(), "len");
-        var gep_indices: [1]types.LLVMValueRef = .{len_phi};
-        const idx = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(&gep_indices), 1, "idx");
-        const ch = core.LLVMBuildLoad2(self.builder, self.i8Type(), idx, "ch");
-        const ch_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, ch, core.LLVMConstInt(self.i8Type(), 0, 0), "ch_zero");
-        const new_len = core.LLVMBuildAdd(self.builder, len_phi, core.LLVMConstInt(self.i64Type(), 1, 0), "new_len");
-        self.buildCondBranch(ch_zero, done, loop);
-
-        var len_vals: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), new_len };
-        var len_blocks: [2]types.LLVMBasicBlockRef = .{ null_check, loop };
-        core.LLVMAddIncoming(len_phi, &len_vals, @ptrCast(&len_blocks), 2);
-
-        // done: return len
-        core.LLVMPositionBuilderAtEnd(self.builder, done);
-        const final_len = core.LLVMBuildPhi(self.builder, self.i64Type(), "final_len");
-        var final_len_vals: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 0, 0), len_phi };
-        var final_len_blocks: [2]types.LLVMBasicBlockRef = .{ entry, loop };
-        core.LLVMAddIncoming(final_len, &final_len_vals, @ptrCast(&final_len_blocks), 2);
-        self.buildRet(final_len);
+        // Call ko_string_byte_length(str)
+        const ko_string_byte_length_fn = core.LLVMGetNamedFunction(self.module, "ko_string_byte_length");
+        var args: [1]types.LLVMValueRef = .{str};
+        const len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_byte_length_fn), ko_string_byte_length_fn, &args, 1, "len");
+        self.buildRet(len);
     }
 
     pub fn codegenStringAppend(self: *StdlibCodegen) void {
+        // ko_string_append(a: KoString, b: KoString) -> KoString
+        // Concatenates two KoStrings and returns a new KoString
         var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
         const fn_val = self.createFunction("ko_string_append", self.ptrType(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
@@ -697,41 +887,56 @@ pub const StdlibCodegen = struct {
         core.LLVMSetValueName(a, "a");
         core.LLVMSetValueName(b, "b");
 
-        // len_a = strlen(a)
-        const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
+        // Get lengths using KoString functions
+        const ko_string_byte_length_fn = core.LLVMGetNamedFunction(self.module, "ko_string_byte_length");
+        const ko_string_data_fn = core.LLVMGetNamedFunction(self.module, "ko_string_data");
+
+        // len_a = ko_string_byte_length(a)
         var len_a_args: [1]types.LLVMValueRef = .{a};
-        const len_a = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &len_a_args, 1, "len_a");
+        const len_a = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_byte_length_fn), ko_string_byte_length_fn, &len_a_args, 1, "len_a");
 
-        // len_b = strlen(b)
+        // len_b = ko_string_byte_length(b)
         var len_b_args: [1]types.LLVMValueRef = .{b};
-        const len_b = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &len_b_args, 1, "len_b");
+        const len_b = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_byte_length_fn), ko_string_byte_length_fn, &len_b_args, 1, "len_b");
 
-        // total = len_a + len_b + 1
-        const total = core.LLVMBuildAdd(self.builder, core.LLVMBuildAdd(self.builder, len_a, len_b, "sum_len"), core.LLVMConstInt(self.i64Type(), 1, 0), "total");
+        // total = len_a + len_b
+        const total = core.LLVMBuildAdd(self.builder, len_a, len_b, "total");
 
-        // buf = malloc(total)
+        // buf = malloc(total + 1)
         const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
-        var malloc_args: [1]types.LLVMValueRef = .{total};
+        var malloc_args: [1]types.LLVMValueRef = .{core.LLVMBuildAdd(self.builder, total, core.LLVMConstInt(self.i64Type(), 1, 0), "alloc_size")};
         const buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "buf");
 
-        // memcpy(buf, a, len_a)
+        // data_a = ko_string_data(a)
+        var data_a_args: [1]types.LLVMValueRef = .{a};
+        const data_a = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_data_fn), ko_string_data_fn, &data_a_args, 1, "data_a");
+
+        // memcpy(buf, data_a, len_a)
         const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
-        var memcpy_args: [3]types.LLVMValueRef = .{ buf, a, len_a };
+        var memcpy_args: [3]types.LLVMValueRef = .{ buf, data_a, len_a };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, 3, "");
 
-        // memcpy(buf + len_a, b, len_b)
+        // data_b = ko_string_data(b)
+        var data_b_args: [1]types.LLVMValueRef = .{b};
+        const data_b = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_data_fn), ko_string_data_fn, &data_b_args, 1, "data_b");
+
+        // memcpy(buf + len_a, data_b, len_b)
         var buf_offset_idx: [1]types.LLVMValueRef = .{len_a};
         const buf_offset = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(&buf_offset_idx), 1, "buf_offset");
-        var memcpy_args2: [3]types.LLVMValueRef = .{ buf_offset, b, len_b };
+        var memcpy_args2: [3]types.LLVMValueRef = .{ buf_offset, data_b, len_b };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args2, 3, "");
 
-        // buf[total - 1] = 0
-        const last_idx = core.LLVMBuildSub(self.builder, total, core.LLVMConstInt(self.i64Type(), 1, 0), "last_idx");
-        var last_ptr_idx: [1]types.LLVMValueRef = .{last_idx};
+        // buf[total] = 0 (null terminator)
+        var last_ptr_idx: [1]types.LLVMValueRef = .{total};
         const last_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(&last_ptr_idx), 1, "last_ptr");
         _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i8Type(), 0, 0), last_ptr);
 
-        self.buildRet(buf);
+        // Create KoString from the buffer
+        const ko_string_alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_string_alloc");
+        var alloc_args: [2]types.LLVMValueRef = .{ buf, total };
+        const result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_string_alloc_fn), ko_string_alloc_fn, &alloc_args, 2, "result");
+
+        self.buildRet(result);
     }
 
     pub fn codegenStringEq(self: *StdlibCodegen) void {
@@ -2795,6 +3000,14 @@ pub const StdlibCodegen = struct {
         self.codegenIntLcm();
         self.codegenIntFactorial();
         self.codegenIntIsqrt();
+
+        // KoString runtime functions
+        self.codegenKoStringFromCstr();
+        self.codegenKoStringAlloc();
+        self.codegenKoStringIncref();
+        self.codegenKoStringDecref();
+        self.codegenKoStringData();
+        self.codegenKoStringByteLength();
 
         self.codegenStringLength();
         self.codegenStringAppend();

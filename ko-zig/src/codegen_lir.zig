@@ -331,7 +331,24 @@ pub const CodegenLir = struct {
             .float => |v| core.LLVMConstReal(core.LLVMDoubleTypeInContext(self.context), v),
             .bool => |v| core.LLVMConstInt(core.LLVMInt1TypeInContext(self.context), @intFromBool(v), 0),
             .char => |v| core.LLVMConstInt(core.LLVMInt8TypeInContext(self.context), v, 0),
-            .string => |s| core.LLVMBuildGlobalStringPtr(self.builder, try self.dupeZ(s.ptr), "str"),
+            .string => |s| blk: {
+                // Create global string constant
+                const str_ptr = core.LLVMBuildGlobalStringPtr(self.builder, try self.dupeZ(s.ptr), "str");
+                // Wrap in KoString using ko_string_from_cstr (creates immortal string with RC=0)
+                if (core.LLVMGetNamedFunction(self.module, "ko_string_from_cstr")) |ko_string_from_cstr_fn| {
+                    var args: [1]types.LLVMValueRef = .{str_ptr};
+                    break :blk core.LLVMBuildCall2(
+                        self.builder,
+                        core.LLVMGlobalGetValueType(ko_string_from_cstr_fn),
+                        ko_string_from_cstr_fn,
+                        &args,
+                        1,
+                        "ko_str",
+                    );
+                }
+                // Fallback: return raw pointer (should not happen after KoString is implemented)
+                break :blk str_ptr;
+            },
             .local => |id| self.locals.get(id) orelse error.UndefinedLocal,
             .fn_ref => |name| core.LLVMGetNamedFunction(self.module, try self.dupeZ(name)) orelse error.UndefinedFunction,
             .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag),
