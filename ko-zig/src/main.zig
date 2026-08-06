@@ -496,9 +496,79 @@ pub fn main(init: std.process.Init) !void {
                 mapLirJitResultFns(lcg.module, jit.engine);
                 _ = try jit.runMain();
             },
-            .obj, .exe => {
-                reportError(io, fname, null, "--use-lir does not support AOT modes yet", .{});
-                std.process.exit(1);
+            .obj => {
+                const out_name = output orelse "output.o";
+                var aot = try codegen_mod.Aot.init();
+                defer aot.deinit();
+                const emit_result = try aot.emitObjectFile(lcg.module, init.arena.allocator());
+                const out_file = try cwd.createFile(io, out_name, .{});
+                defer out_file.close(io);
+                var out_buf: [4096]u8 = undefined;
+                var out_writer = out_file.writer(io, &out_buf);
+                try out_writer.interface.writeAll(emit_result.data);
+                try out_writer.interface.flush();
+                try writer.interface.print("wrote {s}\n", .{out_name});
+                try writer.interface.flush();
+            },
+            .exe => {
+                const out_name_z = try init.arena.allocator().dupeZ(u8, output orelse "output");
+                const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name_z});
+                const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
+
+                var aot = try codegen_mod.Aot.init();
+                defer aot.deinit();
+                const emit_result = try aot.emitObjectFile(lcg.module, init.arena.allocator());
+                {
+                    const obj_file = try cwd.createFile(io, obj_name_slice, .{});
+                    defer obj_file.close(io);
+                    var obj_buf: [4096]u8 = undefined;
+                    var obj_writer = obj_file.writer(io, &obj_buf);
+                    try obj_writer.interface.writeAll(emit_result.data);
+                    try obj_writer.interface.flush();
+                }
+
+                const os_tag = @import("builtin").os.tag;
+                const ld_argv = if (os_tag == .macos) [_][]const u8{
+                    "ld", "-o", out_name_z,
+                    obj_name,
+                    "-lc", "-lm", "-L/usr/lib", "-L/opt/homebrew/lib",
+                    "-syslibroot", "`xcrun --show-sdk-path`",
+                } else if (os_tag == .linux) [_][]const u8{
+                    "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
+                    obj_name, "-o", out_name_z,
+                    "-lc", "-lm", "/usr/lib/crtn.o",
+                    "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
+                } else [_][]const u8{
+                    "cc", obj_name, "-o", out_name_z,
+                    "-lc", "-lm",
+                };
+                const result = std.process.run(init.arena.allocator(), io, .{
+                    .argv = &ld_argv,
+                    .stderr_limit = .unlimited,
+                    .stdout_limit = .unlimited,
+                }) catch |err| {
+                    reportError(io, fname, null, "failed to link: {}", .{err});
+                    std.process.exit(1);
+                };
+                defer {
+                    init.arena.allocator().free(result.stdout);
+                    init.arena.allocator().free(result.stderr);
+                }
+                if (result.term != .exited or result.term.exited != 0) {
+                    const code: u8 = if (result.term == .exited) result.term.exited else 1;
+                    reportError(io, fname, null, "linker failed (exit {d})", .{code});
+                    if (result.stderr.len > 0) {
+                        const errw = Io.File.stderr();
+                        var ebuf: [4096]u8 = undefined;
+                        var ew = errw.writer(io, &ebuf);
+                        try ew.interface.writeAll(result.stderr);
+                        try ew.interface.flush();
+                    }
+                    std.process.exit(1);
+                }
+
+                try writer.interface.print("wrote {s}\n", .{out_name_z});
+                try writer.interface.flush();
             },
             .check, .repl, .dump_hir, .dump_lir => unreachable,
         }

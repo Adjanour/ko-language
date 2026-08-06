@@ -374,6 +374,15 @@ pub const StdlibCodegen = struct {
         const abort_type = core.LLVMFunctionType(self.voidType(), &empty_params, 0, 0);
         _ = core.LLVMAddFunction(self.module, "abort", abort_type);
 
+        // fprintf(ptr, ptr, ...) -> i64 (variadic)
+        var fprintf_params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const fprintf_type = core.LLVMFunctionType(self.i64Type(), &fprintf_params, 2, 1);
+        _ = core.LLVMAddFunction(self.module, "fprintf", fprintf_type);
+
+        // stderr (global variable)
+        const stderr_global = core.LLVMAddGlobal(self.module, self.ptrType(), "stderr");
+        core.LLVMSetLinkage(stderr_global, .LLVMExternalLinkage);
+
         // strstr(ptr, ptr) -> ptr
         var strstr_params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
         const strstr_type = core.LLVMFunctionType(self.ptrType(), &strstr_params, 2, 0);
@@ -2536,10 +2545,64 @@ pub const StdlibCodegen = struct {
     }
 
     pub fn codegenPanic(self: *StdlibCodegen) void {
-        var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type() };
-        _ = self.createFunction("ko_panic", self.voidType(), &params);
-        var params_str: [1]types.LLVMTypeRef = .{self.ptrType()};
-        _ = self.createFunction("ko_panic_str", self.voidType(), &params_str);
+        // ko_panic(msg_ptr: ptr, msg_len: i64) -> void
+        // Writes message to stderr, newline, then aborts.
+        {
+            var params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.i64Type() };
+            const fn_val = self.createFunction("ko_panic", self.voidType(), &params);
+            const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+            core.LLVMPositionBuilderAtEnd(self.builder, entry);
+            const msg_ptr = core.LLVMGetParam(fn_val, 0);
+            const msg_len = core.LLVMGetParam(fn_val, 1);
+            core.LLVMSetValueName(msg_ptr, "msg_ptr");
+            core.LLVMSetValueName(msg_len, "msg_len");
+
+            // Format string for fprintf: "%.*s\n"
+            const fmt_str = core.LLVMConstStringInContext(self.context, "%.*s\n", 5, 0);
+            const fmt_global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(fmt_str), "panic_fmt");
+            core.LLVMSetInitializer(fmt_global, fmt_str);
+            core.LLVMSetGlobalConstant(fmt_global, 1);
+            core.LLVMSetLinkage(fmt_global, .LLVMPrivateLinkage);
+            var gep_args: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const fmt_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMTypeOf(fmt_str), fmt_global, &gep_args, 1, "fmt_ptr");
+
+            // Get fprintf declaration
+            const fprintf_fn = core.LLVMGetNamedFunction(self.module, "fprintf") orelse unreachable;
+            // Get stderr global and load it
+            const stderr_global = core.LLVMGetNamedGlobal(self.module, "stderr") orelse unreachable;
+            const stderr_val = core.LLVMBuildLoad2(self.builder, self.ptrType(), stderr_global, "stderr_val");
+
+            // Call fprintf(stderr, "%.*s\n", msg_len, msg_ptr)
+            var fprintf_args: [4]types.LLVMValueRef = .{ stderr_val, fmt_ptr, msg_len, msg_ptr };
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fprintf_args, 4, "");
+
+            // Call abort()
+            const abort_fn = core.LLVMGetNamedFunction(self.module, "abort") orelse unreachable;
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(abort_fn), abort_fn, null, 0, "");
+            _ = core.LLVMBuildUnreachable(self.builder);
+        }
+
+        // ko_panic_str(msg_ptr: ptr) -> void
+        // Calls ko_panic with strlen(msg_ptr).
+        {
+            var params_str: [1]types.LLVMTypeRef = .{self.ptrType()};
+            const fn_val = self.createFunction("ko_panic_str", self.voidType(), &params_str);
+            const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+            core.LLVMPositionBuilderAtEnd(self.builder, entry);
+            const msg_ptr = core.LLVMGetParam(fn_val, 0);
+            core.LLVMSetValueName(msg_ptr, "msg_ptr");
+
+            // Call strlen(msg_ptr)
+            const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen") orelse unreachable;
+            var strlen_args: [1]types.LLVMValueRef = .{msg_ptr};
+            const len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, 1, "len");
+
+            // Call ko_panic(msg_ptr, len)
+            const ko_panic_fn = core.LLVMGetNamedFunction(self.module, "ko_panic") orelse unreachable;
+            var panic_args: [2]types.LLVMValueRef = .{ msg_ptr, len };
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_panic_fn), ko_panic_fn, &panic_args, 2, "");
+            _ = core.LLVMBuildUnreachable(self.builder);
+        }
     }
 
     pub fn codegenAssert(self: *StdlibCodegen) void {
