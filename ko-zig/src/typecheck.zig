@@ -41,6 +41,10 @@ const CtorInfo = struct {
 
 const TypeDefInfo = struct {
     field_names: []const []const u8,
+    /// The declared record type, so a `: Rect` annotation resolves to the same
+    /// structural record a `Rect { ... }` literal produces. Without it the two
+    /// are con("Rect") and record{...} respectively, and never unify.
+    record_type: ?*Type = null,
 };
 
 pub const Env = struct {
@@ -150,6 +154,8 @@ pub const Inferer = struct {
     /// without it every element falls back to tag 100 and prints as a raw i64.
     expr_elem_tags: std.AutoHashMap(*const parser.Expr, i64),
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
+    /// Type variables that appear as the object of a field access. See generalize().
+    field_access_vars: std.AutoHashMap(usize, void),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
     diagnostics: ?*DiagnosticList = null,
@@ -178,6 +184,7 @@ pub const Inferer = struct {
             .expr_type_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_elem_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
+            .field_access_vars = std.AutoHashMap(usize, void).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
             .enabled_warnings = .{},
@@ -213,6 +220,7 @@ pub const Inferer = struct {
         self.expr_type_tags.deinit();
         self.expr_elem_tags.deinit();
         self.expr_types.deinit();
+        self.field_access_vars.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
         self.used_names.deinit();
@@ -502,6 +510,11 @@ pub const Inferer = struct {
         defer quantified.deinit(self.allocator);
         var it = free_ty.iterator();
         while (it.next()) |entry| {
+            // A variable we took a field of stays monomorphic. Ko has no row
+            // polymorphism, so the record's layout can only come from the call
+            // site; quantifying here would hand the body a fresh variable and
+            // leave codegen with no layout to emit a GEP against.
+            if (self.field_access_vars.contains(entry.key_ptr.*)) continue;
             if (!env_free.contains(entry.key_ptr.*)) {
                 try quantified.append(self.allocator, entry.key_ptr.*);
             }
@@ -567,12 +580,18 @@ pub const Inferer = struct {
     fn typeExprToType(self: *Inferer, te: parser.TypeExpr) Error!*Type {
         return switch (te) {
             .ident => |name| {
-                if (self.types.get(name)) |_| {
+                if (self.types.get(name)) |info| {
+                    if (info.record_type) |rec| return rec;
                     return try self.newType(.{ .con = .{ .name = name, .args = &.{} } });
                 }
                 return try self.newVarType(try self.freshName(name));
             },
             .constructor => |name| {
+                // A record type name annotates as the declared record itself, so it
+                // unifies with record literals of that type.
+                if (self.types.get(name)) |info| {
+                    if (info.record_type) |rec| return rec;
+                }
                 if (std.mem.eql(u8, name, "Int")) return try self.newType(.int);
                 if (std.mem.eql(u8, name, "Float")) return try self.newType(.float);
                 if (std.mem.eql(u8, name, "Bool")) return try self.newType(.bool);
@@ -1496,7 +1515,15 @@ pub const Inferer = struct {
                 var names = std.ArrayList([]const u8).empty;
                 defer names.deinit(self.allocator);
                 for (fields) |field| try names.append(self.allocator, field.name);
-                try self.types.put(t.name, .{ .field_names = try self.allocator.dupe([]const u8, names.items) });
+                const field_types = try self.allocator.alloc(RecordFieldType, fields.len);
+                for (fields, 0..) |field, i| {
+                    field_types[i] = .{ .name = field.name, .ty = try self.typeExprToType(field.type_expr) };
+                }
+                const rec_ty = try self.newType(.{ .record = .{ .name = t.name, .fields = field_types } });
+                try self.types.put(t.name, .{
+                    .field_names = try self.allocator.dupe([]const u8, names.items),
+                    .record_type = rec_ty,
+                });
             },
         }
     }
@@ -2127,11 +2154,14 @@ pub const Inferer = struct {
                 };
                 return error.UnknownType;
             },
-            .variable => {
+            .variable => |v| {
                 if (std.mem.eql(u8, field, "length")) {
                     try self.unify(obj_ty, try self.newType(.string));
                     return try self.newType(.int);
                 }
+                // Pin this variable monomorphically so the call site's record type
+                // reaches the body — see generalize().
+                self.field_access_vars.put(v.id, {}) catch {};
                 return try self.newVarType(try self.freshName("field"));
             },
             else => {
