@@ -112,10 +112,14 @@ pub const StdlibCodegen = struct {
     // ============================================================
 
     /// KoString memory layout (32-byte header, compatible with ko_decref):
-    /// [i64 rc][i64 type_tag=4][i64 arity=0][i64 bitmap=0][i64 byte_length][i8... data]
+    /// [i64 rc][i64 type_tag=4][i64 byte_length][i64 bitmap=0][i8... data]
+    /// Strings have no heap fields, so the generic header's arity slot carries
+    /// the byte length instead — that keeps the header at 32 bytes so ko_decref
+    /// can walk strings and constructors with the same offsets.
     /// rc=0 means immortal (string literal), never freed
     /// rc>0 means managed, decremented by ko_decref
-    /// Data pointer (returned to user) is at offset 40 from malloc ptr.
+    /// The value passed around IS the data pointer (malloc ptr + 32); header
+    /// fields are read at negative offsets: rc -32, tag -24, len -16, bitmap -8.
     pub fn codegenKoStringFromCstr(self: *StdlibCodegen) void {
         var params: [1]types.LLVMTypeRef = .{self.ptrType()};
         const fn_val = self.createFunction("ko_string_from_cstr", self.ptrType(), &params);
@@ -135,7 +139,7 @@ pub const StdlibCodegen = struct {
         const strlen_fn = core.LLVMGetNamedFunction(self.module, "strlen");
         var strlen_args: [1]types.LLVMValueRef = .{cstr};
         const len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strlen_fn), strlen_fn, &strlen_args, 1, "len");
-        const header_size = core.LLVMConstInt(self.i64Type(), 40, 0);
+        const header_size = core.LLVMConstInt(self.i64Type(), 32, 0);
         const one = core.LLVMConstInt(self.i64Type(), 1, 0);
         const alloc_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildAdd(self.builder, header_size, len, "tmp"), one, "alloc_size");
         self.buildBranch(alloc);
@@ -154,14 +158,14 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildStore(self.builder, one_i64, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx0)), 1, "rc_slot"));
         var idx1: [1]types.LLVMValueRef = .{one};
         _ = core.LLVMBuildStore(self.builder, type_tag_4, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx1)), 1, "tag_slot"));
+        // Strings carry no heap fields, so the arity slot holds the byte length.
+        // That keeps the header at 32 bytes and ko_decref generic.
         var idx2: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 2, 0)};
-        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "arity_slot"));
+        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "len_slot"));
         var idx3: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 3, 0)};
         _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx3)), 1, "bitmap_slot"));
-        var idx4: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 4, 0)};
-        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx4)), 1, "len_slot"));
 
-        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
+        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 32, 0)})), 1, "data_ptr");
         const copy_len = core.LLVMBuildAdd(self.builder, len, one, "copy_len");
         const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
         var memcpy_args: [3]types.LLVMValueRef = .{ data_ptr, cstr, copy_len };
@@ -187,7 +191,7 @@ pub const StdlibCodegen = struct {
         core.LLVMSetValueName(data, "data");
         core.LLVMSetValueName(len, "len");
 
-        const header_size = core.LLVMConstInt(self.i64Type(), 40, 0);
+        const header_size = core.LLVMConstInt(self.i64Type(), 32, 0);
         const one = core.LLVMConstInt(self.i64Type(), 1, 0);
         const alloc_size = core.LLVMBuildAdd(self.builder, core.LLVMBuildAdd(self.builder, header_size, len, "tmp"), one, "alloc_size");
         const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
@@ -203,17 +207,22 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildStore(self.builder, one_i64, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx0)), 1, "rc_slot"));
         var idx1: [1]types.LLVMValueRef = .{one};
         _ = core.LLVMBuildStore(self.builder, type_tag_4, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx1)), 1, "tag_slot"));
+        // Byte length lives in the arity slot — see codegenKoStringFromCstr.
         var idx2: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 2, 0)};
-        _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "arity_slot"));
+        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx2)), 1, "len_slot"));
         var idx3: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 3, 0)};
         _ = core.LLVMBuildStore(self.builder, zero, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx3)), 1, "bitmap_slot"));
-        var idx4: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 4, 0)};
-        _ = core.LLVMBuildStore(self.builder, len, core.LLVMBuildGEP2(self.builder, self.i64Type(), rc_ptr, @ptrCast(@constCast(&idx4)), 1, "len_slot"));
 
-        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
+        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), buf, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 32, 0)})), 1, "data_ptr");
         const memcpy_fn = core.LLVMGetNamedFunction(self.module, "memcpy");
         var memcpy_args: [3]types.LLVMValueRef = .{ data_ptr, data, len };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memcpy_fn), memcpy_fn, &memcpy_args, 3, "");
+        // NUL-terminate: `data` carries no terminator of its own (unlike
+        // ko_string_from_cstr, which copies len + 1), and printf needs one.
+        // alloc_size already reserves this byte.
+        var nul_idx: [1]types.LLVMValueRef = .{len};
+        const nul_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), data_ptr, @ptrCast(&nul_idx), 1, "nul_ptr");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i8Type(), 0, 0), nul_ptr);
         self.buildRet(data_ptr);
     }
 
@@ -299,8 +308,9 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const str = core.LLVMGetParam(fn_val, 0);
         core.LLVMSetValueName(str, "str");
-        const data_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), 40, 0)})), 1, "data_ptr");
-        self.buildRet(data_ptr);
+        // A KoString value already points at its bytes; the header sits behind it
+        // at negative offsets. So the data pointer is the value itself.
+        self.buildRet(str);
     }
 
     pub fn codegenKoStringByteLength(self: *StdlibCodegen) void {
@@ -311,7 +321,7 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const str = core.LLVMGetParam(fn_val, 0);
         core.LLVMSetValueName(str, "str");
-        const len_ptr_raw = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)})), 1, "len_ptr_raw");
+        const len_ptr_raw = core.LLVMBuildGEP2(self.builder, self.i8Type(), str, @ptrCast(@constCast(&.{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -16)), 0)})), 1, "len_ptr_raw");
         const len_ptr = core.LLVMBuildBitCast(self.builder, len_ptr_raw, core.LLVMPointerTypeInContext(self.context, 0), "len_ptr");
         var load_gep: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
         const len_slot = core.LLVMBuildGEP2(self.builder, self.i64Type(), len_ptr, @ptrCast(@constCast(&load_gep)), 1, "len_slot");
@@ -394,10 +404,10 @@ pub const StdlibCodegen = struct {
         const isspace_type = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &isspace_params, 1, 0);
         _ = core.LLVMAddFunction(self.module, "isspace", isspace_type);
 
-        // inspect_list_tail(i64, i64) -> void (forward declaration for inspect)
+        // inspect_list_tail(i64 tail, i64 raw, i64 elem_tag) -> void (forward declaration for inspect)
         {
-            var ilt_params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
-            const ilt_type = core.LLVMFunctionType(self.voidType(), &ilt_params, 2, 0);
+            var ilt_params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+            const ilt_type = core.LLVMFunctionType(self.voidType(), &ilt_params, 3, 0);
             _ = core.LLVMAddFunction(self.module, "inspect_list_tail", ilt_type);
         }
 
@@ -2547,7 +2557,7 @@ pub const StdlibCodegen = struct {
     // ============================================================
 
     pub fn codegenInspect(self: *StdlibCodegen) void {
-        var params: [5]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type() };
+        var params: [6]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type(), self.i64Type() };
         const fn_val = self.createFunction("inspect", self.i64Type(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
 
@@ -2557,11 +2567,16 @@ pub const StdlibCodegen = struct {
         const name_ptr = core.LLVMGetParam(fn_val, 2);
         const raw = core.LLVMGetParam(fn_val, 3);
         const arity = core.LLVMGetParam(fn_val, 4);
+        // Type tag of the list element, so list sugar can print non-Int elements
+        // correctly. 100 (unknown) when the static type gives us nothing.
+        const elem_tag = core.LLVMGetParam(fn_val, 5);
         core.LLVMSetValueName(val, "val");
         core.LLVMSetValueName(type_tag, "type_tag");
         core.LLVMSetValueName(name_ptr, "name_ptr");
         core.LLVMSetValueName(raw, "raw");
         core.LLVMSetValueName(arity, "arity");
+        core.LLVMSetValueName(elem_tag, "elem_tag");
+        const unknown_tag = core.LLVMConstInt(self.i64Type(), 100, 0);
 
         const printf_fn = core.LLVMGetNamedFunction(self.module, "printf");
         const fmt_s = self.globalStringConstant("%s");
@@ -2702,10 +2717,10 @@ pub const StdlibCodegen = struct {
         const fmt_lbracket_try = self.globalStringConstant("[");
         var lbracket_args_try: [2]types.LLVMValueRef = .{ fmt_lbracket_try, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &lbracket_args_try, 2, "");
-        var head_args_try: [5]types.LLVMValueRef = .{ head_val_try, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args_try, 5, "");
-        var tail_args_try: [2]types.LLVMValueRef = .{ tail_val_try, raw };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args_try, 2, "");
+        var head_args_try: [6]types.LLVMValueRef = .{ head_val_try, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args_try, 6, "");
+        var tail_args_try: [3]types.LLVMValueRef = .{ tail_val_try, raw, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args_try, 3, "");
         const fmt_rbracket_try = self.globalStringConstant("]");
         var rbracket_args_try: [2]types.LLVMValueRef = .{ fmt_rbracket_try, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &rbracket_args_try, 2, "");
@@ -2760,11 +2775,11 @@ pub const StdlibCodegen = struct {
         var lbracket_args: [2]types.LLVMValueRef = .{ fmt_lbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &lbracket_args, 2, "");
         // inspect(head, 100, null, raw, 0)
-        var head_args: [5]types.LLVMValueRef = .{ head_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 5, "");
+        var head_args: [6]types.LLVMValueRef = .{ head_val, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 6, "");
         // inspect_list_tail(tail, raw)
-        var tail_args: [2]types.LLVMValueRef = .{ tail_val, raw };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args, 2, "");
+        var tail_args: [3]types.LLVMValueRef = .{ tail_val, raw, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args, 3, "");
         // printf("]")
         const fmt_rbracket = self.globalStringConstant("]");
         var rbracket_args: [2]types.LLVMValueRef = .{ fmt_rbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
@@ -2815,8 +2830,8 @@ pub const StdlibCodegen = struct {
         var arg_idx: [1]types.LLVMValueRef = .{arg_byte_offset};
         const arg_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ctor_ptr, @ptrCast(&arg_idx), 1, "arg_ptr");
         const arg_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), arg_ptr, "arg_val");
-        var arg_inspect_args: [5]types.LLVMValueRef = .{ arg_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &arg_inspect_args, 5, "");
+        var arg_inspect_args: [6]types.LLVMValueRef = .{ arg_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &arg_inspect_args, 6, "");
         // increment idx
         const ctor_next_idx = core.LLVMBuildAdd(self.builder, ctor_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
         _ = core.LLVMBuildStore(self.builder, ctor_next_idx, ctor_idx_start);
@@ -2891,8 +2906,8 @@ pub const StdlibCodegen = struct {
         var rec_field_idx: [1]types.LLVMValueRef = .{rec_byte_offset};
         const rec_field_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), rec_ptr, @ptrCast(&rec_field_idx), 1, "field_ptr");
         const rec_field_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), rec_field_ptr, "field_val");
-        var rec_field_args: [5]types.LLVMValueRef = .{ rec_field_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &rec_field_args, 5, "");
+        var rec_field_args: [6]types.LLVMValueRef = .{ rec_field_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &rec_field_args, 6, "");
         // increment idx
         const rec_next_idx = core.LLVMBuildAdd(self.builder, rec_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
         _ = core.LLVMBuildStore(self.builder, rec_next_idx, rec_idx_start);
@@ -2969,8 +2984,8 @@ pub const StdlibCodegen = struct {
         var elem_idx: [1]types.LLVMValueRef = .{tuple_byte_offset};
         const elem_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), tuple_ptr, @ptrCast(&elem_idx), 1, "elem_ptr");
         const elem_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), elem_ptr, "elem_val");
-        var elem_args: [5]types.LLVMValueRef = .{ elem_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &elem_args, 5, "");
+        var elem_args: [6]types.LLVMValueRef = .{ elem_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &elem_args, 6, "");
         // increment idx
         const next_idx = core.LLVMBuildAdd(self.builder, tuple_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
         _ = core.LLVMBuildStore(self.builder, next_idx, tuple_idx_start);
@@ -3001,7 +3016,7 @@ pub const StdlibCodegen = struct {
     }
 
     pub fn codegenPrintlnWithTag(self: *StdlibCodegen) void {
-        var params: [5]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type() };
+        var params: [6]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type(), self.i64Type() };
         const fn_val = self.createFunction("println_with_tag", self.i64Type(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
 
@@ -3011,11 +3026,12 @@ pub const StdlibCodegen = struct {
         const name_ptr = core.LLVMGetParam(fn_val, 2);
         const raw = core.LLVMGetParam(fn_val, 3);
         const arity = core.LLVMGetParam(fn_val, 4);
+        const elem_tag = core.LLVMGetParam(fn_val, 5);
 
-        // call inspect(val, type_tag, name_ptr, raw, arity)
+        // call inspect(val, type_tag, name_ptr, raw, arity, elem_tag)
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
-        var inspect_args: [5]types.LLVMValueRef = .{ val, type_tag, name_ptr, raw, arity };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &inspect_args, 5, "");
+        var inspect_args: [6]types.LLVMValueRef = .{ val, type_tag, name_ptr, raw, arity, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &inspect_args, 6, "");
 
         // printf("\n")
         const printf_fn = core.LLVMGetNamedFunction(self.module, "printf");
@@ -3027,7 +3043,7 @@ pub const StdlibCodegen = struct {
     }
 
     pub fn codegenPrintWithTag(self: *StdlibCodegen) void {
-        var params: [5]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type() };
+        var params: [6]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.ptrType(), self.i64Type(), self.i64Type(), self.i64Type() };
         const fn_val = self.createFunction("print_with_tag", self.i64Type(), &params);
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
 
@@ -3037,11 +3053,12 @@ pub const StdlibCodegen = struct {
         const name_ptr = core.LLVMGetParam(fn_val, 2);
         const raw = core.LLVMGetParam(fn_val, 3);
         const arity = core.LLVMGetParam(fn_val, 4);
+        const elem_tag = core.LLVMGetParam(fn_val, 5);
 
-        // call inspect(val, type_tag, name_ptr, raw, arity)
+        // call inspect(val, type_tag, name_ptr, raw, arity, elem_tag)
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
-        var inspect_args: [5]types.LLVMValueRef = .{ val, type_tag, name_ptr, raw, arity };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &inspect_args, 5, "");
+        var inspect_args: [6]types.LLVMValueRef = .{ val, type_tag, name_ptr, raw, arity, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &inspect_args, 6, "");
 
         self.buildRet(val);
     }
@@ -3052,7 +3069,7 @@ pub const StdlibCodegen = struct {
     /// Other → print ", value" as-is.
     pub fn codegenInspectListTail(self: *StdlibCodegen) void {
         const fn_val = core.LLVMGetNamedFunction(self.module, "inspect_list_tail") orelse blk: {
-            var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+            var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
             break :blk self.createFunction("inspect_list_tail", self.voidType(), &params);
         };
         const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
@@ -3060,8 +3077,11 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, entry);
         const tail = core.LLVMGetParam(fn_val, 0);
         const raw = core.LLVMGetParam(fn_val, 1);
+        const elem_tag = core.LLVMGetParam(fn_val, 2);
         core.LLVMSetValueName(tail, "tail");
         core.LLVMSetValueName(raw, "raw");
+        core.LLVMSetValueName(elem_tag, "elem_tag");
+        const unknown_tag = core.LLVMConstInt(self.i64Type(), 100, 0);
 
         const printf_fn = core.LLVMGetNamedFunction(self.module, "printf");
         const fmt_comma = self.globalStringConstant(", ");
@@ -3108,12 +3128,12 @@ pub const StdlibCodegen = struct {
         const next_tail = core.LLVMBuildLoad2(self.builder, self.i64Type(), next_tail_ptr, "next_tail");
         // inspect(head, 100, null, raw, 0)
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
-        var head_args: [5]types.LLVMValueRef = .{ head_val, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 5, "");
+        var head_args: [6]types.LLVMValueRef = .{ head_val, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 6, "");
         // inspect_list_tail(next_tail, raw)
         const ilt_fn = core.LLVMGetNamedFunction(self.module, "inspect_list_tail");
-        var recurse_args: [2]types.LLVMValueRef = .{ next_tail, raw };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &recurse_args, 2, "");
+        var recurse_args: [3]types.LLVMValueRef = .{ next_tail, raw, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &recurse_args, 3, "");
         self.buildRetVoid();
 
         // boxed_nil: it's a boxed Nil — stop (don't print comma before it)
@@ -3125,8 +3145,8 @@ pub const StdlibCodegen = struct {
         var other_comma: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &other_comma, 2, "");
         const inspect_fn2 = core.LLVMGetNamedFunction(self.module, "inspect");
-        var other_args: [5]types.LLVMValueRef = .{ tail, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn2), inspect_fn2, &other_args, 5, "");
+        var other_args: [6]types.LLVMValueRef = .{ tail, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn2), inspect_fn2, &other_args, 6, "");
         self.buildRetVoid();
     }
 

@@ -509,6 +509,7 @@ pub fn main(init: std.process.Init) !void {
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
     cg.expr_type_tags = &inferer.expr_type_tags;
+    cg.expr_elem_tags = &inferer.expr_elem_tags;
     cg.param_arity = &inferer.param_arity;
     cg.var_type_tags = &inferer.var_type_tags;
     cg.module_loader = &loader;

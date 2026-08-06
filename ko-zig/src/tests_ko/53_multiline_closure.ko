@@ -1,0 +1,8 @@
+# Test: multi-line closure capturing free variables
+fn main =
+  let x = 10
+  let y = 20
+  let f = \z ->
+    let sum = x + y
+    sum + z
+  println (f 5)

@@ -709,6 +709,7 @@ pub const Repl = struct {
             cg.module_owned_by_jit = true;
             cg.quiet = true;
             cg.expr_type_tags = &inferer.expr_type_tags;
+            cg.expr_elem_tags = &inferer.expr_elem_tags;
             cg.param_arity = &inferer.param_arity;
             cg.var_type_tags = &inferer.var_type_tags;
             try cg.codegenProgram(prog);

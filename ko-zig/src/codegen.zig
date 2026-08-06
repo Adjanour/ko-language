@@ -69,6 +69,9 @@ pub const Codegen = struct {
     constructor_fns: std.StringHashMap(types.LLVMValueRef), // constructor name → wrapper fn
     record_types: std.StringHashMap(RecordInfo),
     expr_type_tags: ?*std.AutoHashMap(*const parser.Expr, i64) = null,
+    /// Element type tag for `con` types (e.g. the `a` of `List a`), so `inspect`
+    /// can print list elements as more than raw i64. See Inferer.expr_elem_tags.
+    expr_elem_tags: ?*std.AutoHashMap(*const parser.Expr, i64) = null,
     var_type_tags: ?*std.StringHashMap(i64) = null, // variable name → type_tag (from typechecker, for closure capture decref)
     module_owned_by_jit: bool = false,
     quiet: bool = false, // suppress IR dump (for REPL)
@@ -307,26 +310,26 @@ pub const Codegen = struct {
 
         // I/O externals (still need C runtime for these)
         // Look up functions already declared by StdlibCodegen, or create if not found
-        // println_with_tag(i64, i64, ptr, i64, i64) -> i64
+        // println_with_tag(i64 val, i64 type_tag, ptr name, i64 raw, i64 arity, i64 elem_tag) -> i64
         const println_fn = core.LLVMGetNamedFunction(self.module, "println_with_tag") orelse blk: {
-            var param_i64_tag: [5]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type };
-            const println_type = core.LLVMFunctionType(i64_type, &param_i64_tag, 5, 0);
+            var param_i64_tag: [6]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type, i64_type };
+            const println_type = core.LLVMFunctionType(i64_type, &param_i64_tag, 6, 0);
             break :blk core.LLVMAddFunction(self.module, "println_with_tag", println_type);
         };
         _ = self.named_values.put("println", println_fn) catch {};
 
-        // print_with_tag(i64, i64, ptr, i64, i64) -> i64
+        // print_with_tag(i64 val, i64 type_tag, ptr name, i64 raw, i64 arity, i64 elem_tag) -> i64
         const print_fn = core.LLVMGetNamedFunction(self.module, "print_with_tag") orelse blk: {
-            var param_i64_tag: [5]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type };
-            const print_type = core.LLVMFunctionType(i64_type, &param_i64_tag, 5, 0);
+            var param_i64_tag: [6]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type, i64_type };
+            const print_type = core.LLVMFunctionType(i64_type, &param_i64_tag, 6, 0);
             break :blk core.LLVMAddFunction(self.module, "print_with_tag", print_type);
         };
         _ = self.named_values.put("print", print_fn) catch {};
 
-        // inspect(i64, i64, ptr, i64, i64) -> i64
+        // inspect(i64 val, i64 type_tag, ptr name, i64 raw, i64 arity, i64 elem_tag) -> i64
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect") orelse blk: {
-            var inspect_params: [5]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type };
-            const inspect_type = core.LLVMFunctionType(i64_type, &inspect_params, 5, 0);
+            var inspect_params: [6]types.LLVMTypeRef = .{ i64_type, i64_type, ptr_type, i64_type, i64_type, i64_type };
+            const inspect_type = core.LLVMFunctionType(i64_type, &inspect_params, 6, 0);
             break :blk core.LLVMAddFunction(self.module, "inspect", inspect_type);
         };
         _ = self.named_values.put("inspect", inspect_fn) catch {};
@@ -946,7 +949,15 @@ pub const Codegen = struct {
     fn codegenUnaryOp(self: *Codegen, op: parser.UnaryOp, expr: *const parser.Expr) Error!types.LLVMValueRef {
         const val = try self.codegenExpr(expr);
         return switch (op) {
-            .neg => core.LLVMBuildNeg(self.builder, val, "neg"),
+            .neg => blk: {
+                const tag = if (self.expr_type_tags) |tags| tags.get(expr) orelse -1 else -1;
+                if (tag != 1) break :blk core.LLVMBuildNeg(self.builder, val, "neg");
+                // Floats travel as i64, so bitcast to double to negate — same as codegenBinaryOp.
+                const double_type = core.LLVMDoubleTypeInContext(self.context);
+                const as_double = core.LLVMBuildBitCast(self.builder, val, double_type, "to_double");
+                const negated = core.LLVMBuildFNeg(self.builder, as_double, "fneg");
+                break :blk core.LLVMBuildBitCast(self.builder, negated, core.LLVMInt64TypeInContext(self.context), "from_double");
+            },
             .not => core.LLVMBuildNot(self.builder, val, "not"),
             .ref => val,
             .deref => {
@@ -1183,11 +1194,34 @@ pub const Codegen = struct {
         return core.LLVMBuildOr(self.builder, closure_i64, core.LLVMConstInt(i64_type, 1, 0), "tagged_closure");
     }
 
+    /// Resolve a call target to a constructor: either a bare `Some`, or the
+    /// module-qualified `Geo.Circle`, which parses as a field access.
+    fn calleeCtorInfo(self: *Codegen, func: *const parser.Expr) Error!?CtorInfo {
+        switch (func.*) {
+            .constructor => |c| return self.constructor_tags.get(c.name),
+            .field_access => |fa| {
+                const obj_name = switch (fa.object.*) {
+                    .identifier => |n| n.name,
+                    .constructor => |n| n.name,
+                    else => return null,
+                };
+                const qualified = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ obj_name, fa.field });
+                return self.constructor_tags.get(qualified);
+            },
+            else => return null,
+        }
+    }
+
+    /// Type tag of `expr`'s element type (the `a` of `List a`), or 100 when unknown.
+    fn elemTagOf(self: *Codegen, expr: *const parser.Expr) i64 {
+        const tags = self.expr_elem_tags orelse return 100;
+        return tags.get(expr) orelse 100;
+    }
+
     fn codegenFnCall(self: *Codegen, call: parser.FnCallExpr) Error!types.LLVMValueRef {
-        // Check if this is a constructor call (e.g., Some 42)
-        if (call.func.* == .constructor) {
-            const name = call.func.constructor.name;
-            if (self.constructor_tags.get(name)) |info| {
+        // Check if this is a constructor call (e.g., Some 42, or Geo.Circle 5)
+        {
+            if (try self.calleeCtorInfo(call.func)) |info| {
                 // Zero-arg constructor: return the tag
                 if (call.args.len == 0) {
                     return core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(info.tag), 0);
@@ -1400,9 +1434,10 @@ pub const Codegen = struct {
                             else => 0,
                         };
                         const arity_const = core.LLVMConstInt(i64_type, @bitCast(arity_val), 0);
-                        var args: [5]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_one, arity_const };
+                        const elem_const = core.LLVMConstInt(i64_type, @bitCast(self.elemTagOf(arg_expr)), 0);
+                        var args: [6]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_one, arity_const, elem_const };
                         const fn_type = core.LLVMGlobalGetValueType(fn_val);
-                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 5, "builtin_call");
+                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 6, "builtin_call");
                     }
                 }
                 if (std.mem.eql(u8, name, "inspect")) {
@@ -1487,9 +1522,10 @@ pub const Codegen = struct {
                             else => 0,
                         };
                         const arity_const2 = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(arity_val2), 0);
-                        var args: [5]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_zero, arity_const2 };
+                        const elem_const2 = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(self.elemTagOf(arg_expr)), 0);
+                        var args: [6]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_zero, arity_const2, elem_const2 };
                         const fn_type = core.LLVMGlobalGetValueType(fn_val);
-                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 5, "inspect_call");
+                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 6, "inspect_call");
                     }
                 }
             }
@@ -3720,14 +3756,14 @@ fn sout(comptime fmt: []const u8, args: anytype) void {
     }
 }
 
-fn builtin_println_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64) callconv(.c) i64 {
-    _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity);
+fn builtin_println_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64, elem_tag: i64) callconv(.c) i64 {
+    _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity, elem_tag);
     sout("\n", .{});
     return 0;
 }
 
-fn builtin_print_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64) callconv(.c) i64 {
-    _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity);
+fn builtin_print_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64, elem_tag: i64) callconv(.c) i64 {
+    _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity, elem_tag);
     return 0;
 }
 
@@ -3735,7 +3771,7 @@ fn builtin_print_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64
 // 0=int, 1=float, 2=bool, 3=char, 4=string, 5=unit,
 // 6=constructor, 7=record, 8=function, 9=tuple, 100=unknown
 // raw=1: user output (no quotes on strings/chars); raw=0: debug output (with quotes)
-fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64) callconv(.c) i64 {
+fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64, elem_tag: i64) callconv(.c) i64 {
     switch (type_tag) {
         0 => sout("{d}", .{val}),
         1 => {
@@ -3776,7 +3812,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                     sout("[]", .{});
                 } else if (std.mem.eql(u8, name[0..name_len], "Cons")) {
                     // List sugar: print [head, rest...]
-                    printConsList(val, raw);
+                    printConsList(val, raw, elem_tag);
                 } else {
                     // Print constructor name
                     sout("{s}", .{name[0..name_len]});
@@ -3786,7 +3822,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                         var i: i64 = 0;
                         while (i < arity) : (i += 1) {
                             sout(" ", .{});
-                            _ = builtin_inspect_tag(ptr[@intCast(i + 1)], 100, null, 0, 0);
+                            _ = builtin_inspect_tag(ptr[@intCast(i + 1)], 100, null, 0, 0, 100);
                         }
                     }
                 }
@@ -3796,7 +3832,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                 const maybe_tag = ptr[0];
                 if (maybe_tag == 0) {
                     // Looks like a Cons cell — try list sugar
-                    printConsList(val, raw);
+                    printConsList(val, raw, elem_tag);
                 } else {
                     sout("Constructor({d})", .{val});
                 }
@@ -3815,7 +3851,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                     var i: i64 = 0;
                     while (i < arity) : (i += 1) {
                         if (i > 0) sout(", ", .{});
-                        _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0);
+                        _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0, 100);
                     }
                     sout(" }}", .{});
                 } else {
@@ -3834,7 +3870,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                 var i: i64 = 0;
                 while (i < arity) : (i += 1) {
                     if (i > 0) sout(", ", .{});
-                    _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0);
+                    _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0, 100);
                 }
                 sout(")", .{});
             } else {
@@ -3846,7 +3882,7 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
     return val;
 }
 
-fn printConsList(val: i64, raw: i64) void {
+fn printConsList(val: i64, raw: i64, elem_tag: i64) void {
     // val is a ptrtoint of a Cons cell: { i64 tag=0, i64 head, i64 tail }
     if (val <= 4096) return; // not a pointer
     const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
@@ -3855,12 +3891,12 @@ fn printConsList(val: i64, raw: i64) void {
     const head = ptr[1];
     const tail = ptr[2];
     sout("[", .{});
-    _ = builtin_inspect_tag(head, 100, null, raw, 0);
-    printConsListTail(tail, raw);
+    _ = builtin_inspect_tag(head, elem_tag, null, raw, 0, 100);
+    printConsListTail(tail, raw, elem_tag);
     sout("]", .{});
 }
 
-fn printConsListTail(tail: i64, raw: i64) void {
+fn printConsListTail(tail: i64, raw: i64, elem_tag: i64) void {
     if (tail == 1) return; // raw Nil tag
     if (tail <= 4096) return; // not a pointer
     const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(tail)));
@@ -3869,8 +3905,8 @@ fn printConsListTail(tail: i64, raw: i64) void {
     const head = ptr[1];
     const next_tail = ptr[2];
     sout(", ", .{});
-    _ = builtin_inspect_tag(head, 100, null, raw, 0);
-    printConsListTail(next_tail, raw);
+    _ = builtin_inspect_tag(head, elem_tag, null, raw, 0, 100);
+    printConsListTail(next_tail, raw, elem_tag);
 }
 
 extern fn malloc(usize) callconv(.c) ?*anyopaque;

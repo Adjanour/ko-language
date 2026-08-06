@@ -1079,7 +1079,13 @@ pub const Parser = struct {
     }
 
     fn parse_postfix(self: *Parser) Error!*Expr {
+        const primary_tag = self.current().tag;
         var expr = try self.parse_primary();
+        // `match` and `if` extend as far right as possible, so they can never be
+        // the callee of an application without parens. Returning early stops a
+        // block-form `match`/`if` from swallowing the statement that follows its
+        // dedent as argument list (e.g. `let r = match x ...` then `println r`).
+        if (primary_tag == .keyword_match or primary_tag == .keyword_if) return expr;
         while (true) {
             if (self.match(.dot)) {
                 const tag = self.current().tag;

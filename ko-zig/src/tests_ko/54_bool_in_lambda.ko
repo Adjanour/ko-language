@@ -1,0 +1,6 @@
+# Test: let binding with match + println - without parens
+fn main =
+  let result = match True
+    | True => 1
+    | False => 0
+  println result

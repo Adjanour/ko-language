@@ -1063,9 +1063,19 @@ pub const LirLower = struct {
             "print_with_tag"
         else
             "inspect";
+        // raw=1 for println/print so strings print unquoted; inspect keeps quotes.
+        const is_inspect = std.mem.eql(u8, runtime, "inspect");
+        const raw_local = if (is_inspect) zero2 else try self.emit(.{ .int = 1 }, .{ .int = {} });
+        // Element type tag, so list sugar can render non-Int elements.
+        const elem_val: i64 = blk: {
+            const ty = self.resolve(self.exprs[arg_hir].ty);
+            if (ty.* == .con and ty.con.args.len > 0) break :blk typeTag(self.resolve(ty.con.args[0]));
+            break :blk 100;
+        };
+        const elem_local = try self.emit(.{ .int = elem_val }, .{ .int = {} });
         const fn_local = try self.emit(.{ .fn_ref = runtime }, .{ .opaque_type = {} });
-        const call_args = try self.dupeIds(&.{ boxed, tag_local, name_local, zero2, arity_local });
-        const param_tys = try self.allocator.alloc(lir.LirType, 5);
+        const call_args = try self.dupeIds(&.{ boxed, tag_local, name_local, raw_local, arity_local, elem_local });
+        const param_tys = try self.allocator.alloc(lir.LirType, 6);
         for (param_tys, 0..) |*pt, i| pt.* = if (i == 2) .{ .opaque_type = {} } else .{ .int = {} };
         return self.emit(.{ .call = .{
             .func = fn_local,

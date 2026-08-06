@@ -145,6 +145,10 @@ pub const Inferer = struct {
     current_loc: ?parser.Loc = null,
     doc_comments: std.StringHashMap([]const []const u8),
     expr_type_tags: std.AutoHashMap(*const parser.Expr, i64),
+    /// Tag of a `con` type's first type argument — the element type of `List a`.
+    /// `inspect` needs it to print list elements with the right representation;
+    /// without it every element falls back to tag 100 and prints as a raw i64.
+    expr_elem_tags: std.AutoHashMap(*const parser.Expr, i64),
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
@@ -172,6 +176,7 @@ pub const Inferer = struct {
             .last_error = null,
             .doc_comments = std.StringHashMap([]const []const u8).init(allocator),
             .expr_type_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
+            .expr_elem_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
@@ -206,6 +211,7 @@ pub const Inferer = struct {
         self.type_ids.deinit();
         self.doc_comments.deinit();
         self.expr_type_tags.deinit();
+        self.expr_elem_tags.deinit();
         self.expr_types.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
@@ -307,6 +313,10 @@ pub const Inferer = struct {
 
     fn recordExprType(self: *Inferer, expr: *const parser.Expr, ty: *Type) void {
         self.expr_type_tags.put(expr, self.typeToTag(ty)) catch {};
+        const resolved = self.resolve(ty);
+        if (resolved.* == .con and resolved.con.args.len > 0) {
+            self.expr_elem_tags.put(expr, self.typeToTag(resolved.con.args[0])) catch {};
+        }
         self.expr_types.put(expr, ty) catch {};
     }
 
@@ -1319,6 +1329,21 @@ pub const Inferer = struct {
                 try self.inferDefinition(def, "");
             }
         }
+
+        self.finalizeElemTags();
+    }
+
+    /// Element type tags must be computed once inference has finished: at the time
+    /// an expression is recorded its element type is often still an unbound var,
+    /// which would pin the tag to 100 (unknown) and lose list-element formatting.
+    fn finalizeElemTags(self: *Inferer) void {
+        var it = self.expr_types.iterator();
+        while (it.next()) |entry| {
+            const resolved = self.resolve(entry.value_ptr.*);
+            if (resolved.* == .con and resolved.con.args.len > 0) {
+                self.expr_elem_tags.put(entry.key_ptr.*, self.typeToTag(resolved.con.args[0])) catch {};
+            }
+        }
     }
 
     fn predeclareDefinition(self: *Inferer, def: parser.Definition, prefix: []const u8) Error!void {
@@ -1925,6 +1950,11 @@ pub const Inferer = struct {
         const ty = try self.inferExpr(env, inner);
         return switch (op) {
             .neg => blk: {
+                // Negation is Int-or-Float, mirroring .sub/.mul/.div in inferBinary.
+                if (self.resolve(ty).* == .float) {
+                    try self.unify(ty, try self.newType(.float));
+                    break :blk try self.newType(.float);
+                }
                 try self.unify(ty, try self.newType(.int));
                 break :blk try self.newType(.int);
             },
@@ -2228,7 +2258,23 @@ pub const Inferer = struct {
                 for (arg_types) |*slot| {
                     slot.* = try self.newVarType(try self.freshName(ctor.name));
                 }
-                try self.unify(expected, try self.newType(.{ .con = .{ .name = info.type_name, .args = type_args } }));
+                // Take the scrutinee type from the constructor's own scheme rather than
+                // rebuilding con(type_name): the built-in True/False are registered under
+                // type_name "Bool" but carry the primitive `bool` type, so reconstructing
+                // con("Bool") would fail to unify. A user-defined `type Bool = True | False`
+                // overwrites that scheme, so it still unifies as con("Bool").
+                const con_ty = try self.newType(.{ .con = .{ .name = info.type_name, .args = type_args } });
+                const scrutinee_ty = blk: {
+                    const scheme = self.global.getScheme(ctor.name) orelse break :blk con_ty;
+                    var result = self.resolve(try self.instantiate(scheme));
+                    var remaining = info.arity;
+                    while (remaining > 0) : (remaining -= 1) {
+                        if (result.* != .arrow) break :blk con_ty;
+                        result = self.resolve(result.arrow.to);
+                    }
+                    break :blk result;
+                };
+                try self.unify(expected, scrutinee_ty);
                 if (ctor.args.len != info.arity) return error.TypeMismatch;
                 for (ctor.args, arg_types) |sub_pat, arg_ty| {
                     try self.inferPatternBindings(bindings, sub_pat, arg_ty);
