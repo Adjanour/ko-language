@@ -333,12 +333,12 @@ A HIR pass (`src/linearity.zig`) that verifies linear variable usage:
 - **Bindings are scoped** — variables are removed from scope when leaving a let/lambda/match.
 - **Runs before HIR optimizations** — let_simpl, fold, etc. can create duplicate bindings that cause false positives.
 - **`--skip-linearity` flag** — skips the linearity check (for debugging).
-- **Known limitations**: Source spans for error messages may point to wrong locations (HIR span tracking is imprecise). 7 existing test programs fail because they use variables more than once (legitimate violations of strict linearity).
+- **Known limitations**: Source spans for error messages may point to wrong locations (HIR span tracking is imprecise). Copyable types (Int, Float, Bool, Char, String, Unit) are treated as unrestricted. Violations emit warnings, not errors.
 
 ### Memory & Runtime
 
-- **Fix string RC**: Add `KoString` wrapper (refcount + byte_length + data). Current strings leak.
-- **Fix recursive decref**: `ko_decref` must walk constructor fields, tuple elements, record fields. Use type tags stored alongside values.
+- **KoString wrapper**: Implemented — refcount + byte_length + data, 32-byte header compatible with `ko_decref`.
+- **Recursive decref**: Implemented — `ko_decref` walks constructor fields, tuple elements, record fields via bitmap.
 - **Allocator abstraction**: Add `KoAllocator` type. Default wraps malloc. Arena and fixed-buffer allocators available. Codegen passes allocator to allocation functions.
 - **Cycles**: Ignore for now. Document the limitation. Add `Weak a` in v0.4.0 if needed.
 
@@ -695,14 +695,11 @@ main.zig → parser.zig → lexer.zig
  - `stdlib_codegen.zig` is the single source of truth
 
 ### Known Limitations
-- Multi-line closures capturing free variables cause LLVM codegen errors
-- `True`/`False` only work as match patterns or top-level values, not inside lambdas
-- **Strings leak memory**: Heap-allocated strings use raw malloc, never freed. Fix: DESIGN-memory-runtime.md Phase 1.
-- **Recursive decref missing**: `ko_decref` doesn't walk constructor fields. Nested structures leak. Fix: DESIGN-memory-runtime.md Phase 2.
 - **No Array/Map/Set types**: Only List exists. Fix: DESIGN-data-structures.md.
 - **println returns argument**: Confusing polymorphic type. Fix: DESIGN-io-model.md (change to Unit).
 - **File I/O doesn't return Result**: Panics on error. Fix: DESIGN-io-model.md.
 - **Float arithmetic unsupported by typechecker**: Only builtins work. Fix: DESIGN-math-semantics.md.
+- **Imported type propagation**: Types from imported modules show as type variables.
 
 ## LLVM Codegen (kassane/llvm-zig bindings)
 

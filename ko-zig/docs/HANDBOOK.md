@@ -655,6 +655,7 @@ ko --emit-exe out file.ko
 
 - **Module/import system**: Not implemented — `module_def.ko` and `module_import.ko` fail
 - **Division by zero guard**: Not implemented in LIR codegen (control flow issue)
+- **REPL**: Not yet ported to LIR pipeline
 
 ---
 

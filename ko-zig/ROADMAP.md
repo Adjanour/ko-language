@@ -26,19 +26,22 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 
 ---
 
-## Current State (v0.2.1-alpha) — July 2026
+## Current State (v0.3.1-alpha) — August 2026
 
 ### What Works
-- Full HM type inference with let-polymorphism
+- Bidirectional type inference with let-polymorphism
 - Sum types, records, tuples, pattern matching
 - Lambdas, closures, partial application
-- Reference counting with scope-based decref
+- Reference counting with scope-based decref, recursive decref via bitmap
 - Compile-time evaluation (`comptime`)
 - Module imports (flat file system)
 - LSP server, VS Code extension, REPL
 - Multiple compilation modes (JIT, IR, object, executable)
-- String operations (length, append, contains, trim, replace, split, toUpperCase, toLowerCase, charAt)
-- 155 runtime correctness tests
+- String operations (KoString wrapper, length O(1), append, contains, trim, replace, split, toUpperCase, toLowerCase, charAt)
+- Linear type warnings (copyable types unrestricted)
+- HIR/LIR pipeline with optimization passes (DCE, let-simplification, fold)
+- AOT compilation via LIR pipeline (object files, linked executables)
+- 248 correctness tests, 50 .ko integration tests
 
 ### What's Broken
 - LLVM 22 optimization bug (AOT compiles unoptimized) — fixed upstream, pending verification
@@ -63,9 +66,9 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 **Timeline:** July 2026 — September 2026
 
 ### 1.1 Fix Known Bugs
-- [ ] Multi-line closure capture (codegen error)
-- [ ] True/False inside lambdas
-- [ ] Float binary operations in typechecker
+- [x] Multi-line closure capture (codegen error)
+- [x] True/False inside lambdas
+- [x] Float binary operations in typechecker
 - [ ] Imported type propagation
 - [ ] `inspect` list sugar for nested types
 
@@ -85,12 +88,12 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 
 **Prerequisite for all downstream optimizations.** The current compiler is AST → LLVM IR (single pass). Adding HIR (high-level IR for functional optimization) and LIR (low-level IR for machine-oriented optimization) is the key architectural investment.
 
-- [ ] Design HIR data structures (functional, ANF-like, typed, with explicit closures and pattern matching)
-- [ ] Design LIR data structures (CFG with basic blocks, explicit memory ops, RC instructions)
-- [ ] Implement AST → HIR lowering pass
-- [ ] Implement HIR → LIR lowering pass (including pattern match compilation via matrix algorithm, closure conversion)
-- [ ] Implement LIR → LLVM IR generation pass
-- [ ] Port existing optimizations to new pipeline
+- [x] Design HIR data structures (functional, ANF-like, typed, with explicit closures and pattern matching)
+- [x] Design LIR data structures (CFG with basic blocks, explicit memory ops, RC instructions)
+- [x] Implement AST → HIR lowering pass
+- [x] Implement HIR → LIR lowering pass (including pattern match compilation via matrix algorithm, closure conversion)
+- [x] Implement LIR → LLVM IR generation pass
+- [x] Port existing optimizations to new pipeline
 
 See `docs/RESEARCH.md §6` for detailed IR design recommendations.
 
