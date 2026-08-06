@@ -1315,12 +1315,8 @@ pub const Codegen = struct {
                         var arg_val = try self.codegenExpr(call.args[0]);
                         const arg_expr = call.args[0];
                         const i64_type = core.LLVMInt64TypeInContext(self.context);
-                        // String/char literals produce ptr, but the C function expects i64 — convert
-                        if (arg_expr.* == .string_literal) {
-                            arg_val = core.LLVMBuildPtrToInt(self.builder, arg_val, i64_type, "str_as_int");
-                        }
                         // Use inferred type tag from typechecker when available
-                        const type_tag: i64 = if (self.expr_type_tags) |tags|
+                        const type_tag_for_conv: i64 = if (self.expr_type_tags) |tags|
                             tags.get(arg_expr) orelse 100
                         else switch (arg_expr.*) {
                             .int_literal => 0,
@@ -1336,8 +1332,15 @@ pub const Codegen = struct {
                             .identifier => 100,
                             else => 100,
                         };
+                        // String/char values produce ptr, but the function expects i64 — convert
+                        // Also convert any ptr type to i64 (all Kō values are i64 in calling convention)
+                        const arg_type = core.LLVMTypeOf(arg_val);
+                        const is_ptr = core.LLVMGetTypeKind(arg_type) == .LLVMPointerTypeKind;
+                        if (is_ptr) {
+                            arg_val = core.LLVMBuildPtrToInt(self.builder, arg_val, i64_type, "str_as_int");
+                        }
                         // Float values (including via identifiers) need bitcast to i64
-                        if (type_tag == 1) {
+                        if (type_tag_for_conv == 1) {
                             arg_val = core.LLVMBuildBitCast(self.builder, arg_val, i64_type, "float_as_int");
                         }
                         var name_ptr_val: types.LLVMValueRef = core.LLVMConstNull(core.LLVMPointerTypeInContext(self.context, 0));
@@ -1352,10 +1355,11 @@ pub const Codegen = struct {
                                 name_ptr_val = self.globalStringConstant(type_name);
                             }
                         }
-                        const tag_val = core.LLVMConstInt(i64_type, @bitCast(type_tag), 0);
-                        const raw_zero = core.LLVMConstInt(i64_type, 0, 0);
+                        const tag_val = core.LLVMConstInt(i64_type, @bitCast(type_tag_for_conv), 0);
+                        // raw=1 for println/print (no quotes on strings), raw=0 for inspect (with quotes)
+                        const raw_one = core.LLVMConstInt(i64_type, 1, 0);
                         // Compute arity for compound types
-                        const arity_val: i64 = switch (type_tag) {
+                        const arity_val: i64 = switch (type_tag_for_conv) {
                             9 => blk: { // tuple: count elements from type info
                                 if (self.expr_type_tags) |_| {
                                     // Try to get tuple element count from AST
@@ -1396,7 +1400,7 @@ pub const Codegen = struct {
                             else => 0,
                         };
                         const arity_const = core.LLVMConstInt(i64_type, @bitCast(arity_val), 0);
-                        var args: [5]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_zero, arity_const };
+                        var args: [5]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_one, arity_const };
                         const fn_type = core.LLVMGlobalGetValueType(fn_val);
                         return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 5, "builtin_call");
                     }
@@ -1406,12 +1410,8 @@ pub const Codegen = struct {
                         var arg_val = try self.codegenExpr(call.args[0]);
                         const arg_expr = call.args[0];
                         const i64_type = core.LLVMInt64TypeInContext(self.context);
-                        // String literals produce ptr, but inspect expects i64 — convert
-                        if (arg_expr.* == .string_literal) {
-                            arg_val = core.LLVMBuildPtrToInt(self.builder, arg_val, i64_type, "str_as_int");
-                        }
                         // Use inferred type tag from typechecker when available
-                        const type_tag: i64 = if (self.expr_type_tags) |tags|
+                        const type_tag_inspect: i64 = if (self.expr_type_tags) |tags|
                             tags.get(arg_expr) orelse 100
                         else switch (arg_expr.*) {
                             .int_literal => 0,
@@ -1427,8 +1427,15 @@ pub const Codegen = struct {
                             .identifier => 100,
                             else => 100,
                         };
+                        // String/char values produce ptr, but inspect expects i64 — convert
+                        // Also convert any ptr type to i64 (all Kō values are i64 in calling convention)
+                        const arg_type_inspect = core.LLVMTypeOf(arg_val);
+                        const is_ptr_inspect = core.LLVMGetTypeKind(arg_type_inspect) == .LLVMPointerTypeKind;
+                        if (is_ptr_inspect) {
+                            arg_val = core.LLVMBuildPtrToInt(self.builder, arg_val, i64_type, "str_as_int");
+                        }
                         // Float values (including via identifiers) need bitcast to i64
-                        if (type_tag == 1) {
+                        if (type_tag_inspect == 1) {
                             arg_val = core.LLVMBuildBitCast(self.builder, arg_val, i64_type, "float_as_int");
                         }
                         var name_ptr_val: types.LLVMValueRef = core.LLVMConstNull(core.LLVMPointerTypeInContext(self.context, 0));
@@ -1443,10 +1450,10 @@ pub const Codegen = struct {
                                 name_ptr_val = self.globalStringConstant(type_name);
                             }
                         }
-                        const tag_val = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(type_tag), 0);
+                        const tag_val = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(type_tag_inspect), 0);
                         const raw_zero = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
                         // Compute arity for compound types
-                        const arity_val2: i64 = switch (type_tag) {
+                        const arity_val2: i64 = switch (type_tag_inspect) {
                             9 => blk: {
                                 switch (arg_expr.*) {
                                     .tuple => |t| break :blk @intCast(t.items.len),
