@@ -79,6 +79,10 @@ pub const DiagnosticList = struct {
         try self.add(.{ .severity = .warning, .message = message, .loc = loc });
     }
 
+    pub fn addWarningCtx(self: *DiagnosticList, message: []const u8, loc: ?parser.Loc, note: ?[]const u8, help: ?[]const u8) !void {
+        try self.add(.{ .severity = .warning, .message = message, .loc = loc, .note = note, .help = help });
+    }
+
     pub fn emitAll(self: *DiagnosticList, io: anytype, filename: []const u8, source: []const u8) void {
         for (self.items.items) |diag| {
             emitDiagnostic(io, filename, source, diag);

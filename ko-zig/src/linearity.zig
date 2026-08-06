@@ -3,6 +3,7 @@ const hir = @import("hir.zig");
 const hir_lower = @import("hir_lower.zig");
 const diagnostics = @import("diagnostics.zig");
 const parser = @import("parser.zig");
+const typecheck = @import("typecheck.zig");
 
 /// Linearity checker: walks the HIR and verifies that linear variables
 /// are used exactly once.
@@ -186,7 +187,12 @@ pub const LinearityChecker = struct {
 
         switch (expr.kind) {
             .local => |var_id| {
-                if (consume) {
+                // Copyable types (Int, Float, Bool, Char, String, Unit) are
+                // always unrestricted — they can be used any number of times.
+                if (isCopyable(expr.ty)) {
+                    const count = self.usage_counts.get(var_id) orelse 0;
+                    self.usage_counts.put(var_id, count + 1) catch {};
+                } else if (consume) {
                     self.consumeVar(var_id);
                 } else {
                     self.borrowVar(var_id);
@@ -202,9 +208,18 @@ pub const LinearityChecker = struct {
                 // Bind params
                 for (lam.params) |param_id| {
                     self.bindings.put(param_id, id) catch {};
-                    // Only main's params are unrestricted; others are linear
+                    // Main params are unrestricted. Also, params with copyable
+                    // types (Int, Float, Bool, Char, String, Unit) are unrestricted.
                     if (is_main) {
                         self.unrestricted.put(param_id, {}) catch {};
+                    } else {
+                        // Look up the type of this param from the lambda expr's type
+                        const param_ty = self.getParamType(id, param_id);
+                        if (param_ty) |ty| {
+                            if (isCopyable(ty)) {
+                                self.unrestricted.put(param_id, {}) catch {};
+                            }
+                        }
                     }
                 }
 
@@ -367,12 +382,12 @@ pub const LinearityChecker = struct {
             return;
         }
 
-        // If already consumed, error: linear variable used after consumption
+        // If already consumed, warn: linear variable used after consumption
         if (self.consumed.contains(var_id)) {
             const binding_site = self.bindings.get(var_id) orelse return;
             const binding_expr = &self.expressions.items[binding_site];
-            self.diags.addErrorCtx(
-                "linear variable used after consumption",
+            self.diags.addWarningCtx(
+                "linear variable used after consumption (warning)",
                 spanToLoc(binding_expr.span),
                 "consumed at previous use",
                 "reuse the variable by cloning or rebinding",
@@ -396,12 +411,12 @@ pub const LinearityChecker = struct {
             return;
         }
 
-        // If already consumed, error: linear variable used twice
+        // If already consumed, warn: linear variable used twice
         if (self.consumed.contains(var_id)) {
             const binding_site = self.bindings.get(var_id) orelse return;
             const binding_expr = &self.expressions.items[binding_site];
-            self.diags.addErrorCtx(
-                "linear variable used twice (already consumed here)",
+            self.diags.addWarningCtx(
+                "linear variable used twice (warning)",
                 spanToLoc(binding_expr.span),
                 "consumed at previous use",
                 "reuse the variable by cloning or rebinding",
@@ -426,8 +441,8 @@ pub const LinearityChecker = struct {
         if (count == 0) {
             const binding_site = self.bindings.get(var_id) orelse return;
             const binding_expr = &self.expressions.items[binding_site];
-            self.diags.addErrorCtx(
-                "linear variable never used",
+            self.diags.addWarningCtx(
+                "linear variable never used (warning)",
                 spanToLoc(binding_expr.span),
                 null,
                 "use the variable or prefix with `_` to ignore",
@@ -540,5 +555,41 @@ pub const LinearityChecker = struct {
             self.consumed.put(k, {}) catch {};
         }
         self.allocator.free(saved.keys);
+    }
+
+    /// Check if a type is copyable (value type that can be used multiple times).
+    /// Primitive types and unit are copyable; heap-allocated types are not.
+    fn isCopyable(ty: *const typecheck.Type) bool {
+        return switch (ty.*) {
+            .int, .float, .bool, .char, .string, .unit => true,
+            .variable => |v| if (v.instance) |inst| isCopyable(inst) else false,
+            else => false,
+        };
+    }
+
+    /// Get the type of a parameter from a lambda expression.
+    /// The lambda expr's type is an arrow type; the param type is the `from` field.
+    fn getParamType(self: *LinearityChecker, lambda_id: hir.HirId, param_id: hir.LocalVarId) ?*const typecheck.Type {
+        if (lambda_id >= self.expressions.items.len) return null;
+        const expr = &self.expressions.items[lambda_id];
+        if (expr.kind != .lambda) return null;
+        // Walk the arrow type to find the matching parameter
+        var arrow_ty = switch (expr.ty.*) {
+            .arrow => |arr| arr,
+            else => return null,
+        };
+        // For multi-param lambdas, walk nested arrows
+        const lam = expr.kind.lambda;
+        for (lam.params, 0..) |pid, i| {
+            _ = i;
+            if (pid == param_id) {
+                return arrow_ty.from;
+            }
+            arrow_ty = switch (arrow_ty.to.*) {
+                .arrow => |arr| arr,
+                else => return null,
+            };
+        }
+        return null;
     }
 };
