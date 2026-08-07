@@ -2777,10 +2777,30 @@ pub const StdlibCodegen = struct {
         var tail_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
         const tail_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&tail_idx_try), 1, "tail_ptr_try");
         const tail_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr_try, "tail_val_try");
+        // Detect nested list: branch to check head, then select elem_tag
+        const head_check_tag_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "head_check_tag");
+        const head_is_ptr_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "head_is_ptr_bb");
+        const head_is_ptr = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, head_val_try, core.LLVMConstInt(self.i64Type(), 4096, 0), "head_is_ptr");
+        self.buildCondBranch(head_is_ptr, head_check_tag_bb, head_is_ptr_bb);
+        // head_check_tag: dereference, check Cons tag → set head_is_cons, branch to head_is_ptr_bb
+        core.LLVMPositionBuilderAtEnd(self.builder, head_check_tag_bb);
+        const head_deref = core.LLVMBuildIntToPtr(self.builder, head_val_try, self.ptrType(), "head_deref");
+        var head_tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const head_tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), head_deref, @ptrCast(&head_tag_idx), 1, "head_tag_ptr");
+        const head_tag_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_tag_ptr, "head_tag_val");
+        const head_is_cons_val = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, head_tag_val, core.LLVMConstInt(self.i64Type(), 0, 0), "head_is_cons_val");
+        self.buildBranch(head_is_ptr_bb);
+        // head_is_ptr_bb: phi for head_is_cons, select elem_tag
+        core.LLVMPositionBuilderAtEnd(self.builder, head_is_ptr_bb);
+        const head_is_cons_phi = core.LLVMBuildPhi(self.builder, self.i1Type(), "head_is_cons_phi");
+        var incoming_cons_vals: [2]types.LLVMValueRef = .{ head_is_cons_val, core.LLVMConstInt(self.i1Type(), 0, 0) };
+        var incoming_cons_blocks: [2]types.LLVMBasicBlockRef = .{ head_check_tag_bb, print_as_list };
+        core.LLVMAddIncoming(head_is_cons_phi, &incoming_cons_vals, &incoming_cons_blocks, 2);
+        const head_elem_tag = core.LLVMBuildSelect(self.builder, head_is_cons_phi, unknown_tag, elem_tag, "head_elem_tag");
         const fmt_lbracket_try = self.globalStringConstant("[");
         var lbracket_args_try: [2]types.LLVMValueRef = .{ fmt_lbracket_try, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &lbracket_args_try, 2, "");
-        var head_args_try: [6]types.LLVMValueRef = .{ head_val_try, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        var head_args_try: [6]types.LLVMValueRef = .{ head_val_try, head_elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args_try, 6, "");
         var tail_args_try: [3]types.LLVMValueRef = .{ tail_val_try, raw, elem_tag };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args_try, 3, "");
@@ -3067,10 +3087,44 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, tuple_merge9);
         self.buildBranch(merge_bb);
 
-        // ---- default: printf("%ld", val) ----
+        // ---- default: printf("%ld", val) — with structural list detection for unknown types ----
         core.LLVMPositionBuilderAtEnd(self.builder, default_bb);
-        var def_args: [2]types.LLVMValueRef = .{ fmt_ld, val };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &def_args, 2, "");
+        const def_val_is_ptr = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, val, core.LLVMConstInt(self.i64Type(), 4096, 0), "def_val_is_ptr");
+        const def_check_tag_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "def_check_tag");
+        const def_ld_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "def_ld");
+        self.buildCondBranch(def_val_is_ptr, def_check_tag_bb, def_ld_bb);
+        // def_check_tag: dereference, check Cons tag
+        core.LLVMPositionBuilderAtEnd(self.builder, def_check_tag_bb);
+        const def_deref = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "def_deref");
+        var def_tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+        const def_tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), def_deref, @ptrCast(&def_tag_idx), 1, "def_tag_ptr");
+        const def_tag_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), def_tag_ptr, "def_tag_val");
+        const def_is_cons = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, def_tag_val, core.LLVMConstInt(self.i64Type(), 0, 0), "def_is_cons");
+        const def_cons_list_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "def_cons_list");
+        self.buildCondBranch(def_is_cons, def_cons_list_bb, def_ld_bb);
+        // def_ld: printf("%ld", val), branch to merge
+        core.LLVMPositionBuilderAtEnd(self.builder, def_ld_bb);
+        var def_ld_args: [2]types.LLVMValueRef = .{ fmt_ld, val };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &def_ld_args, 2, "");
+        self.buildBranch(merge_bb);
+        // def_cons_list: print as list [head, tail...]
+        core.LLVMPositionBuilderAtEnd(self.builder, def_cons_list_bb);
+        var def_head_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const def_head_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), def_deref, @ptrCast(&def_head_idx), 1, "def_head_ptr");
+        const def_head_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), def_head_ptr, "def_head_val");
+        var def_tail_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
+        const def_tail_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), def_deref, @ptrCast(&def_tail_idx), 1, "def_tail_ptr");
+        const def_tail_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), def_tail_ptr, "def_tail_val");
+        const fmt_def_lbracket = self.globalStringConstant("[");
+        var def_lbracket_args: [2]types.LLVMValueRef = .{ fmt_def_lbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &def_lbracket_args, 2, "");
+        var def_head_inspect_args: [6]types.LLVMValueRef = .{ def_head_val, unknown_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &def_head_inspect_args, 6, "");
+        var def_tail_args: [3]types.LLVMValueRef = .{ def_tail_val, raw, elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &def_tail_args, 3, "");
+        const fmt_def_rbracket = self.globalStringConstant("]");
+        var def_rbracket_args: [2]types.LLVMValueRef = .{ fmt_def_rbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &def_rbracket_args, 2, "");
         self.buildBranch(merge_bb);
 
         // ---- merge: return val ----

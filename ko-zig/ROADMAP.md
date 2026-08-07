@@ -69,7 +69,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - [x] Multi-line closure capture (codegen error)
 - [x] True/False inside lambdas
 - [x] Float binary operations in typechecker
-- [ ] Imported type propagation
+- [x] Imported type propagation
 - [ ] `inspect` list sugar for nested types
 
 ### 1.2 Runtime Correctness Tests

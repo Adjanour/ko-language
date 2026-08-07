@@ -154,6 +154,7 @@ pub const Inferer = struct {
     /// without it every element falls back to tag 100 and prints as a raw i64.
     expr_elem_tags: std.AutoHashMap(*const parser.Expr, i64),
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
+    concrete_elem_tags: std.StringHashMap(i64),
     /// Type variables that appear as the object of a field access. See generalize().
     field_access_vars: std.AutoHashMap(usize, void),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
@@ -184,6 +185,7 @@ pub const Inferer = struct {
             .expr_type_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_elem_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
+            .concrete_elem_tags = std.StringHashMap(i64).init(allocator),
             .field_access_vars = std.AutoHashMap(usize, void).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
@@ -220,6 +222,7 @@ pub const Inferer = struct {
         self.expr_type_tags.deinit();
         self.expr_elem_tags.deinit();
         self.expr_types.deinit();
+        self.concrete_elem_tags.deinit();
         self.field_access_vars.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
@@ -292,6 +295,9 @@ pub const Inferer = struct {
         return switch (ty.*) {
             .variable => |v| blk: {
                 if (v.instance) |inst| {
+                    // Follow the chain ALL the way to a non-variable type.
+                    // After unify(?arg0, ?b) and unify(?b, String), resolve(?arg0)
+                    // must return String, not ?b.
                     const resolved = self.resolve(inst);
                     v.instance = resolved;
                     break :blk resolved;
@@ -323,7 +329,9 @@ pub const Inferer = struct {
         self.expr_type_tags.put(expr, self.typeToTag(ty)) catch {};
         const resolved = self.resolve(ty);
         if (resolved.* == .con and resolved.con.args.len > 0) {
-            self.expr_elem_tags.put(expr, self.typeToTag(resolved.con.args[0])) catch {};
+            const inner = self.resolve(resolved.con.args[0]);
+            const elem_tag = self.typeToTag(inner);
+            self.expr_elem_tags.put(expr, elem_tag) catch {};
         }
         self.expr_types.put(expr, ty) catch {};
     }
@@ -542,7 +550,9 @@ pub const Inferer = struct {
         const resolved = self.resolve(ty);
         return switch (resolved.*) {
             .variable => |v| blk: {
-                if (map.get(v.id)) |rep| break :blk rep;
+                if (map.get(v.id)) |rep| {
+                    break :blk rep;
+                }
                 // Non-quantified variable: create a fresh clone on first encounter
                 // so that unification in one instantiation doesn't leak to the next
                 const fresh = try self.newVarType(try self.freshName(v.name));
@@ -1358,9 +1368,23 @@ pub const Inferer = struct {
     fn finalizeElemTags(self: *Inferer) void {
         var it = self.expr_types.iterator();
         while (it.next()) |entry| {
+            // Skip entries that already have a correct elem_tag from recordExprType
+            if (self.expr_elem_tags.get(entry.key_ptr.*)) |existing| {
+                if (existing != 100) continue;
+            }
             const resolved = self.resolve(entry.value_ptr.*);
             if (resolved.* == .con and resolved.con.args.len > 0) {
-                self.expr_elem_tags.put(entry.key_ptr.*, self.typeToTag(resolved.con.args[0])) catch {};
+                var elem_tag = self.typeToTag(self.resolve(resolved.con.args[0]));
+                if (elem_tag == 100) {
+                    const e_ptr = entry.key_ptr.*;
+                    if (e_ptr.* == .identifier) {
+                        const n = e_ptr.identifier.name;
+                        if (self.concrete_elem_tags.get(n)) |concrete| {
+                            if (concrete != 100) elem_tag = concrete;
+                        }
+                    }
+                }
+                self.expr_elem_tags.put(entry.key_ptr.*, elem_tag) catch {};
             }
         }
     }
@@ -1477,7 +1501,8 @@ pub const Inferer = struct {
 
     fn registerTypeDef(self: *Inferer, t: parser.TypeDef) Error!void {
         // Only assign type_id on first registration (registerTypeDef is called from multiple passes)
-        if (!self.type_ids.contains(t.name)) {
+        const is_first = !self.type_ids.contains(t.name);
+        if (is_first) {
             try self.type_names.put(t.name, t.type_params.len);
             const type_id = self.next_type_id;
             self.next_type_id += 1;
@@ -1486,8 +1511,17 @@ pub const Inferer = struct {
         switch (t.body) {
             .sum => |ctors| {
                 const type_param_vars = try self.allocator.alloc(*Type, t.type_params.len);
-                for (type_param_vars) |*slot| {
-                    slot.* = try self.newVarType(try self.freshName(t.name));
+                for (type_param_vars, 0..) |*slot, i| {
+                    slot.* = try self.newVarType(try self.freshName(t.type_params[i]));
+                }
+
+                // Build a map from type param names to their variables, so that
+                // typeExprToType for constructor params uses the SAME variables
+                // as the result type.
+                var type_param_map = std.StringHashMap(*Type).init(self.allocator);
+                defer type_param_map.deinit();
+                for (t.type_params, type_param_vars) |name, v| {
+                    try type_param_map.put(name, v);
                 }
 
                 for (ctors) |ctor| {
@@ -1498,8 +1532,10 @@ pub const Inferer = struct {
                     var fn_type = result;
                     var idx = arity;
                     while (idx > 0) : (idx -= 1) {
-                        const arg_var = try self.newVarType(try self.freshName(ctor.name));
-                        fn_type = try self.newType(.{ .arrow = .{ .from = arg_var, .to = fn_type } });
+                        // Use the actual param type from the constructor definition,
+                        // substituting type param names with the shared variables.
+                        const param_ty = try self.ctorParamType(ctor.params[idx - 1], &type_param_map);
+                        fn_type = try self.newType(.{ .arrow = .{ .from = param_ty, .to = fn_type } });
                     }
 
                     var quantified = std.ArrayList(usize).empty;
@@ -1526,6 +1562,43 @@ pub const Inferer = struct {
                 });
             },
         }
+    }
+
+    /// Convert a constructor parameter TypeExpr to a Type, substituting type param
+    /// names with the shared variables from the type definition.
+    fn ctorParamType(self: *Inferer, te: parser.TypeExpr, type_param_map: *std.StringHashMap(*Type)) Error!*Type {
+        return switch (te) {
+            .ident => |name| {
+                // If this is a type param name, use the shared variable
+                if (type_param_map.get(name)) |v| return v;
+                // Otherwise, check if it's a known type or create a fresh var
+                if (self.types.get(name)) |info| {
+                    if (info.record_type) |rec| return rec;
+                    return try self.newType(.{ .con = .{ .name = name, .args = &.{} } });
+                }
+                return try self.newVarType(try self.freshName(name));
+            },
+            .constructor => |name| {
+                if (self.types.get(name)) |info| {
+                    if (info.record_type) |rec| return rec;
+                }
+                if (std.mem.eql(u8, name, "Int")) return try self.newType(.int);
+                if (std.mem.eql(u8, name, "Float")) return try self.newType(.float);
+                if (std.mem.eql(u8, name, "Bool")) return try self.newType(.bool);
+                if (std.mem.eql(u8, name, "String")) return try self.newType(.string);
+                if (std.mem.eql(u8, name, "Char")) return try self.newType(.char);
+                if (self.type_names.get(name)) |num_params| {
+                    const args = try self.allocator.alloc(*Type, num_params);
+                    for (args) |*slot| {
+                        slot.* = try self.newVarType(try self.freshName(name));
+                    }
+                    return try self.newType(.{ .con = .{ .name = name, .args = args } });
+                }
+                return try self.newType(.{ .con = .{ .name = name, .args = &.{} } });
+            },
+            .arrow => |a| try self.newType(.{ .arrow = .{ .from = try self.ctorParamType(a.from.*, type_param_map), .to = try self.ctorParamType(a.to.*, type_param_map) } }),
+            else => try self.newVarType(try self.freshName("param")),
+        };
     }
 
     fn inferFn(self: *Inferer, f: parser.FnDef) Error!void {
@@ -1709,6 +1782,17 @@ pub const Inferer = struct {
 
         // Record type tag for the variable (used for closure capture decref)
         self.var_type_tags.put(name, self.typeToTag(val_ty)) catch {};
+
+        // Record concrete elem_tag for the variable name (used by finalizeElemTags
+        // to fix up elem_tags that are still 100 due to fresh variables from
+        // instantiate of polymorphic types).
+        {
+            const resolved_val = self.resolve(val_ty);
+            if (resolved_val.* == .con and resolved_val.con.args.len > 0) {
+                const elem_tag = self.typeToTag(self.resolve(resolved_val.con.args[0]));
+                self.concrete_elem_tags.put(name, elem_tag) catch {};
+            }
+        }
 
         var local = Env.init(self.allocator, env);
         defer local.deinit();
@@ -2094,6 +2178,13 @@ pub const Inferer = struct {
         for (named_args, 0..) |na, idx| {
             const arg_ty = try self.inferExpr(env, na.value);
             try self.unify(arg_tys[args.len + idx], arg_ty);
+        }
+        // Re-record elem_tags after unification — inferExpr records them with
+        // instantiated types (fresh variables), but unify may resolve them to
+        // concrete types (e.g., List a → List String). Without this, elem_tag
+        // stays 100 and inspect can't print list elements correctly.
+        for (args, 0..) |arg, idx| {
+            self.recordExprType(arg, arg_tys[idx]);
         }
         return expected;
     }

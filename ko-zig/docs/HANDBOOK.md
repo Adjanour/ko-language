@@ -641,27 +641,26 @@ ko --emit-exe out file.ko
 - **Multi-line pipe**: `|>` doesn't work across lines (GitHub #18)
 - **`let` in non-indented blocks**: parser may consume next def as body
 
-### Typechecker
-
-- **Imported type propagation**: Types from imported modules show as type variables
-- **Multi-line closures with free variables**: LLVM codegen errors
-
 ### Codegen
 
 - **Let-bound constructor display**: Shows raw pointers (element-level type tags lost at LLVM IR level)
 - **List element printing**: Non-integer list elements print as raw pointers (tag=100)
+- **Division by zero at runtime**: Only a literal divisor is caught at compile time.
+  `10 / z` where `z` is 0 traps (SIGFPE) on both the legacy and LIR pipelines.
 
 ### LIR Pipeline
 
-- **Module/import system**: Not implemented — `module_def.ko` and `module_import.ko` fail
-- **Division by zero guard**: Not implemented in LIR codegen (control flow issue)
 - **REPL**: Not yet ported to LIR pipeline
 
 ---
 
 ## String Design
 
-Strings are `i8*` (null-terminated) at LLVM level. Operations use C library functions.
+Strings are `KoString` at LLVM level: a 32-byte header followed by NUL-terminated
+bytes, laid out to share `ko_decref` with heap constructors. A string value points
+at its bytes, so the header is read at negative offsets — refcount `-32`, type tag
+`-24`, byte length `-16`, field bitmap `-8`. The byte length occupies the generic
+header's arity slot, which is unused for strings. Operations use C library functions.
 
 **Known limitations:**
 - No UTF-8 awareness — `String.length` counts bytes, not code points

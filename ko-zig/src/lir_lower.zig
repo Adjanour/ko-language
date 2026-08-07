@@ -1077,11 +1077,15 @@ pub const LirLower = struct {
         const call_args = try self.dupeIds(&.{ boxed, tag_local, name_local, raw_local, arity_local, elem_local });
         const param_tys = try self.allocator.alloc(lir.LirType, 6);
         for (param_tys, 0..) |*pt, i| pt.* = if (i == 2) .{ .opaque_type = {} } else .{ .int = {} };
-        return self.emit(.{ .call = .{
+        const call_result = try self.emit(.{ .call = .{
             .func = fn_local,
             .args = call_args,
             .fn_type = .{ .params = param_tys, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
+        // println/print/inspect : a -> a — coerce the i64 return back to the argument type.
+        const arg_ty = self.resolve(self.exprs[arg_hir].ty);
+        const result_ty = try self.lowerType(arg_ty);
+        return self.coerce(call_result, result_ty);
     }
 
     /// `panic(msg)` — call ko_panic_str with the string's raw ptr.

@@ -3759,12 +3759,12 @@ fn sout(comptime fmt: []const u8, args: anytype) void {
 fn builtin_println_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64, elem_tag: i64) callconv(.c) i64 {
     _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity, elem_tag);
     sout("\n", .{});
-    return 0;
+    return val;
 }
 
 fn builtin_print_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i64, arity: i64, elem_tag: i64) callconv(.c) i64 {
     _ = builtin_inspect_tag(val, type_tag, name_ptr, raw, arity, elem_tag);
-    return 0;
+    return val;
 }
 
 // Type tags for inspect:
@@ -3831,8 +3831,14 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                 const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
                 const maybe_tag = ptr[0];
                 if (maybe_tag == 0) {
-                    // Looks like a Cons cell — try list sugar
-                    printConsList(val, raw, elem_tag);
+                    // Looks like a Cons cell — detect nested lists for proper elem_tag
+                    const head_val = ptr[1];
+                    const inner_tag: i64 = if (head_val > 4096) blk: {
+                        const hptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(head_val)));
+                        if (hptr[0] == 0) break :blk 100; // head is Cons → nested list
+                        break :blk elem_tag;
+                    } else elem_tag;
+                    printConsList(val, raw, inner_tag);
                 } else {
                     sout("Constructor({d})", .{val});
                 }
@@ -3877,7 +3883,19 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                 sout("({d})", .{val});
             }
         },
-        else => sout("{d}", .{val}),
+        else => {
+            // Unknown type tag — try structural list detection (Cons tag=0)
+            if (val > 4096) {
+                const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
+                if (ptr[0] == 0) {
+                    printConsList(val, raw, elem_tag);
+                } else {
+                    sout("{d}", .{val});
+                }
+            } else {
+                sout("{d}", .{val});
+            }
+        },
     }
     return val;
 }
