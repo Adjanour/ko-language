@@ -1,14 +1,18 @@
-# Kō (kō) — v0.2.0-alpha
+# Kō (光) — v0.3.1-alpha
 
-A minimal, functional-first programming language that compiles to native binaries via LLVM.
+A minimal, eager, purely functional language that compiles to native code via LLVM.
+
+Kō means "light" in Japanese. The language is lightweight, illuminating, and fast.
 
 > [github.com/Adjanour/ko-language](https://github.com/Adjanour/ko-language)
 
-No parens for function calls (`add 1 2`), indentation-based blocks, uppercase constructors, ADTs, pattern matching, immutable by default, with Hindley-Milner type inference.
+No parens for function calls (`add 1 2`), indentation-based blocks, uppercase constructors, ADTs, pattern matching, immutable by default, with bidirectional type inference.
 
 **Status: Alpha.** Expect bugs, missing features, and rough edges. Feedback and contributions welcome.
 
-## Quick start
+---
+
+## Quick Start
 
 ```bash
 git clone https://github.com/Adjanour/ko-language.git
@@ -18,62 +22,31 @@ echo 'fn main = println "Hello, Kō!"' > hello.ko
 ./ko-dist/ko hello.ko
 ```
 
-**New to functional programming?** Read the [Getting Started Guide](docs/getting-started.md) — it's written for Python/JS/C programmers.
-
-## Installation
+## Building
 
 ### Pre-built (recommended)
-
-Build a self-contained folder you can move anywhere — one binary, the full standard library, and example programs. No install, no system-wide dependencies at runtime.
 
 ```bash
 ./build.sh
 ```
 
-This produces `ko-dist/`:
+This produces `ko-dist/` — one binary, the full standard library, and examples. No npm, no brew, no virtualenv. One folder.
 
-```
-ko-dist/
-├── bin/
-│   ├── ko          # compiler binary
-│   └── ko-lsp      # language server
-├── std/            # standard library (Bool, Int, Float, String, List, Math)
-├── examples/       # example .ko programs
-├── editors/
-│   ├── vscode/     # VS Code extension
-│   └── tree-sitter/ # tree-sitter grammar + queries
-└── ko -> bin/ko    # convenience symlink
-```
-
-Drop it anywhere and run:
-
-```bash
-cp -r ko-dist ~/ko
-~/ko/ko hello.ko
-```
-
-No `npm install`. No `brew`. No virtualenv. One folder.
-
-### Build from source
+### From source
 
 Requires Zig 0.17 and LLVM 22.
 
-#### Linux
-
+**Linux:**
 ```bash
-# Ubuntu/Debian
 sudo apt install llvm-22-dev zlib1g-dev
-
-# Arch
-sudo pacman -S llvm zlib
+# or: sudo pacman -S llvm zlib
 
 git clone https://github.com/Adjanour/ko-language.git
 cd ko-language/ko-zig
 zig build
 ```
 
-#### macOS
-
+**macOS:**
 ```bash
 brew install llvm@22
 export PATH="/opt/homebrew/opt/llvm@22/bin:$PATH"
@@ -83,48 +56,23 @@ cd ko-language/ko-zig
 zig build
 ```
 
-#### Windows
+**Windows:** Not yet supported.
 
-Not yet supported. LLVM-22 has no prebuilt Windows packages and the JIT (MCJIT) doesn't support Windows. AOT-only support is planned for a future release.
-
-### AI coding assistants
-
-Kō ships with skills for AI assistants. Install one so your AI can write Kō:
-
-```bash
-# OpenCode
-cp -r ko-zig/skills/ko-language ~/.config/opencode/skills/ko-language
-
-# Claude Code / Copilot — copy to project root
-cp ko-zig/skills/ko-language/CLAUDE.md /path/to/your/project/CLAUDE.md
-
-# Cursor — copy to project root
-cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
-```
-
-See `ko-zig/skills/README.md` for details.
-
-The compiler binary is at `zig-out/bin/ko`. Run tests with:
-
-```bash
-zig build test --summary all
-```
-
-## What works
+## What Works
 
 - **Lexer**: hex (`0xFF`), underscores, comments, operators, string literals
 - **Parser**: ADTs, pattern matching, functions, let bindings, if/then/else, lambdas, tuples, records, modules, imports, pipe operator, named args, type annotations
-- **Typechecker**: Hindley-Milner type inference, let-polymorphism, ref types, type annotations
-- **Codegen**: LLVM IR via kassane/llvm-zig bindings; JIT execution and AOT compilation (`--emit-obj`, `--emit-exe`)
-- **Memory management**: Reference counting for heap-allocated objects (tuples, records, constructors, closures)
+- **Typechecker**: Bidirectional type inference with let-polymorphism
+- **Codegen**: LIR pipeline (AST → HIR → LIR → LLVM IR) via kassane/llvm-zig bindings; JIT and AOT compilation (`--emit-obj`, `--emit-exe`)
+- **Memory management**: Reference counting for heap-allocated objects
 - **Currying**: Multi-param functions support partial application
 - **Modules**: `module Name` definitions with `pub` visibility
 - **Stdlib**: Bool, Int, Float, String, List, Math — built-in, no import needed
-- **LSP**: `ko-lsp` built alongside the compiler, with error locations
-- **REPL**: `ko --repl` for interactive evaluation
-- **Module imports**: `import std.Math.{abs, max}` — file-based, with selective imports
+- **LSP**: `ko-lsp` with hover, completion, diagnostics, error locations
+- **REPL**: `ko --repl` — Linenoise-powered with arrow key history, tab completion, multi-line expression support
 - **Error propagation**: `?` operator unwraps `Ok` or propagates `Err`
-- **78 of 78 tests passing**
+- **Stack overflow detection**: Clear error message instead of segfault
+- **256 of 256 tests passing**
 
 ## CLI
 
@@ -137,100 +85,29 @@ ko --emit-obj <out> <file>  Compile to object file
 ko --emit-exe <out> <file>  Compile to executable
 ```
 
-No args shows help. Errors include file and location:
+Errors include file and location:
 
 ```
 error at hello.ko:1:11: undefined name 'x'
 ```
 
-## Language features
+## Language Example
 
-```kō
-# Functions
-fn add x y = x + y
-fn apply f x = f x
+```ko
+type List a = Cons a (List a) | Nil
 
-# Pattern matching
-type Maybe a = Just a | Nothing
-fn from-just default mx =
-  match mx
-    Just x => x
-    Nothing => default
-
-# Records
-type Point = { x: Int, y: Int }
-let p = Point { x = 3, y = 4 }
-
-# Tuples
-let t = (1, "hello", true)
-
-# Lambda closures
-let x = 10
-let f = \y -> x + y
-f 5  # 15
-
-# Pipe operator
-5 |> add 1 |> add 2  # 8
-
-# Partial application
-let add1 = add 1
-add1 2  # 3
-
-# References (mutable)
-let r = ref 42
-r := 100
-!r  # 100
-
-# Compile-time evaluation
-comptime fn factorial n =
-  if n == 0 then 1 else n * factorial (n - 1)
-
-comptime fn sum lst =
+fn map f lst =
   match lst
-    | Cons x rest => x + sum rest
-    | Nil => 0
+    Cons x rest => Cons (f x) (map f rest)
+    Nil => Nil
 
-let x = comptime factorial 5      # 120, evaluated at compile time
-let total = comptime sum xs       # list operations at compile time
-
-# Module imports
-import std.Math.{abs, max}
-abs (-5)   # 5
-
-# Error propagation
-type Result a b = Ok a | Err b
-fn divide a b =
-  if b == 0 then Err "division by zero"
-  else Ok (a / b)
-
-fn compute x y =
-  let a = divide x y?    # unwraps Ok, propagates Err
-  Ok a
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  let doubled = map (\x -> x * 2) xs
+  inspect doubled   # [2, 4, 6]
 ```
 
-## Editor setup
-
-Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the full [Editor Setup Guide](docs/editor-setup.md) for detailed instructions.
-
-**Quick start:**
-
-- **VS Code**: `code --install-extension vscode-ko/ko-language-0.5.0.vsix`
-- **Neovim**: use `nvim-lspconfig` with `ko-lsp` + `nvim-treesitter` for highlights
-- **Helix**: add `ko-lsp` to `~/.config/helix/languages.toml`
-- **Vim**: use `vim-lsp` or `CoC.nvim` — see [guide](docs/editor-setup.md)
-
-## Docs
-
-- [Getting Started](docs/getting-started.md) — **Start here if you're new to functional programming**
-- [Language Charter](LANGUAGE_CHARTER.md) — canonical vision and syntax freeze
-- [Formal Grammar](GRAMMAR.md) — EBNF spec
-- [Idiomatic Programs](KO_PROGRAMS.md) — example programs
-- [Crash Course](docs/ko-crash-course.md) — functional programming from scratch
-- [Ko by Example](docs/ko-by-example.md) — step-by-step guide
-- [Core Concepts](docs/concepts.md) — language concepts
-- [Quick Reference](docs/quick-reference.md) — syntax cheat sheet
-
-## Design decisions
+## Design Decisions
 
 - **No parens** for function calls — `add 1 2` not `add(1, 2)`
 - **Minimal indentation** — only for function bodies and blocks
@@ -241,35 +118,6 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 - **`!` for deref, `not` for boolean negation**
 - **`|>` pipe operator** — left-to-right function application
 - **Reference counting** — automatic memory management for heap objects
-- **`comptime` expressions** — evaluate code at compile time with pattern matching, constructors, and built-in string/list operations
-
-## Known Issues (v0.2.0-alpha)
-
-### Language
-
-- **Inline comments after `let` bindings have a scoping bug.** The parser no longer crashes, but a comment between a let value and its body silently produces incorrect scoping. Workaround: put comments on their own line.
-- **`println (fn_call)` prints `<fn>` for function-typed values.** This is correct behavior — functions aren't printable. Extract to a `let` binding first: `let n = f x; println n`
-- **Multi-line match bodies confuse the parser.** A multi-line `match` followed by another expression can cause the next expression to be swallowed. Workaround: extract the match into a helper function.
-- **Multi-line closures with captured variables cause codegen errors.** Workaround: use single-line lambdas or extract to a `let` binding.
-- **Partial application only works for global `fn` definitions.** Multi-param lambdas (`\x y -> ...`) do not get partial application.
-- **A `Bool` record field that isn't the first field reads back wrong.** `type Item = { name: String, active: Bool }` — `item.active` always reads `True` regardless of the value it was constructed with. Reordering the field first (`{ active: Bool, name: String }`) reads correctly. Looks like a field-offset bug specific to non-leading `Bool` fields. Workaround: put `Bool` fields first in a record, or avoid them and use an `Int`/constructor-based status instead.
-- **`println` of a value forwarded through a function parameter prints the wrong thing.** `println`'s output format is chosen from a type tag baked in at compile time. Two distinct causes:
-  - A field access on a parameter (`fn show_name s = println s.name`) hits the `.variable` branch of `inferFieldAccess` (`ko-zig/src/typecheck.zig:1576`), which — unlike the special-cased `.length` — returns a brand-new, disconnected type variable instead of unifying the object with whichever record type declares that field. This looks like a scoped, fixable bug: search `record_types` for a type with a matching field and unify, the way the `.length` case already unifies with `.string`.
-  - A bare parameter passed straight through (`fn show n = println n`, works for both `show 42` and `show "hello"`) is genuinely let-polymorphic — its type is never pinned within the function's own body, so there's no concrete tag to bake in at all. This one needs monomorphization or runtime type tags on all values, not a local patch.
-  - Symptom either way: falls back to printing as a raw integer — coincidentally correct for `Int`, wrong for `Bool` (`1`/`0` instead of `True`/`False`), and garbage (a pointer address) for `String` and records. Workaround: only `println` values that are literals or bindings built directly in the same function, not values forwarded through a parameter.
-
-### Modules & Imports
-
-- **Imported module type info doesn't propagate** to the main typechecker — shows type variables instead of concrete types. This is an architectural limitation of the current import system.
-- **No circular import detection.** Recursive imports silently produce incorrect results.
-- **No package/module system** — just flat file imports with `std` library support.
-
-### Tooling
-
-- **LSP is single-file only.** No cross-file go-to-definition or import navigation.
-- **LSP document symbols always report line 0.** Source location for symbols is not yet implemented.
-- **REPL doesn't support multi-line input.** Each line is processed independently.
-- **REPL can't evaluate top-level `let` bindings.** Use `fn` definitions instead.
 
 ## Platform Support
 
@@ -281,30 +129,63 @@ Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See the ful
 | **macOS (Intel)** | Yes | Yes | Yes | Yes | Yes |
 | **Windows** | No | No | No | No | No |
 
-**Linux x86_64** is the primary development platform. All features work.
+## Editor Setup
 
-**macOS** requires `brew install llvm@22` and adding LLVM to PATH. JIT, LSP, and AOT all work. See [Installation](#build-from-source) for details.
+Kō ships with a language server (`ko-lsp`) and tree-sitter grammar. See [Editor Setup Guide](docs/editor-setup.md) for details.
 
-**Linux aarch64** needs: dynamic CPU detection, aarch64 linker paths, and aarch64 data layout.
+**Quick start:**
+- **VS Code**: `code --install-extension vscode-ko/ko-language-0.5.0.vsix`
+- **Neovim**: `nvim-lspconfig` with `ko-lsp` + `nvim-treesitter`
+- **Helix**: add `ko-lsp` to `~/.config/helix/languages.toml`
 
-**Windows** is not yet supported. LLVM-22 has no prebuilt Windows packages and MCJIT doesn't support Windows. AOT-only support is planned.
+## AI Coding Assistants
+
+Kō ships with skills for AI assistants:
+
+```bash
+# OpenCode
+cp -r ko-zig/skills/ko-language ~/.config/opencode/skills/ko-language
+
+# Claude Code / Copilot
+cp ko-zig/skills/ko-language/CLAUDE.md /path/to/your/project/CLAUDE.md
+
+# Cursor
+cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
+```
+
+## Docs
+
+- [Getting Started](docs/getting-started.md) — Start here if you're new to functional programming
+- [Language Charter](LANGUAGE_CHARTER.md) — canonical vision and syntax freeze
+- [Formal Grammar](GRAMMAR.md) — EBNF spec
+- [Crash Course](docs/ko-crash-course.md) — functional programming from scratch
+- [Ko by Example](docs/ko-by-example.md) — step-by-step guide
+- [Quick Reference](docs/quick-reference.md) — syntax cheat sheet
+
+## Known Issues (v0.3.1-alpha)
+
+- **REPL `let` bindings require `fn` syntax.** `let` at top level isn't codegen'd yet. Use `fn name = expr` instead.
+- **Multi-line closures with captured variables** cause codegen errors. Use single-line lambdas or extract to `let` binding.
+- **LSP is single-file only.** No cross-file go-to-definition or import navigation.
+- **AOT optimization is broken** due to LLVM 22 bugs ([#186403](https://github.com/llvm/llvm-project/issues/186403)). Use JIT mode or post-optimize with `gcc -O2`.
 
 ## Roadmap
 
 - [x] Lexer, parser, typechecker, codegen
-- [x] Reference counting (heap-allocated objects)
+- [x] Reference counting
 - [x] Recursive ADTs (binary trees, lists)
 - [x] Stack overflow detection
 - [x] Partial application / currying
 - [x] LSP server with error locations
-- [x] REPL with pretty-printing
+- [x] REPL with Linenoise (history, tab completion, multi-line)
 - [x] File-based module imports (`import std.Math`)
 - [x] `?` operator for Result error propagation
-- [x] Result built-in operations
-- [ ] Generics (monomorphization)
-- [ ] Record type syntax with field access
+- [x] LIR pipeline (AST → HIR → LIR → LLVM IR)
+- [x] Linearity checker (linear types)
+- [ ] Monomorphization
+- [ ] Generics
 - [ ] Trait/typeclass system
-- [ ] Module system v2 (hierarchical imports, first-class modules)
+- [ ] Package manager
 
 ## License
 

@@ -22,6 +22,30 @@ echo 'fn main = println "Hello, World!"' > hello.ko
 ./zig-out/bin/ko --repl
 ```
 
+## Building
+
+```bash
+# Debug build
+zig build
+
+# Release build
+zig build -Doptimize=ReleaseFast
+
+# Run tests (use --summary all to see clean output)
+zig build test --summary all
+```
+
+## Compiler Usage
+
+```bash
+ko file.ko                 # Run program (JIT)
+ko --repl                  # Interactive REPL
+ko --dump-ir file.ko       # Dump LLVM IR
+ko --emit-ir out.ll file   # Write LLVM IR to file
+ko --emit-obj out.o file   # Emit object file
+ko --emit-exe out file     # Emit linked executable
+```
+
 ## Example
 
 ```ko
@@ -36,6 +60,45 @@ fn main =
   let xs = 1 :: 2 :: 3 :: Nil
   let doubled = map (\x -> x * 2) xs
   inspect doubled   # [2, 4, 6]
+```
+
+## Features
+
+- **Bidirectional type inference** — no type annotations required
+- **Sum types and pattern matching** — algebraic data types with exhaustive matching
+- **Reference counting** — deterministic memory management, no GC pauses
+- **Compile-time evaluation** — `comptime` functions evaluated during compilation
+- **LIR pipeline** — AST → HIR → LIR → LLVM IR (multi-pass)
+- **Linearity checker** — HIR pass verifying linear variable usage
+- **LLVM backend** — native code via kassane/llvm-zig bindings
+- **LSP server** — hover, completion, diagnostics
+- **Linenoise REPL** — arrow key history, tab completion, multi-line expressions
+- **Stack overflow detection** — clear error instead of segfault
+
+## Built-in Types
+
+```
+Int         # 64-bit integer
+Float       # 64-bit float
+Bool        # True | False
+Char        # Single character
+String      # Immutable string
+()          # Unit type
+```
+
+## Built-in Functions
+
+```ko
+println x        # Print with newline
+print x          # Print without newline
+inspect x        # Debug print
+
+String.length s
+String.append a b
+Int.toString n
+Int.abs n
+Float.sqrt f
+Float.sin f
 ```
 
 ## Documentation
@@ -54,8 +117,8 @@ fn main =
 |----------|-------------|
 | [Handbook](docs/HANDBOOK.md) | How to add features to the compiler |
 | [Codegen](docs/CODEGEN.md) | How LLVM IR generation works |
-| [Typechecking](docs/TYPECHECKING.md) | How Hindley-Milner type inference works |
-| [Theory](docs/THEORY.md) | Theoretical foundations and references |
+| [Typechecking](docs/TYPECHECKING.md) | How type inference works |
+| [REPL Architecture](docs/REPL_ARCHITECTURE.md) | REPL design and implementation |
 
 ### Project
 
@@ -66,78 +129,30 @@ fn main =
 | [Roadmap](ROADMAP.md) | Future plans and phases |
 | [Vision](VISION.md) | Long-term vision and philosophy |
 
-## Features
-
-- **Hindley-Milner type inference** — no type annotations required
-- **Sum types and pattern matching** — algebraic data types with exhaustive matching
-- **Reference counting** — deterministic memory management, no GC pauses
-- **Compile-time evaluation** — `comptime` functions evaluated during compilation
-- **LLVM backend** — native code optimization via LLVM
-- **LSP server** — editor support with hover, completion, diagnostics
-- **REPL** — interactive development environment
-
-## Built-in Types
+## File Structure
 
 ```
-Int         # 64-bit integer
-Float       # 64-bit float
-Bool        # True | False
-Char        # Single character
-String      # Immutable string
-()          # Unit type
-```
-
-## Built-in Functions
-
-```ko
-# I/O
-println x        # Print with newline
-print x          # Print without newline
-inspect x        # Debug print
-
-# String operations
-String.length s
-String.append a b
-String.contains s sub
-String.toUpperCase s
-String.toLowerCase s
-String.trim s
-String.replace s old new
-String.split s sep
-
-# Int operations
-Int.toString n
-Int.abs n
-Int.pow b e
-
-# Float operations
-Float.sqrt f
-Float.sin f
-Float.cos f
-```
-
-## Compiler Usage
-
-```bash
-ko file.ko                 # Run program (JIT execute)
-ko --dump-ir file.ko       # Dump LLVM IR
-ko --repl                  # Interactive REPL
-ko --emit-ir out.ll file   # Write LLVM IR to file
-ko --emit-obj out.o file   # Emit object file
-ko --emit-exe out file     # Emit linked executable
-```
-
-## Building
-
-```bash
-# Debug build
-zig build
-
-# Release build
-zig build -Doptimize=ReleaseFast
-
-# Run tests
-zig build test --summary all
+ko-zig/
+├── build.zig          # Build configuration
+├── src/
+│   ├── main.zig       # Entry point
+│   ├── lexer.zig      # Tokenizer
+│   ├── parser.zig     # Recursive descent parser
+│   ├── ast.zig        # AST node types
+│   ├── typecheck.zig  # Bidirectional type inference
+│   ├── linearity.zig  # Linearity checker (HIR pass)
+│   ├── codegen.zig    # Legacy codegen (frozen)
+│   ├── codegen_lir.zig # LIR pipeline (active)
+│   ├── stdlib.zig     # Zig stdlib implementations
+│   ├── stdlib_codegen.zig # LLVM IR for builtins
+│   ├── comptime.zig   # Compile-time evaluator
+│   ├── module_loader.zig # File-based imports
+│   ├── prettyprint.zig # Value pretty-printing
+│   ├── repl.zig       # Linenoise REPL
+│   ├── lsp.zig        # LSP server
+│   ├── tests.zig      # All 256 tests
+│   └── tests_ko/      # .ko test programs
+└── std/               # Kō stdlib (written in Kō)
 ```
 
 ## License
