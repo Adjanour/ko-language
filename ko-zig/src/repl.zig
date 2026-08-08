@@ -264,7 +264,7 @@ pub const Repl = struct {
 
     fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {
         if (isDefinition(input)) {
-            try writeAll(stdout_fd, "\nDefined.\n\n");
+            try writeAll(stdout_fd, "Defined.\n");
             return;
         }
 
@@ -381,18 +381,11 @@ pub const Repl = struct {
             break :blk false;
         };
 
-        if (is_side_effect) {
-            try writeAll(stdout_fd, "\n");
-        }
         const result = eval_fn();
         flushStdout();
 
         if (!is_side_effect) {
-            try printTo(stdout_fd, "\n= {d}\n\n", .{result});
-        } else if (std.mem.startsWith(u8, trimmed_input, "inspect") or
-            std.mem.startsWith(u8, trimmed_input, "print "))
-        {
-            try writeAll(stdout_fd, "\n");
+            try printTo(stdout_fd, "= {d}\n", .{result});
         }
     }
 
