@@ -21,10 +21,7 @@ This document outlines the development of Kō from a Python prototype to a produ
 ### Known Limitations (v0.2.0-alpha)
 
 - **LLVM 22 optimization broken:** AOT compilation uses `LLVMCodeGenLevelNone`. `LLVMTargetMachineEmitToMemoryBuffer` hangs and `LLVMRunPasses` crashes with any optimization pass. Root cause: `CodeGenPrepare` infinite loop with bitcast+phi patterns. Fix expected in LLVM 23 ([PR #186468](https://github.com/llvm/llvm-project/pull/186468)).
-- **2 examples fail:** `expr_eval.ko` and `higher_order.ko` fail due to blank-line scoping in tokenizer `scan_indent`.
-- **1 example hangs:** `list_ops.ko` hangs due to pre-existing `reverse_aux` codegen bug.
 - **Windows not supported:** LLVM 22 has no prebuilt Windows packages; MCJIT doesn't support Windows.
-- **Multi-line closures with free variables** cause LLVM codegen errors.
 
 ---
 

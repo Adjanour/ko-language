@@ -601,24 +601,24 @@
 <li><strong>Multi-line pipe</strong>: <code>|></code> doesn’t work across lines (GitHub #18)</li>
 <li><strong><code>let</code> in non-indented blocks</strong>: parser may consume next def as body</li>
 </ul>
-<h3 id="typechecker-1">Typechecker</h3>
-<ul>
-<li><strong>Imported type propagation</strong>: Types from imported modules show as type variables</li>
-<li><strong>Multi-line closures with free variables</strong>: LLVM codegen errors</li>
-</ul>
 <h3 id="codegen-1">Codegen</h3>
 <ul>
 <li><strong>Let-bound constructor display</strong>: Shows raw pointers (element-level type tags lost at LLVM IR level)</li>
 <li><strong>List element printing</strong>: Non-integer list elements print as raw pointers (tag=100)</li>
+<li><strong>Division by zero at runtime</strong>: Only a literal divisor is caught at compile time.
+<code>10 / z</code> where <code>z</code> is 0 traps (SIGFPE) on both the legacy and LIR pipelines.</li>
 </ul>
 <h3 id="lir-pipeline">LIR Pipeline</h3>
 <ul>
-<li><strong>Module/import system</strong>: Not implemented: <code>module_def.ko</code> and <code>module_import.ko</code> fail</li>
-<li><strong>Division by zero guard</strong>: Not implemented in LIR codegen (control flow issue)</li>
+<li><strong>REPL</strong>: Not yet ported to LIR pipeline</li>
 </ul>
 <hr>
 <h2 id="string-design">String Design</h2>
-<p>Strings are <code>i8*</code> (null-terminated) at LLVM level. Operations use C library functions.</p>
+<p>Strings are <code>KoString</code> at LLVM level: a 32-byte header followed by NUL-terminated
+bytes, laid out to share <code>ko_decref</code> with heap constructors. A string value points
+at its bytes, so the header is read at negative offsets: refcount <code>-32</code>, type tag
+<code>-24</code>, byte length <code>-16</code>, field bitmap <code>-8</code>. The byte length occupies the generic
+header’s arity slot, which is unused for strings. Operations use C library functions.</p>
 <p><strong>Known limitations:</strong></p>
 <ul>
 <li>No UTF-8 awareness: <code>String.length</code> counts bytes, not code points</li>

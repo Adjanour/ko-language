@@ -19,10 +19,7 @@
 <h3 id="known-limitations-v020-alpha">Known Limitations (v0.2.0-alpha)</h3>
 <ul>
 <li><strong>LLVM 22 optimization broken:</strong> AOT compilation uses <code>LLVMCodeGenLevelNone</code>. <code>LLVMTargetMachineEmitToMemoryBuffer</code> hangs and <code>LLVMRunPasses</code> crashes with any optimization pass. Root cause: <code>CodeGenPrepare</code> infinite loop with bitcast+phi patterns. Fix expected in LLVM 23 (<a href="https://github.com/llvm/llvm-project/pull/186468">PR #186468</a>).</li>
-<li><strong>2 examples fail:</strong> <code>expr_eval.ko</code> and <code>higher_order.ko</code> fail due to blank-line scoping in tokenizer <code>scan_indent</code>.</li>
-<li><strong>1 example hangs:</strong> <code>list_ops.ko</code> hangs due to pre-existing <code>reverse_aux</code> codegen bug.</li>
 <li><strong>Windows not supported:</strong> LLVM 22 has no prebuilt Windows packages; MCJIT doesn’t support Windows.</li>
-<li><strong>Multi-line closures with free variables</strong> cause LLVM codegen errors.</li>
 </ul>
 <hr>
 <h2 id="part-1-language-feature-roadmap">Part 1: Language Feature Roadmap</h2>
