@@ -3210,12 +3210,193 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
     }
 }
 
+// ──── Stdout capture for runtime correctness tests ────
+
+/// Result of capturing stdout during JIT execution.
+pub const CapturedOutput = struct {
+    output: []u8,
+    result: i64,
+
+    pub fn deinit(self: *CapturedOutput) void {
+        std.testing.allocator.free(self.output);
+    }
+};
+
+/// Redirect stdout to a pipe, run main(), and capture all output.
+/// Returns the captured stdout and main()'s return value.
+pub fn captureStdout(jit: *codegen_mod.Jit) !CapturedOutput {
+    // Save original stdout fd
+    const saved_stdout = std.c.dup(1);
+    if (saved_stdout < 0) return error.DupFailed;
+    defer _ = std.c.close(saved_stdout);
+
+    // Create pipe: pipefds[0] = read end, pipefds[1] = write end
+    var pipefds: [2]std.c.fd_t = undefined;
+    if (std.c.pipe(&pipefds) != 0) return error.PipeFailed;
+    defer {
+        _ = std.c.close(pipefds[0]);
+        _ = std.c.close(pipefds[1]);
+    }
+
+    // Redirect stdout (fd 1) to the write end of the pipe
+    if (std.c.dup2(pipefds[1], 1) < 0) return error.Dup2Failed;
+    // Close the original write end (fd 1 now points to it)
+    _ = std.c.close(pipefds[1]);
+
+    // Run main
+    const result = jit.runMain() catch |err| {
+        // Restore stdout before returning error
+        _ = std.c.dup2(saved_stdout, 1);
+        _ = std.c.close(saved_stdout);
+        _ = std.c.close(pipefds[0]);
+        return err;
+    };
+
+    // Flush any buffered printf output before restoring stdout
+    // Use libc's fflush(stdout) to ensure all output is written to the pipe
+    const c_fflush = @extern(*const fn (?*anyopaque) callconv(.c) c_int, .{ .name = "fflush" });
+    _ = c_fflush(null);
+
+    // Restore stdout
+    _ = std.c.dup2(saved_stdout, 1);
+
+    // Read captured output from pipe
+    var buf: [65536]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = std.c.read(pipefds[0], buf[total..].ptr, buf.len - total);
+        if (n <= 0) break;
+        total += @intCast(n);
+    }
+    _ = std.c.close(pipefds[0]);
+
+    const output = try std.testing.allocator.dupe(u8, buf[0..total]);
+    return .{ .output = output, .result = result };
+}
+
+/// Parse, typecheck, lower through LIR pipeline, JIT-execute, and capture stdout.
+/// Returns the captured output and main()'s return value.
+pub fn testRuntimeOutputLir(source: [:0]const u8) !CapturedOutput {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    var inferer = typecheck.Inferer.init(allocator);
+    defer inferer.deinit();
+    try inferer.inferProgram(&prog);
+    var hl = hir_lower.HirLower.init(allocator, &inferer);
+    defer hl.deinit();
+    try hl.lowerProgram(&prog);
+
+    var ll = lir_lower.LirLower.init(allocator, hl.expressions.items, hl.defs.items, &inferer);
+    defer ll.deinit();
+    const fns = try ll.lowerProgram();
+    var cg = codegen_lir.CodegenLir.init(allocator, "test_output");
+    defer cg.deinit();
+    cg.declareRuntime();
+    try cg.codegenProgram(fns);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    mapLirJitResultFns(cg.module, jit.engine);
+
+    // Capture stdout during execution
+    return try captureStdout(&jit);
+}
+
+/// Parse, JIT-execute via legacy pipeline, and capture stdout.
+pub fn testRuntimeOutput(source: [:0]const u8) !CapturedOutput {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var cg = codegen_mod.Codegen.init(allocator, "test");
+    defer cg.deinit();
+    var p = try parser.Parser.init(allocator, source);
+    defer p.deinit();
+    const prog = try p.parse_program();
+    try cg.codegenProgram(prog);
+    var jit = try codegen_mod.Jit.init(cg.module, 0);
+    defer jit.deinit();
+    cg.module_owned_by_jit = true;
+    cg.mapBuiltinsToNative(jit.engine);
+
+    return try captureStdout(&jit);
+}
+
 /// Compile and run the same source through the legacy AST→LLVM path and the
 /// new HIR→LIR→LLVM path; results must match.
 fn expectLirMatchesLegacy(source: [:0]const u8) !void {
     const legacy = try testRuntime(source);
     const via_lir = try testRuntimeLir(source);
     try std.testing.expectEqual(legacy, via_lir);
+}
+
+// ──── Runtime correctness: stdout capture tests ────
+
+test "runtime output: println captures stdout via LIR" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println 42
+    );
+    defer captured.deinit();
+    try std.testing.expectEqual(@as(i64, 42), captured.result);
+    try std.testing.expectEqualStrings("42\n", captured.output);
+}
+
+test "runtime output: multiple println via LIR" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  println 1
+        \\  println 2
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("1\n2\n", captured.output);
+}
+
+test "runtime output: println string via LIR" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println "hello world"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("hello world\n", captured.output);
+}
+
+// ──── Phase 1.2: Targeted tests for recent fixes ────
+
+test "runtime output: println returns argument (not 0)" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let x = println 42
+        \\  println x
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("42\n42\n", captured.output);
+}
+
+test "runtime output: nested list printing" {
+    var captured = try testRuntimeOutputLir(
+        \\type List a = Cons a (List a) | Nil
+        \\fn main =
+        \\  let inner = Cons 1 Nil
+        \\  let outer = Cons inner Nil
+        \\  println outer
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("[[1]]\n", captured.output);
+}
+
+test "runtime output: string list printing" {
+    var captured = try testRuntimeOutputLir(
+        \\type List a = Cons a (List a) | Nil
+        \\fn main =
+        \\  let xs = Cons "hello" (Cons "world" Nil)
+        \\  println xs
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("[hello, world]\n", captured.output);
 }
 
 test "lir_lower: integer literal" {
@@ -3669,4 +3850,109 @@ test "runtime: closure capture decref" {
         \\  let f = \x -> !r + x
         \\  f 10
     ));
+}
+
+// ──── Phase 1.2: Runtime correctness tests for .ko files via LIR ────
+
+test "runtime: all .ko test files execute on LIR without crashing" {
+    const files = [_]struct { name: []const u8, source: [:0]const u8 }{
+        .{ .name = "48_float_ops.ko", .source = @embedFile("tests_ko/48_float_ops.ko") },
+        .{ .name = "49_float_builtins.ko", .source = @embedFile("tests_ko/49_float_builtins.ko") },
+        .{ .name = "50_string_builtins.ko", .source = @embedFile("tests_ko/50_string_builtins.ko") },
+        .{ .name = "51_string_eq.ko", .source = @embedFile("tests_ko/51_string_eq.ko") },
+        .{ .name = "52_checked_arithmetic.ko", .source = @embedFile("tests_ko/52_checked_arithmetic.ko") },
+        .{ .name = "53_multiline_closure.ko", .source = @embedFile("tests_ko/53_multiline_closure.ko") },
+        .{ .name = "54_bool_in_lambda.ko", .source = @embedFile("tests_ko/54_bool_in_lambda.ko") },
+        .{ .name = "55_float_binary.ko", .source = @embedFile("tests_ko/55_float_binary.ko") },
+        .{ .name = "builtin_math.ko", .source = @embedFile("tests_ko/builtin_math.ko") },
+        .{ .name = "builtin_result.ko", .source = @embedFile("tests_ko/builtin_result.ko") },
+        .{ .name = "comptime_expr.ko", .source = @embedFile("tests_ko/comptime_expr.ko") },
+        .{ .name = "comptime_fn.ko", .source = @embedFile("tests_ko/comptime_fn.ko") },
+        .{ .name = "comptime_list.ko", .source = @embedFile("tests_ko/comptime_list.ko") },
+        .{ .name = "comptime_match.ko", .source = @embedFile("tests_ko/comptime_match.ko") },
+        .{ .name = "comptime_string.ko", .source = @embedFile("tests_ko/comptime_string.ko") },
+        .{ .name = "fn_closure.ko", .source = @embedFile("tests_ko/fn_closure.ko") },
+        .{ .name = "fn_curry.ko", .source = @embedFile("tests_ko/fn_curry.ko") },
+        .{ .name = "fn_lambda.ko", .source = @embedFile("tests_ko/fn_lambda.ko") },
+        .{ .name = "fn_lambda_wildcard.ko", .source = @embedFile("tests_ko/fn_lambda_wildcard.ko") },
+        .{ .name = "fn_partial.ko", .source = @embedFile("tests_ko/fn_partial.ko") },
+        .{ .name = "module_def.ko", .source = @embedFile("tests_ko/module_def.ko") },
+        // Note: module_import.ko requires module_loader setup (tested via CLI)
+        .{ .name = "pattern_match.ko", .source = @embedFile("tests_ko/pattern_match.ko") },
+        .{ .name = "pattern_wildcard.ko", .source = @embedFile("tests_ko/pattern_wildcard.ko") },
+        .{ .name = "syntax_application.ko", .source = @embedFile("tests_ko/syntax_application.ko") },
+        .{ .name = "syntax_arithmetic.ko", .source = @embedFile("tests_ko/syntax_arithmetic.ko") },
+        .{ .name = "syntax_block.ko", .source = @embedFile("tests_ko/syntax_block.ko") },
+        .{ .name = "syntax_bool.ko", .source = @embedFile("tests_ko/syntax_bool.ko") },
+        .{ .name = "syntax_comment.ko", .source = @embedFile("tests_ko/syntax_comment.ko") },
+        .{ .name = "syntax_comparison.ko", .source = @embedFile("tests_ko/syntax_comparison.ko") },
+        .{ .name = "syntax_cons.ko", .source = @embedFile("tests_ko/syntax_cons.ko") },
+        .{ .name = "syntax_fn.ko", .source = @embedFile("tests_ko/syntax_fn.ko") },
+        .{ .name = "syntax_fn_block.ko", .source = @embedFile("tests_ko/syntax_fn_block.ko") },
+        .{ .name = "syntax_hyphenated.ko", .source = @embedFile("tests_ko/syntax_hyphenated.ko") },
+        .{ .name = "syntax_if.ko", .source = @embedFile("tests_ko/syntax_if.ko") },
+        .{ .name = "syntax_let.ko", .source = @embedFile("tests_ko/syntax_let.ko") },
+        .{ .name = "syntax_literal.ko", .source = @embedFile("tests_ko/syntax_literal.ko") },
+        .{ .name = "syntax_logical.ko", .source = @embedFile("tests_ko/syntax_logical.ko") },
+        .{ .name = "syntax_minimal.ko", .source = @embedFile("tests_ko/syntax_minimal.ko") },
+        .{ .name = "syntax_nested.ko", .source = @embedFile("tests_ko/syntax_nested.ko") },
+        .{ .name = "syntax_pipe.ko", .source = @embedFile("tests_ko/syntax_pipe.ko") },
+        .{ .name = "syntax_precedence.ko", .source = @embedFile("tests_ko/syntax_precedence.ko") },
+        .{ .name = "syntax_record.ko", .source = @embedFile("tests_ko/syntax_record.ko") },
+        .{ .name = "syntax_string.ko", .source = @embedFile("tests_ko/syntax_string.ko") },
+        .{ .name = "syntax_tuple.ko", .source = @embedFile("tests_ko/syntax_tuple.ko") },
+        .{ .name = "syntax_tuple_let.ko", .source = @embedFile("tests_ko/syntax_tuple_let.ko") },
+        .{ .name = "syntax_unary.ko", .source = @embedFile("tests_ko/syntax_unary.ko") },
+        .{ .name = "type_record.ko", .source = @embedFile("tests_ko/type_record.ko") },
+        .{ .name = "type_sum.ko", .source = @embedFile("tests_ko/type_sum.ko") },
+        .{ .name = "type_sum_params.ko", .source = @embedFile("tests_ko/type_sum_params.ko") },
+    };
+
+    for (files) |f| {
+        // Run through LIR pipeline — just verify no crash
+        const result = testRuntimeLir(f.source) catch |err| {
+            std.debug.print("FAIL: {s} - {}\n", .{ f.name, err });
+            return error.TestFailed;
+        };
+        // Suppress unused variable warning
+        _ = result;
+    }
+}
+
+// ──── Phase 1.2: Runtime correctness tests for examples via LIR ────
+
+test "runtime: all example programs execute on LIR without crashing" {
+    const examples = [_]struct { name: []const u8, source: [:0]const u8 }{
+        .{ .name = "ackermann.ko", .source = @embedFile("examples/ackermann.ko") },
+        .{ .name = "binary_search.ko", .source = @embedFile("examples/binary_search.ko") },
+        .{ .name = "collatz.ko", .source = @embedFile("examples/collatz.ko") },
+        .{ .name = "combinators.ko", .source = @embedFile("examples/combinators.ko") },
+        .{ .name = "evaluator.ko", .source = @embedFile("examples/evaluator.ko") },
+        .{ .name = "factorial.ko", .source = @embedFile("examples/factorial.ko") },
+        .{ .name = "fibonacci.ko", .source = @embedFile("examples/fibonacci.ko") },
+        .{ .name = "fibonacci_seq.ko", .source = @embedFile("examples/fibonacci_seq.ko") },
+        .{ .name = "hailstone.ko", .source = @embedFile("examples/hailstone.ko") },
+        .{ .name = "list_ops.ko", .source = @embedFile("examples/list_ops.ko") },
+        .{ .name = "matrix.ko", .source = @embedFile("examples/matrix.ko") },
+        .{ .name = "mergesort.ko", .source = @embedFile("examples/mergesort.ko") },
+        .{ .name = "number_theory.ko", .source = @embedFile("examples/number_theory.ko") },
+        .{ .name = "numeric.ko", .source = @embedFile("examples/numeric.ko") },
+        .{ .name = "pascal.ko", .source = @embedFile("examples/pascal.ko") },
+        .{ .name = "pascal_triangle.ko", .source = @embedFile("examples/pascal_triangle.ko") },
+        .{ .name = "permutations.ko", .source = @embedFile("examples/permutations.ko") },
+        .{ .name = "primes.ko", .source = @embedFile("examples/primes.ko") },
+        .{ .name = "records.ko", .source = @embedFile("examples/records.ko") },
+        .{ .name = "roman.ko", .source = @embedFile("examples/roman.ko") },
+        .{ .name = "sorting.ko", .source = @embedFile("examples/sorting.ko") },
+        .{ .name = "state_machine.ko", .source = @embedFile("examples/state_machine.ko") },
+        .{ .name = "tree.ko", .source = @embedFile("examples/tree.ko") },
+    };
+
+    for (examples) |ex| {
+        const result = testRuntimeLir(ex.source) catch |err| {
+            std.debug.print("FAIL: {s} - {}\n", .{ ex.name, err });
+            return error.TestFailed;
+        };
+        _ = result;
+    }
 }

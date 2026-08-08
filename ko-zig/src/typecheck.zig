@@ -685,6 +685,24 @@ pub const Inferer = struct {
                         var td = def.type_def;
                         td.name = prefixed;
                         try self.registerTypeDef(td);
+                        // Also register unqualified type name so that lookups
+                        // in typeExprToType, ctorParamType, and inferPatternBindings
+                        // find the type by its short name (e.g., "List" not "List.List").
+                        if (!self.type_names.contains(def.type_def.name)) {
+                            try self.type_names.put(def.type_def.name, def.type_def.type_params.len);
+                        }
+                        if (!self.type_ids.contains(def.type_def.name)) {
+                            try self.type_ids.put(def.type_def.name, self.type_ids.get(prefixed) orelse self.next_type_id - 1);
+                        }
+                        // For record types, also register in the types map with unqualified name
+                        switch (def.type_def.body) {
+                            .record => {
+                                if (self.types.get(prefixed)) |info| {
+                                    try self.types.put(def.type_def.name, info);
+                                }
+                            },
+                            else => {},
+                        }
                         // Also register constructor types with both qualified and unqualified names
                         // using the imported inferer's scheme (which has unqualified type names)
                         switch (def.type_def.body) {

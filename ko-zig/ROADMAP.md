@@ -34,7 +34,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - Lambdas, closures, partial application
 - Reference counting with scope-based decref, recursive decref via bitmap
 - Compile-time evaluation (`comptime`)
-- Module imports (flat file system)
+- Module imports (flat file system, types propagate correctly)
 - LSP server, VS Code extension, REPL
 - Multiple compilation modes (JIT, IR, object, executable)
 - String operations (KoString wrapper, length O(1), append, contains, trim, replace, split, toUpperCase, toLowerCase, charAt)
@@ -46,8 +46,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 ### What's Broken
 - LLVM 22 optimization bug (AOT compiles unoptimized) — fixed upstream, pending verification
 - `String.trim` only trims leading whitespace (not trailing)
-- List element printing uses tag=100 for non-integer types
-- Users must define List type before using lists
+- Codegen crash with imported constructor patterns (e.g., `Cons x Nil` in pattern matching)
 
 ### What's Missing
 - `++` string concatenation operator
@@ -70,7 +69,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - [x] True/False inside lambdas
 - [x] Float binary operations in typechecker
 - [x] Imported type propagation
-- [ ] `inspect` list sugar for nested types
+- [x] `inspect` list sugar for nested types (int, nested, string lists)
 
 ### 1.2 Runtime Correctness Tests
 - [ ] Add output verification tests (compile + run + check stdout)

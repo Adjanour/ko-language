@@ -27,6 +27,15 @@ When implementing, ask: "Does this preserve purity? Does this respect ownership?
 
 **The performance boundary:** Tree-shaped ownership is C-competitive (no asterisk). Shared/graph ownership uses explicit `Rc` (still fast, but not zero-cost). State this boundary honestly in all documentation.
 
+## Legacy Codegen (codegen.zig) — FROZEN
+
+**`codegen.zig` is frozen.** No new features, fixes, or changes. All new work goes through the LIR pipeline (`codegen_lir.zig`).
+
+- Legacy codegen: `AST → LLVM IR` (single pass, stable but limited)
+- LIR pipeline: `AST → HIR → LIR → LLVM IR` (multi-pass, the future)
+- Only `codegen_lir.zig` receives new fixes and features
+- Known limitation: imported constructor patterns (e.g., `Cons x Nil`) crash in legacy codegen — this will NOT be fixed in the legacy path
+
 ## Workflow Pattern: Research → Design → Implement
 
 **MUST DO:** Before implementing any feature or fix, follow this process:
@@ -631,7 +640,7 @@ main.zig → parser.zig → lexer.zig
 - Import processing happens BEFORE the main program's flatten/codegen passes
 
 ### Known Limitations (v0.1)
-- Imported type info doesn't propagate to main Inferer's type environment (type variables instead of concrete types)
+- ~~Imported type info doesn't propagate to main Inferer's type environment~~ — **FIXED**: unqualified type names now registered in type_names, type_ids, and types maps
 - Constructor type tags from imported modules may show raw values in `println`
 - No circular import detection
 - No package/module system — just flat file imports
@@ -699,7 +708,7 @@ main.zig → parser.zig → lexer.zig
 - **println returns argument**: Confusing polymorphic type. Fix: DESIGN-io-model.md (change to Unit).
 - **File I/O doesn't return Result**: Panics on error. Fix: DESIGN-io-model.md.
 - **Float arithmetic unsupported by typechecker**: Only builtins work. Fix: DESIGN-math-semantics.md.
-- **Imported type propagation**: Types from imported modules show as type variables.
+- ~~**Imported type propagation**: Types from imported modules show as type variables.~~ — **FIXED**
 
 ## LLVM Codegen (kassane/llvm-zig bindings)
 
