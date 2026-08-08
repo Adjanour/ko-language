@@ -380,7 +380,160 @@ const result = eval_fn();
 
 ---
 
-## 5. Gotchas & Lessons Learned
+## 5. Zig-C Interop: How It All Connects
+
+### The Problem
+
+Linenoise is a **C library** (~2400 lines of C). Our compiler is written in **Zig**. How do we call C functions from Zig?
+
+### The Three-Layer Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│  repl.zig          (Zig code — calls linenoise.zig) │
+├─────────────────────────────────────────────────────┤
+│  linenoise.zig     (Zig bindings — extern decls)    │
+├─────────────────────────────────────────────────────┤
+│  vendor/linenoise.c (C source — the actual library) │
+└─────────────────────────────────────────────────────┘
+```
+
+### Step 1: C Header → Zig Bindings
+
+C functions are declared in `linenoise.c`. We need equivalent declarations in Zig. Instead of using `@cImport` (which has issues in Zig 0.17), we manually declare them:
+
+```zig
+// src/linenoise.zig
+pub extern fn linenoise(prompt: [*:0]const u8) ?[*:0]u8;
+pub extern fn linenoiseFree(ptr: ?*anyopaque) void;
+pub extern fn linenoiseHistoryAdd(line: [*:0]const u8) c_int;
+```
+
+**Key concepts:**
+
+| Zig Type | C Equivalent | Meaning |
+|----------|--------------|---------|
+| `[*:0]const u8` | `const char *` | Null-terminated string pointer |
+| `?[*:0]u8` | `char *` (nullable) | Optional null-terminated string |
+| `c_int` | `int` | C-compatible integer |
+| `?*anyopaque` | `void *` (nullable) | Generic pointer |
+| `callconv(.c)` | (default) | C calling convention |
+
+**Why `[*:0]const u8` instead of `[]const u8`?**
+- `[]const u8` = Zig slice (pointer + length, no sentinel)
+- `[*:0]const u8` = C string (pointer to null-terminated data)
+- C functions expect null-terminated strings, so we use the sentinel type
+
+### Step 2: Compile C Source into Zig Module
+
+The C file must be compiled and linked into our Zig binary. This happens in `build.zig`:
+
+```zig
+// Create a Zig module that wraps the C source
+const linenoise_mod = b.createModule(.{
+    .root_source_file = b.path("src/linenoise.zig"),
+    .target = target,
+    .optimize = optimize,
+    .link_libc = true,  // linenoise uses libc functions
+});
+
+// Add the C source file to THIS module (not the root module)
+linenoise_mod.addCSourceFile(.{
+    .file = b.path("vendor/linenoise.c"),
+    .flags = &.{"-D_GNU_SOURCE"},  // enables GNU extensions
+});
+
+// Add include path for linenoise.h
+linenoise_mod.addIncludePath(b.path("vendor"));
+
+// Import this module into the main executable
+ko_exe.root_module.addImport("linenoise", linenoise_mod);
+```
+
+**Critical rule:** The C source goes in the **module that owns the bindings** (`linenoise_mod`), NOT the root module. Adding it to both causes duplicate symbol errors.
+
+### Step 3: Linking
+
+When `zig build` runs, the linker combines:
+
+1. **Your Zig code** → compiled to machine code
+2. **Linenoise C code** → compiled from `vendor/linenoise.c`
+3. **System libraries** → libc (for `malloc`, `printf`, etc.)
+
+The linker resolves all `extern fn` declarations in Zig to their actual addresses in the compiled C code.
+
+### Calling Convention
+
+When Zig calls a C function, it must use the **C calling convention**:
+
+```zig
+// The callback must match C's calling convention
+pub const CompletionCallback = *const fn ([*:0]const u8, *Completions) callconv(.c) void;
+//                                                                       ^^^^^^^^^
+//                                                                       C calling convention
+```
+
+Without `callconv(.c)`, Zig uses its own calling convention (which may differ in how arguments are passed, stack cleanup, etc.), causing crashes.
+
+### Memory Ownership
+
+C and Zig have different memory models:
+
+```zig
+// Linenoise allocates memory with malloc()
+const line_ptr = linenoise.linenoise("ko> ");
+// line_ptr is owned by Linenoise — DO NOT free with Zig's allocator
+
+// When done, call Linenoise's free function
+defer linenoise.linenoiseFree(line_ptr);
+// linenoiseFree calls C's free() on the pointer
+```
+
+**Rule:** Memory allocated by C (`malloc`) must be freed by C (`free`). Never mix allocators.
+
+### String Conversion
+
+Zig strings ↔ C strings require conversion:
+
+```zig
+// Zig []const u8 → C [*:0]const u8 (for string literals, safe because they're comptime null-terminated)
+const keyword: []const u8 = "fn";
+const c_str: [*:0]const u8 = @ptrCast(keyword.ptr);
+
+// C [*:0]const u8 → Zig []const u8
+const c_string: [*:0]const u8 = linenoise.linenoise("ko> ");
+const zig_string: []const u8 = std.mem.sliceTo(c_string, 0);
+
+// Allocating null-terminated copies (when you need to keep the string)
+const owned = try allocator.dupeZ(u8, zig_string);
+defer allocator.free(owned);
+```
+
+### The Full Flow
+
+When the user presses Enter in the REPL:
+
+```
+1. User types "1 + 2" and presses Enter
+2. Linenoise (C code) reads from stdin, handles line editing
+3. Linenoise returns a [*:0]const u8 (C string pointer)
+4. Zig receives the pointer via the extern binding
+5. Zig converts to []const u8 with std.mem.sliceTo()
+6. Zig passes to the parser (pure Zig code)
+7. When done, Zig calls linenoiseFree() (C code) to release memory
+```
+
+### Why Not Use Zig's Standard Library for Line Editing?
+
+Zig's `std.Io` could theoretically handle terminal I/O. But:
+- **Linenoise is battle-tested** (used by Redis, MongoDB)
+- **Terminal handling is complex** (raw mode, escape sequences, signal handling)
+- **Linenoise is ~2400 lines of C** — reimplementing in Zig would be weeks of work
+- **The C interop is straightforward** — only ~10 functions to bind
+
+---
+
+## 6. Gotchas & Lessons Learned
 
 ### `@cImport` Doesn't Work in Separate Modules
 
@@ -417,7 +570,7 @@ The parser accepts `fn f x =` without a body. This is a pre-existing parser bug.
 
 ---
 
-## 6. Testing
+## 7. Testing
 
 ### Manual Tests
 
@@ -453,7 +606,7 @@ zig build test --summary all
 
 ---
 
-## 7. Future Improvements
+## 8. Future Improvements
 
 ### Persistent LLVM Module
 
