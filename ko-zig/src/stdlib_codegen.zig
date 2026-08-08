@@ -2769,9 +2769,11 @@ pub const StdlibCodegen = struct {
         const tag_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_try, "tag_val_try");
         const is_cons_try = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag_val_try, core.LLVMConstInt(self.i64Type(), 0, 0), "is_cons_try");
         const print_as_list = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_as_list");
+        const print_raw_cons = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_raw_cons");
+        const print_as_list_sugar = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_as_list_sugar");
         self.buildCondBranch(is_cons_try, print_as_list, ctor_fallback_done);
 
-        // print_as_list: print [head, tail...]
+        // print_as_list: load head/tail, then check raw for sugar vs raw form
         core.LLVMPositionBuilderAtEnd(self.builder, print_as_list);
         var head_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
         const head_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&head_idx_try), 1, "head_ptr_try");
@@ -2779,6 +2781,55 @@ pub const StdlibCodegen = struct {
         var tail_idx_try: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
         const tail_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&tail_idx_try), 1, "tail_ptr_try");
         const tail_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr_try, "tail_val_try");
+        // Check raw: raw=0 → Cons form, raw=1 → [sugar] form
+        const is_raw_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, raw, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw_zero");
+        self.buildCondBranch(is_raw_zero, print_raw_cons, print_as_list_sugar);
+
+        // print_raw_cons: Cons head tail (raw/debug form)
+        core.LLVMPositionBuilderAtEnd(self.builder, print_raw_cons);
+        const fmt_cons = self.globalStringConstant("Cons ");
+        var cons_args: [2]types.LLVMValueRef = .{ fmt_cons, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &cons_args, 2, "");
+        // Print head element (raw=0 for recursive inspect — null name for structural detection)
+        var raw_head_args: [6]types.LLVMValueRef = .{ head_val_try, elem_tag, core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &raw_head_args, 6, "");
+        // Print space separator between head and tail
+        const fmt_space_raw = self.globalStringConstant(" ");
+        var space_raw_args: [2]types.LLVMValueRef = .{ fmt_space_raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &space_raw_args, 2, "");
+        // Check if tail is Nil (raw tag=1) or a pointer
+        const tail_is_nil_raw = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tail_val_try, core.LLVMConstInt(self.i64Type(), 1, 0), "tail_is_nil_raw");
+        const tail_is_ptr_raw = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, tail_val_try, core.LLVMConstInt(self.i64Type(), 4096, 0), "tail_is_ptr_raw");
+        const tail_raw_nil_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_raw_nil");
+        const tail_raw_ptr_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_raw_ptr");
+        const tail_raw_other_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_raw_other");
+        // First check nil, then check ptr
+        self.buildCondBranch(tail_is_nil_raw, tail_raw_nil_bb, tail_raw_ptr_bb);
+        // tail_raw_nil: print "Nil" directly
+        core.LLVMPositionBuilderAtEnd(self.builder, tail_raw_nil_bb);
+        const fmt_nil_raw2 = self.globalStringConstant("Nil");
+        var nil_raw2_args: [2]types.LLVMValueRef = .{ fmt_nil_raw2, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &nil_raw2_args, 2, "");
+        const tail_raw_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_raw_done");
+        self.buildBranch(tail_raw_done);
+        // tail_raw_ptr: it's a pointer, recurse with inspect
+        core.LLVMPositionBuilderAtEnd(self.builder, tail_raw_ptr_bb);
+        const tail_raw_ptr_bb2 = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_raw_ptr2");
+        self.buildCondBranch(tail_is_ptr_raw, tail_raw_ptr_bb2, tail_raw_other_bb);
+        core.LLVMPositionBuilderAtEnd(self.builder, tail_raw_ptr_bb2);
+        var raw_tail_args: [6]types.LLVMValueRef = .{ tail_val_try, core.LLVMConstInt(self.i64Type(), 6, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &raw_tail_args, 6, "");
+        self.buildBranch(tail_raw_done);
+        // tail_raw_other: small non-Nil value, print as inspect
+        core.LLVMPositionBuilderAtEnd(self.builder, tail_raw_other_bb);
+        var raw_tail_other_args: [6]types.LLVMValueRef = .{ tail_val_try, core.LLVMConstInt(self.i64Type(), 100, 0), core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &raw_tail_other_args, 6, "");
+        self.buildBranch(tail_raw_done);
+        core.LLVMPositionBuilderAtEnd(self.builder, tail_raw_done);
+        self.buildBranch(ctor_merge);
+
+        // print_as_list_sugar: [head, tail...] (user-friendly form)
+        core.LLVMPositionBuilderAtEnd(self.builder, print_as_list_sugar);
         // Detect nested list: branch to check head, then select elem_tag
         const head_check_tag_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "head_check_tag");
         const head_is_ptr_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "head_is_ptr_bb");
@@ -2796,7 +2847,7 @@ pub const StdlibCodegen = struct {
         core.LLVMPositionBuilderAtEnd(self.builder, head_is_ptr_bb);
         const head_is_cons_phi = core.LLVMBuildPhi(self.builder, self.i1Type(), "head_is_cons_phi");
         var incoming_cons_vals: [2]types.LLVMValueRef = .{ head_is_cons_val, core.LLVMConstInt(self.i1Type(), 0, 0) };
-        var incoming_cons_blocks: [2]types.LLVMBasicBlockRef = .{ head_check_tag_bb, print_as_list };
+        var incoming_cons_blocks: [2]types.LLVMBasicBlockRef = .{ head_check_tag_bb, print_as_list_sugar };
         core.LLVMAddIncoming(head_is_cons_phi, &incoming_cons_vals, &incoming_cons_blocks, 2);
         const head_elem_tag = core.LLVMBuildSelect(self.builder, head_is_cons_phi, unknown_tag, elem_tag, "head_elem_tag");
         const fmt_lbracket_try = self.globalStringConstant("[");
@@ -2818,8 +2869,25 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &ctor_fb_args, 2, "");
         self.buildBranch(ctor_merge);
 
-        // ctor_name_check: strcmp(name_ptr, "Nil") == 0?
+        // ctor_name_check: first check if name_ptr is null → fallback to structural detection
         core.LLVMPositionBuilderAtEnd(self.builder, ctor_name_check);
+        const is_name_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, name_ptr, core.LLVMConstNull(self.ptrType()), "is_name_null");
+        const ctor_name_fallback_null = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ctor_name_fallback_null");
+        const ctor_name_not_null = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ctor_name_not_null");
+        self.buildCondBranch(is_name_null, ctor_name_fallback_null, ctor_name_not_null);
+        // ctor_name_fallback_null: name_ptr is null, check known tags (Nil=1)
+        core.LLVMPositionBuilderAtEnd(self.builder, ctor_name_fallback_null);
+        const is_val_nil = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, val, core.LLVMConstInt(self.i64Type(), 1, 0), "is_val_nil");
+        const null_print_nil = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "null_print_nil");
+        self.buildCondBranch(is_val_nil, null_print_nil, ctor_fallback_done);
+        // null_print_nil: printf("Nil")
+        core.LLVMPositionBuilderAtEnd(self.builder, null_print_nil);
+        const fmt_nil_null = self.globalStringConstant("Nil");
+        var nil_null_args: [2]types.LLVMValueRef = .{ fmt_nil_null, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &nil_null_args, 2, "");
+        self.buildBranch(ctor_merge);
+        // ctor_name_not_null: strcmp(name_ptr, "Nil") == 0?
+        core.LLVMPositionBuilderAtEnd(self.builder, ctor_name_not_null);
         const str_nil = self.globalStringConstant("Nil");
         var cmp_nil_args: [2]types.LLVMValueRef = .{ name_ptr, str_nil };
         const is_nil = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strcmp_fn), strcmp_fn, &cmp_nil_args, 2, "");
@@ -2828,12 +2896,24 @@ pub const StdlibCodegen = struct {
         const ctor_name_check_cons = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check_cons");
         self.buildCondBranch(is_nil_cmp, nil_block, ctor_name_check_cons);
 
-        // print_nil: printf("[]")
+        // print_nil: raw=1 → [], raw=0 → Nil
         core.LLVMPositionBuilderAtEnd(self.builder, nil_block);
+        const is_raw_nil = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, raw, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw_nil");
+        const nil_sugar_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "nil_sugar");
+        const nil_raw_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "nil_raw");
+        self.buildCondBranch(is_raw_nil, nil_raw_block, nil_sugar_block);
+        // nil_sugar: printf("[]")
+        core.LLVMPositionBuilderAtEnd(self.builder, nil_sugar_block);
         const fmt_nil = self.globalStringConstant("[]");
         var nil_args: [2]types.LLVMValueRef = .{ fmt_nil, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &nil_args, 2, "");
         const nil_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "nil_done");
+        self.buildBranch(nil_done);
+        // nil_raw: printf("Nil")
+        core.LLVMPositionBuilderAtEnd(self.builder, nil_raw_block);
+        const fmt_nil_raw = self.globalStringConstant("Nil");
+        var nil_raw_args: [2]types.LLVMValueRef = .{ fmt_nil_raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &nil_raw_args, 2, "");
         self.buildBranch(nil_done);
 
         // check_cons: strcmp(name_ptr, "Cons") == 0?
@@ -2846,31 +2926,50 @@ pub const StdlibCodegen = struct {
         const ctor_name_fallback = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ctor_name_fallback");
         self.buildCondBranch(is_cons_cmp, cons_block, ctor_name_fallback);
 
-        // print_cons: dereference val, printf("["), inspect(head, 100, null, raw), inspect_list_tail(tail, raw), printf("]")
+        // print_cons: dereference val, then branch on raw for sugar vs raw form
         core.LLVMPositionBuilderAtEnd(self.builder, cons_block);
-        const deref_ptr = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "deref_ptr");
+        const deref_ptr_cons = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "deref_ptr_cons");
         var head_idx_cons: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
-        const head_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&head_idx_cons), 1, "head_ptr");
-        const head_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr, "head_val");
+        const head_ptr_cons = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_cons, @ptrCast(&head_idx_cons), 1, "head_ptr_cons");
+        const head_val_cons = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr_cons, "head_val_cons");
         var tail_idx_cons: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
-        const tail_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tail_idx_cons), 1, "tail_ptr");
-        const tail_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr, "tail_val");
-        // printf("[")
+        const tail_ptr_cons = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_cons, @ptrCast(&tail_idx_cons), 1, "tail_ptr_cons");
+        const tail_val_cons = core.LLVMBuildLoad2(self.builder, self.i64Type(), tail_ptr_cons, "tail_val_cons");
+        // Branch on raw: 0 → Cons head tail, 1 → [head, tail...]
+        const is_raw_cons_sugar = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, raw, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw_cons_sugar");
+        const cons_sugar_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cons_sugar");
+        const cons_raw_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cons_raw");
+        self.buildCondBranch(is_raw_cons_sugar, cons_raw_bb, cons_sugar_bb);
+        // cons_sugar: [head, tail...]
+        core.LLVMPositionBuilderAtEnd(self.builder, cons_sugar_bb);
         const fmt_lbracket = self.globalStringConstant("[");
         var lbracket_args: [2]types.LLVMValueRef = .{ fmt_lbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &lbracket_args, 2, "");
-        // inspect(head, 100, null, raw, 0)
-        var head_args: [6]types.LLVMValueRef = .{ head_val, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 6, "");
-        // inspect_list_tail(tail, raw)
-        var tail_args: [3]types.LLVMValueRef = .{ tail_val, raw, elem_tag };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_args, 3, "");
-        // printf("]")
+        // inspect(head, elem_tag, null, 1, 0) — sugar=1
+        var head_sugar_args: [6]types.LLVMValueRef = .{ head_val_cons, elem_tag, core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 1, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_sugar_args, 6, "");
+        // inspect_list_tail(tail, 1) — sugar=1
+        var tail_sugar_args: [3]types.LLVMValueRef = .{ tail_val_cons, core.LLVMConstInt(self.i64Type(), 1, 0), elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_sugar_args, 3, "");
         const fmt_rbracket = self.globalStringConstant("]");
         var rbracket_args: [2]types.LLVMValueRef = .{ fmt_rbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &rbracket_args, 2, "");
-        const cons_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cons_done");
-        self.buildBranch(cons_done);
+        const cons_sugar_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "cons_sugar_done");
+        self.buildBranch(cons_sugar_done);
+        // cons_raw: Cons head tail
+        core.LLVMPositionBuilderAtEnd(self.builder, cons_raw_bb);
+        const fmt_cons_raw = self.globalStringConstant("Cons ");
+        var cons_raw_args: [2]types.LLVMValueRef = .{ fmt_cons_raw, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &cons_raw_args, 2, "");
+        // inspect(head, elem_tag, null, 0, 0) — raw=0
+        var head_raw_args: [6]types.LLVMValueRef = .{ head_val_cons, elem_tag, core.LLVMConstNull(self.ptrType()), core.LLVMConstInt(self.i64Type(), 0, 0), core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_raw_args, 6, "");
+        // inspect_list_tail(tail, 0) — raw=0 (prints space before each tail element)
+        var tail_raw_args: [3]types.LLVMValueRef = .{ tail_val_cons, core.LLVMConstInt(self.i64Type(), 0, 0), elem_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &tail_raw_args, 3, "");
+        self.buildBranch(cons_sugar_done);
+        core.LLVMPositionBuilderAtEnd(self.builder, cons_sugar_done);
+        self.buildBranch(ctor_merge);
 
         // ctor_name_fallback: printf("%s", name_ptr), then if arity > 0, print args
         core.LLVMPositionBuilderAtEnd(self.builder, ctor_name_fallback);
@@ -2929,8 +3028,6 @@ pub const StdlibCodegen = struct {
 
         // Merge all branches
         core.LLVMPositionBuilderAtEnd(self.builder, nil_done);
-        self.buildBranch(ctor_merge);
-        core.LLVMPositionBuilderAtEnd(self.builder, cons_done);
         self.buildBranch(ctor_merge);
 
         core.LLVMPositionBuilderAtEnd(self.builder, ctor_merge);
@@ -3204,6 +3301,7 @@ pub const StdlibCodegen = struct {
 
         const printf_fn = core.LLVMGetNamedFunction(self.module, "printf");
         const fmt_comma = self.globalStringConstant(", ");
+        const fmt_space = self.globalStringConstant(" ");
 
         // Check: tail == 1 (raw Nil tag) → stop
         const is_raw_nil = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tail, core.LLVMConstInt(self.i64Type(), 1, 0), "is_raw_nil");
@@ -3218,13 +3316,30 @@ pub const StdlibCodegen = struct {
         // check_ptr: tail > 4096? (looks like a pointer)
         core.LLVMPositionBuilderAtEnd(self.builder, check_ptr_bb);
         const is_ptr = core.LLVMBuildICmp(self.builder, .LLVMIntSGT, tail, core.LLVMConstInt(self.i64Type(), 4096, 0), "is_ptr");
-        const print_comma_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_comma");
+        const print_sep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_sep");
         const tail_is_other = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "tail_is_other");
-        self.buildCondBranch(is_ptr, print_comma_bb, tail_is_other);
+        self.buildCondBranch(is_ptr, print_sep_bb, tail_is_other);
 
-        // print_comma: dereference, check tag (no comma yet — only print if it's a Cons)
-        core.LLVMPositionBuilderAtEnd(self.builder, print_comma_bb);
+        // print_sep: choose separator based on raw (raw=0 → space, raw=1 → comma)
+        core.LLVMPositionBuilderAtEnd(self.builder, print_sep_bb);
+        const is_raw_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, raw, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw_zero_sep");
+        const raw_sep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw_sep");
+        const sugar_sep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "sugar_sep");
+        self.buildCondBranch(is_raw_zero, raw_sep_bb, sugar_sep_bb);
+        // raw_sep: printf(" ")
+        core.LLVMPositionBuilderAtEnd(self.builder, raw_sep_bb);
+        var raw_sep_args: [2]types.LLVMValueRef = .{ fmt_space, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &raw_sep_args, 2, "");
+        const after_sep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "after_sep");
+        self.buildBranch(after_sep_bb);
+        // sugar_sep: printf(", ")
+        core.LLVMPositionBuilderAtEnd(self.builder, sugar_sep_bb);
+        var sugar_sep_args: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &sugar_sep_args, 2, "");
+        self.buildBranch(after_sep_bb);
 
+        // after_sep: dereference, check tag
+        core.LLVMPositionBuilderAtEnd(self.builder, after_sep_bb);
         const deref_ptr = core.LLVMBuildIntToPtr(self.builder, tail, self.ptrType(), "deref_ptr");
         var tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
         const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tag_idx), 1, "tag_ptr");
@@ -3235,17 +3350,15 @@ pub const StdlibCodegen = struct {
         const boxed_nil_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "boxed_nil");
         self.buildCondBranch(is_cons, cons_tail_bb, boxed_nil_bb);
 
-        // cons_tail: print comma, print head, recurse on next tail
+        // cons_tail: print head, recurse on next tail
         core.LLVMPositionBuilderAtEnd(self.builder, cons_tail_bb);
-        var comma_args: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &comma_args, 2, "");
         var head_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
         const head_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&head_idx), 1, "head_ptr");
         const head_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), head_ptr, "head_val");
         var tail_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 16, 0)};
         const next_tail_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr, @ptrCast(&tail_idx), 1, "next_tail_ptr");
         const next_tail = core.LLVMBuildLoad2(self.builder, self.i64Type(), next_tail_ptr, "next_tail");
-        // inspect(head, 100, null, raw, 0)
+        // inspect(head, elem_tag, null, raw, 0)
         const inspect_fn = core.LLVMGetNamedFunction(self.module, "inspect");
         var head_args: [6]types.LLVMValueRef = .{ head_val, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &head_args, 6, "");
@@ -3255,14 +3368,30 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ilt_fn), ilt_fn, &recurse_args, 3, "");
         self.buildRetVoid();
 
-        // boxed_nil: it's a boxed Nil — stop (don't print comma before it)
+        // boxed_nil: it's a boxed Nil — stop (don't print separator before it)
         core.LLVMPositionBuilderAtEnd(self.builder, boxed_nil_bb);
         self.buildRetVoid();
 
-        // tail_is_other: tail is a small non-Nil value — just print comma + inspect
+        // tail_is_other: tail is a small non-Nil value — just print separator + inspect
         core.LLVMPositionBuilderAtEnd(self.builder, tail_is_other);
-        var other_comma: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
-        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &other_comma, 2, "");
+        // Choose separator based on raw
+        const is_raw_zero_other = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, raw, core.LLVMConstInt(self.i64Type(), 0, 0), "is_raw_zero_other");
+        const raw_sep_other = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw_sep_other");
+        const sugar_sep_other = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "sugar_sep_other");
+        self.buildCondBranch(is_raw_zero_other, raw_sep_other, sugar_sep_other);
+        // raw_sep_other: printf(" ")
+        core.LLVMPositionBuilderAtEnd(self.builder, raw_sep_other);
+        var raw_other_args: [2]types.LLVMValueRef = .{ fmt_space, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &raw_other_args, 2, "");
+        const after_other_sep = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "after_other_sep");
+        self.buildBranch(after_other_sep);
+        // sugar_sep_other: printf(", ")
+        core.LLVMPositionBuilderAtEnd(self.builder, sugar_sep_other);
+        var sugar_other_args: [2]types.LLVMValueRef = .{ fmt_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &sugar_other_args, 2, "");
+        self.buildBranch(after_other_sep);
+        // after_other_sep: inspect + return
+        core.LLVMPositionBuilderAtEnd(self.builder, after_other_sep);
         const inspect_fn2 = core.LLVMGetNamedFunction(self.module, "inspect");
         var other_args: [6]types.LLVMValueRef = .{ tail, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn2), inspect_fn2, &other_args, 6, "");

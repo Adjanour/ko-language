@@ -1,0 +1,13 @@
+# Test inspect raw constructor form vs println sugar form
+type List a = Cons a (List a) | Nil
+
+fn main =
+  # println uses sugar: [1, 2, 3]
+  println (Cons 1 (Cons 2 (Cons 3 Nil)))
+  # inspect uses raw constructors: Cons 1 2 3
+  inspect (Cons 1 (Cons 2 (Cons 3 Nil)))
+  # Nil: inspect shows Nil, println shows []
+  inspect Nil
+  println Nil
+  # Nested: Cons (Cons 10 Nil) Nil
+  inspect (Cons (Cons 10 Nil) Nil)

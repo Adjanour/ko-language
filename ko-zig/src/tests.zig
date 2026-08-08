@@ -3866,6 +3866,7 @@ test "runtime: all .ko test files execute on LIR without crashing" {
         .{ .name = "55_float_binary.ko", .source = @embedFile("tests_ko/55_float_binary.ko") },
         .{ .name = "56_string_trim.ko", .source = @embedFile("tests_ko/56_string_trim.ko") },
         .{ .name = "57_inspect_newlines.ko", .source = @embedFile("tests_ko/57_inspect_newlines.ko") },
+        .{ .name = "58_inspect_raw_constructors.ko", .source = @embedFile("tests_ko/58_inspect_raw_constructors.ko") },
         .{ .name = "builtin_math.ko", .source = @embedFile("tests_ko/builtin_math.ko") },
         .{ .name = "builtin_result.ko", .source = @embedFile("tests_ko/builtin_result.ko") },
         .{ .name = "comptime_expr.ko", .source = @embedFile("tests_ko/comptime_expr.ko") },

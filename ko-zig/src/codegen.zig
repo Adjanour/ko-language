@@ -3809,12 +3809,21 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
         6 => {
             if (name_ptr) |name| {
                 const name_len = std.mem.len(name);
-                // Check for Nil → print []
+                // Nil: raw=1 (println) → [], raw=0 (inspect) → Nil
                 if (std.mem.eql(u8, name[0..name_len], "Nil")) {
-                    sout("[]", .{});
+                    if (raw != 0) {
+                        sout("[]", .{});
+                    } else {
+                        sout("Nil", .{});
+                    }
                 } else if (std.mem.eql(u8, name[0..name_len], "Cons")) {
-                    // List sugar: print [head, rest...]
-                    printConsList(val, raw, elem_tag);
+                    if (raw != 0) {
+                        // println: sugar [1, 2, 3]
+                        printConsList(val, raw, elem_tag);
+                    } else {
+                        // inspect: raw Cons 1 (Cons 2 Nil)
+                        printConsRaw(val, elem_tag);
+                    }
                 } else {
                     // Print constructor name
                     sout("{s}", .{name[0..name_len]});
@@ -3840,7 +3849,11 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                         if (hptr[0] == 0) break :blk 100; // head is Cons → nested list
                         break :blk elem_tag;
                     } else elem_tag;
-                    printConsList(val, raw, inner_tag);
+                    if (raw != 0) {
+                        printConsList(val, raw, inner_tag);
+                    } else {
+                        printConsRaw(val, inner_tag);
+                    }
                 } else {
                     sout("Constructor({d})", .{val});
                 }
@@ -3855,13 +3868,25 @@ fn builtin_inspect_tag(val: i64, type_tag: i64, name_ptr: ?[*:0]const u8, raw: i
                 // If arity > 0, dereference and print field values
                 if (arity > 0 and val > 4096) {
                     const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
-                    sout(" {{ ", .{});
-                    var i: i64 = 0;
-                    while (i < arity) : (i += 1) {
-                        if (i > 0) sout(", ", .{});
-                        _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0, 100);
+                    if (raw != 0) {
+                        // println: {x=1, y=2}
+                        sout(" {{ ", .{});
+                        var i: i64 = 0;
+                        while (i < arity) : (i += 1) {
+                            if (i > 0) sout(", ", .{});
+                            _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0, 100);
+                        }
+                        sout(" }}", .{});
+                    } else {
+                        // inspect: Point { 1, 2 }
+                        sout(" {{ ", .{});
+                        var i: i64 = 0;
+                        while (i < arity) : (i += 1) {
+                            if (i > 0) sout(", ", .{});
+                            _ = builtin_inspect_tag(ptr[@intCast(i)], 100, null, 0, 0, 100);
+                        }
+                        sout(" }}", .{});
                     }
-                    sout(" }}", .{});
                 } else {
                     sout(" {{ ... }}", .{});
                 }
@@ -3927,6 +3952,35 @@ fn printConsListTail(tail: i64, raw: i64, elem_tag: i64) void {
     sout(", ", .{});
     _ = builtin_inspect_tag(head, elem_tag, null, raw, 0, 100);
     printConsListTail(next_tail, raw, elem_tag);
+}
+
+/// Print a Cons list in raw constructor form: Cons 1 (Cons 2 Nil)
+fn printConsRaw(val: i64, elem_tag: i64) void {
+    if (val <= 4096) return;
+    const ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(val)));
+    const tag = ptr[0];
+    if (tag != 0) return;
+    const head = ptr[1];
+    const tail = ptr[2];
+    sout("Cons ", .{});
+    _ = builtin_inspect_tag(head, elem_tag, null, 0, 0, 100);
+    sout(" ", .{});
+    if (tail == 1) {
+        // Raw Nil tag
+        sout("Nil", .{});
+    } else if (tail > 4096) {
+        const tail_ptr: [*]const i64 = @ptrFromInt(@as(usize, @bitCast(tail)));
+        if (tail_ptr[0] == 0) {
+            // Another Cons cell
+            printConsRaw(tail, elem_tag);
+        } else {
+            // Boxed Nil or other
+            _ = builtin_inspect_tag(tail, 6, null, 0, 0, elem_tag);
+        }
+    } else {
+        // Raw Nil tag (small value)
+        sout("Nil", .{});
+    }
 }
 
 extern fn malloc(usize) callconv(.c) ?*anyopaque;
