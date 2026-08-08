@@ -1,0 +1,15 @@
+fn main =
+  # Trim both sides
+  println (String.trim "  hello  ")
+  # Trim leading only
+  println (String.trim "  hello")
+  # Trim trailing only
+  println (String.trim "hello  ")
+  # No whitespace
+  println (String.trim "hello")
+  # Only whitespace
+  println (String.trim "   ")
+  # Empty string
+  println (String.trim "")
+  # Preserve internal spaces
+  println (String.trim "  a  b  ")

@@ -579,7 +579,7 @@ pub const Codegen = struct {
         const inspect_fn = self.named_values.get("inspect") orelse return;
         engine.LLVMAddGlobalMapping(jit_engine, println_fn, @ptrCast(@constCast(&builtin_println_tag)));
         engine.LLVMAddGlobalMapping(jit_engine, print_fn, @ptrCast(@constCast(&builtin_print_tag)));
-        engine.LLVMAddGlobalMapping(jit_engine, inspect_fn, @ptrCast(@constCast(&builtin_inspect_tag)));
+        engine.LLVMAddGlobalMapping(jit_engine, inspect_fn, @ptrCast(@constCast(&builtin_println_tag)));
 
         // Map malloc/free to system implementations
         if (self.named_values.get("malloc")) |malloc_fn| {
@@ -1524,8 +1524,10 @@ pub const Codegen = struct {
                         const arity_const2 = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(arity_val2), 0);
                         const elem_const2 = core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @bitCast(self.elemTagOf(arg_expr)), 0);
                         var args: [6]types.LLVMValueRef = .{ arg_val, tag_val, name_ptr_val, raw_zero, arity_const2, elem_const2 };
-                        const fn_type = core.LLVMGlobalGetValueType(fn_val);
-                        return core.LLVMBuildCall2(self.builder, fn_type, fn_val, &args, 6, "inspect_call");
+                        // inspect calls println_with_tag (adds newline) with raw=0 (strings get quotes)
+                        const inspect_fn = core.LLVMGetNamedFunction(self.module, "println_with_tag") orelse fn_val;
+                        const fn_type = core.LLVMGlobalGetValueType(inspect_fn);
+                        return core.LLVMBuildCall2(self.builder, fn_type, inspect_fn, &args, 6, "inspect_call");
                     }
                 }
             }

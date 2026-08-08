@@ -1331,6 +1331,7 @@ pub const StdlibCodegen = struct {
         self.buildBranch(find_end_check);
 
         // find_end_check: phi, check if data[end] is space
+        // We scan backwards past trailing spaces, then stop at the first non-space.
         core.LLVMPositionBuilderAtEnd(self.builder, find_end_check);
         const end = core.LLVMBuildPhi(self.builder, self.i64Type(), "end");
         var end_phi_vals_entry: [1]types.LLVMValueRef = .{end_init};
@@ -1346,8 +1347,9 @@ pub const StdlibCodegen = struct {
         const end_space = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(isspace_fn), isspace_fn, &end_isspace_args, 1, "end_space");
         const end_is_space = core.LLVMBuildICmp(self.builder, .LLVMIntNE, end_space, core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 0, 0), "end_is_space");
 
+        // Stop when we find a non-space character OR go past start
         const end_lt_start = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, end, start, "end_lt_start");
-        const should_stop = core.LLVMBuildOr(self.builder, end_is_space, end_lt_start, "should_stop");
+        const should_stop = core.LLVMBuildOr(self.builder, end_lt_start, core.LLVMBuildNot(self.builder, end_is_space, "end_is_not_space"), "should_stop");
         self.buildCondBranch(should_stop, copy, find_end_decrement);
 
         // find_end_decrement: end--, branch back to find_end_check

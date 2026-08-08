@@ -1,0 +1,6 @@
+fn main =
+  inspect 1
+  inspect "hello"
+  inspect True
+  inspect (1, 2, 3)
+  println "---done---"

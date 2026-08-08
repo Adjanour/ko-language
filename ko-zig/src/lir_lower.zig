@@ -1057,14 +1057,14 @@ pub const LirLower = struct {
             else => 0,
         };
         const arity_local = try self.emit(.{ .int = arity_val }, .{ .int = {} });
-        const runtime: []const u8 = if (std.mem.eql(u8, name, "println"))
+        const runtime: []const u8 = if (std.mem.eql(u8, name, "println") or std.mem.eql(u8, name, "inspect"))
             "println_with_tag"
         else if (std.mem.eql(u8, name, "print"))
             "print_with_tag"
         else
             "inspect";
         // raw=1 for println/print so strings print unquoted; inspect keeps quotes.
-        const is_inspect = std.mem.eql(u8, runtime, "inspect");
+        const is_inspect = std.mem.eql(u8, name, "inspect");
         const raw_local = if (is_inspect) zero2 else try self.emit(.{ .int = 1 }, .{ .int = {} });
         // Element type tag, so list sugar can render non-Int elements.
         const elem_val: i64 = blk: {
