@@ -1,128 +1,80 @@
 const std = @import("std");
 const posix = std.posix;
 const linux = std.os.linux;
-const Io = std.Io;
+const ln = @import("linenoise");
 const llvm = @import("llvm");
 const llvm_engine = llvm.engine;
+const types = llvm.types;
+const engine = llvm.engine;
+const core = llvm.core;
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 const codegen_mod = @import("codegen.zig");
+const codegen_lir = @import("codegen_lir.zig");
+const monomorphize_mod = @import("monomorphize.zig");
+const hir_lower = @import("hir_lower.zig");
+const hir_beta = @import("hir_beta.zig");
+const hir_let_simpl = @import("hir_let_simpl.zig");
+const hir_known_match = @import("hir_known_match.zig");
+const hir_fold = @import("hir_fold.zig");
+const hir_dce = @import("hir_dce.zig");
+const lir_lower = @import("lir_lower.zig");
+const stdlib = @import("stdlib.zig");
 
 extern "c" fn fflush(?*anyopaque) c_int;
+extern "c" fn setjmp([*]c_int) c_int;
+extern "c" fn longjmp([*]c_int, c_int) noreturn;
 
 fn flushStdout() void {
     _ = fflush(null);
 }
 
-const termios = extern struct {
-    iflag: u32,
-    oflag: u32,
-    cflag: u32,
-    lflag: u32,
-    line: u8,
-    cc: [32]u8,
-    ispeed: u32,
-    ospeed: u32,
-};
+var g_repl_jmp_buf: [256]c_int = undefined;
+var g_repl_allocator: std.mem.Allocator = undefined;
+var g_repl_accumulated: *std.ArrayList(u8) = undefined;
 
-extern "c" fn tcgetattr(fd: c_int, t: *termios) c_int;
-extern "c" fn tcsetattr(fd: c_int, action: c_int, t: *const termios) c_int;
-
-const TCGETATTR = 0x5401;
-const TCSETATTR = 0x5403;
-const TCSANOW = 0;
-
-const ICANON: u32 = 0o000002;
-const ECHO: u32 = 0o000010;
-
-fn enableRawMode(fd: posix.fd_t) void {
-    var old: termios = undefined;
-    _ = tcgetattr(@intCast(fd), &old);
-    var raw = old;
-    raw.lflag &= ~ICANON;
-    raw.lflag &= ~ECHO;
-    _ = tcsetattr(@intCast(fd), TCSANOW, &raw);
-}
-
-fn disableRawMode(fd: posix.fd_t) void {
-    var old: termios = undefined;
-    _ = tcgetattr(@intCast(fd), &old);
-    var raw = old;
-    raw.lflag |= ICANON;
-    raw.lflag |= ECHO;
-    _ = tcsetattr(@intCast(fd), TCSANOW, &raw);
-}
-
-fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
-    return posix.read(fd, buf) catch |err| switch (err) {
-        error.InputOutput => return error.ReadFailed,
-        error.SystemResources => return error.ReadFailed,
-        else => return error.ReadFailed,
+fn sigHandler(sig: std.posix.SIG) callconv(.c) void {
+    const msg = switch (sig) {
+        .INT => "\nInterrupted.\n",
+        .ABRT => "\nRuntime panic (abort).\n",
+        .SEGV => "\nRuntime panic (segmentation fault).\n",
+        else => "\nSignal received.\n",
     };
+    _ = linux.write(2, msg.ptr, msg.len);
+    flushStdout();
+    longjmp(&g_repl_jmp_buf, 1);
+}
+
+fn installSignalHandlers() void {
+    const sa = std.posix.Sigaction{
+        .handler = .{ .handler = sigHandler },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(.INT, &sa, null);
+    std.posix.sigaction(.ABRT, &sa, null);
+    std.posix.sigaction(.SEGV, &sa, null);
 }
 
 fn writeAll(fd: posix.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
-        const rc = if (comptime @import("builtin").os.tag == .linux)
-            linux.write(fd, data[pos..].ptr, data.len - pos)
-        else
-            std.c.write(fd, data[pos..].ptr, data.len - pos);
+        const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
         if (rc < 0) {
-            if (comptime @import("builtin").os.tag == .linux) {
-                const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
-                switch (e) {
-                    .INTR => continue,
-                    else => return error.WriteFailed,
-                }
-            } else {
-                const e = std.c.getErrno(-% @as(isize, @intCast(rc)));
-                switch (e) {
-                    .INTR => continue,
-                    else => return error.WriteFailed,
-                }
+            const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
+            switch (e) {
+                .INTR => continue,
+                else => return error.WriteFailed,
             }
         }
         pos += @intCast(rc);
     }
 }
 
-fn printStr(fd: posix.fd_t, comptime fmt: []const u8, args: anytype) !void {
+fn printTo(fd: posix.fd_t, comptime fmt: []const u8, args: anytype) !void {
     const msg = try std.fmt.allocPrint(std.heap.page_allocator, fmt, args);
     defer std.heap.page_allocator.free(msg);
     try writeAll(fd, msg);
-}
-
-fn readLine(fd: posix.fd_t, line_buf: []u8) ![]const u8 {
-    var line_len: usize = 0;
-    while (line_len < line_buf.len) {
-        const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
-            if (err == error.EndOfStream) {
-                if (line_len > 0) return line_buf[0..line_len];
-                return error.ConnectionClosed;
-            }
-            return err;
-        };
-        if (n == 0) {
-            if (line_len > 0) return line_buf[0..line_len];
-            return error.ConnectionClosed;
-        }
-        if (line_buf[line_len] == '\n') {
-            line_len += 1;
-            break;
-        }
-        line_len += 1;
-    }
-    // Strip trailing \r\n
-    while (line_len > 0) {
-        const last_ch = line_buf[line_len - 1];
-        if (last_ch == '\n' or last_ch == '\r') {
-            line_len -= 1;
-        } else {
-            break;
-        }
-    }
-    return line_buf[0..line_len];
 }
 
 const ko_keywords = [_][]const u8{
@@ -145,688 +97,364 @@ const ko_builtins = [_][]const u8{
     "foldl", "foldr", "zip", "concat", "sum", "product",
 };
 
+fn koCompletionCallback(buf: [*:0]const u8, completions: *ln.Completions) callconv(.c) void {
+    const prefix = std.mem.sliceTo(buf, 0);
+    if (prefix.len == 0) return;
+    for (ko_keywords) |kw| {
+        if (std.mem.startsWith(u8, kw, prefix)) {
+            ln.addCompletion(completions, @ptrCast(kw.ptr));
+        }
+    }
+    for (ko_builtins) |b| {
+        if (std.mem.startsWith(u8, b, prefix)) {
+            ln.addCompletion(completions, @ptrCast(b.ptr));
+        }
+    }
+}
+
 pub const Repl = struct {
     allocator: std.mem.Allocator,
     accumulated_source: std.ArrayList(u8),
     eval_counter: usize,
-    history: std.ArrayList([]const u8),
-    history_index: ?usize = null,
-    history_file_path: []const u8,
 
     pub fn init(allocator: std.mem.Allocator) Repl {
-        const history_path = std.fmt.allocPrint(allocator, "/tmp/.ko_history_{d}", .{@as(u32, @intCast(std.c.getuid()))}) catch "/tmp/.ko_history";
-        var r = Repl{
+        return .{
             .allocator = allocator,
             .accumulated_source = std.ArrayList(u8).empty,
             .eval_counter = 0,
-            .history = std.ArrayList([]const u8).empty,
-            .history_file_path = history_path,
         };
-        r.loadHistory() catch {};
-        return r;
     }
 
     pub fn deinit(self: *Repl) void {
-        self.saveHistory() catch {};
         self.accumulated_source.deinit(self.allocator);
-        for (self.history.items) |h| self.allocator.free(h);
-        self.history.deinit(self.allocator);
-        self.allocator.free(self.history_file_path);
-    }
-
-    fn loadHistory(self: *Repl) !void {
-        // Use Io for file operations
-        var threaded: Io.Threaded = .init(self.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        const cwd = Io.Dir.cwd();
-        const file = cwd.openFile(io, self.history_file_path, .{}) catch return;
-        defer file.close(io);
-
-        var file_buffer: [4096]u8 = undefined;
-        var reader = file.reader(io, &file_buffer);
-        const content = try reader.interface.allocRemainingAlignedSentinel(
-            self.allocator,
-            .unlimited,
-            @enumFromInt(0),
-            0,
-        );
-        defer self.allocator.free(content);
-
-        var lines = std.mem.splitScalar(u8, content, '\n');
-        while (lines.next()) |line| {
-            if (line.len > 0) {
-                const owned = try self.allocator.dupe(u8, line);
-                try self.history.append(self.allocator, owned);
-            }
-        }
-    }
-
-    fn saveHistory(self: *Repl) !void {
-        var threaded: Io.Threaded = .init(self.allocator, .{});
-        defer threaded.deinit();
-        const io = threaded.io();
-        const cwd = Io.Dir.cwd();
-        const file = try cwd.createFile(io, self.history_file_path, .{});
-        defer file.close(io);
-
-        var file_buffer: [4096]u8 = undefined;
-        var writer = file.writer(io, &file_buffer);
-        for (self.history.items) |h| {
-            try writer.interface.print("{s}\n", .{h});
-        }
-        try writer.interface.flush();
-    }
-
-    fn addToHistory(self: *Repl, line: []const u8) !void {
-        // Don't add duplicate of last entry
-        if (self.history.items.len > 0) {
-            const last = self.history.items[self.history.items.len - 1];
-            if (std.mem.eql(u8, last, line)) return;
-        }
-        const owned = try self.allocator.dupe(u8, line);
-        try self.history.append(self.allocator, owned);
-        // Reset history navigation index
-        self.history_index = null;
     }
 
     pub fn run(self: *Repl) !void {
+        g_repl_allocator = self.allocator;
+        g_repl_accumulated = &self.accumulated_source;
+
+        installSignalHandlers();
+
+        ln.setMultiLine(1);
+        ln.setCompletionCallback(koCompletionCallback);
+        _ = ln.historySetMaxLen(1000);
+
+        const home_ptr = std.c.getenv("HOME");
+        const home = if (home_ptr) |ptr| std.mem.sliceTo(ptr, 0) else "/tmp";
+        const history_path = try std.fmt.allocPrintSentinel(self.allocator, "{s}/.ko_history", .{home}, 0);
+        defer self.allocator.free(history_path);
+        _ = ln.historyLoad(history_path.ptr);
+
         const stdout_fd: posix.fd_t = posix.STDOUT_FILENO;
-        const stdin_fd: posix.fd_t = posix.STDIN_FILENO;
-
-        // Enable raw mode for escape sequence handling
-        enableRawMode(stdin_fd);
-        defer disableRawMode(stdin_fd);
-
-        try printStr(stdout_fd, "Kō REPL v0.3.0\n", .{});
-        try printStr(stdout_fd, "Type expressions to evaluate, definitions to bind.\n", .{});
-        try printStr(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :history, :help\n\n", .{});
-
-        var line_buf: [4096]u8 = undefined;
-        var multi_line_buf: [65536]u8 = undefined;
-        var multi_line_len: usize = 0;
-        var bracket_depth: i32 = 0;
+        try writeAll(stdout_fd, "Ko REPL v0.3.2 (LIR pipeline + Linenoise)\n");
+        try writeAll(stdout_fd, "Type expressions to evaluate, definitions to bind.\n");
+        try writeAll(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :help\n");
+        try writeAll(stdout_fd, "Line editing: Ctrl-A/E, Ctrl-K/U/W, Tab, Up/Down\n\n");
 
         while (true) {
-            const prompt = if (bracket_depth > 0) "... " else "ko> ";
-            try writeAll(stdout_fd, prompt);
+            const jmp_ret = setjmp(&g_repl_jmp_buf);
+            if (jmp_ret != 0) {
+                try writeAll(stdout_fd, "\n");
+            }
 
-            const line = self.readLineWithCompletion(stdin_fd, &line_buf, stdout_fd) catch |err| {
-                if (err == error.ConnectionClosed) {
-                    try printStr(stdout_fd, "\nBye!\n", .{});
-                    break;
-                }
-                try printStr(stdout_fd, "Error: {}\n", .{err});
-                continue;
+            const line_ptr = ln.linenoise("ko> ") orelse {
+                try writeAll(stdout_fd, "\nBye!\n");
+                break;
             };
+            defer ln.linenoiseFree(line_ptr);
 
-            // Track bracket depth for multi-line input
-            for (line) |ch| {
-                if (ch == '(' or ch == '{' or ch == '[') {
-                    bracket_depth += 1;
-                } else if (ch == ')' or ch == '}' or ch == ']') {
-                    bracket_depth -= 1;
-                }
-            }
+            const line = std.mem.sliceTo(line_ptr, 0);
+            if (line.len == 0) continue;
 
-            // Also check if line ends with = (incomplete definition)
-            const trimmed_line = std.mem.trimEnd(u8, line, " \t");
-            const ends_with_equals = trimmed_line.len > 0 and trimmed_line[trimmed_line.len - 1] == '=';
-
-            // Accumulate multi-line input
-            if (multi_line_len > 0) {
-                // Add newline between lines
-                if (multi_line_len < multi_line_buf.len) {
-                    multi_line_buf[multi_line_len] = '\n';
-                    multi_line_len += 1;
-                }
-            }
-            const line_to_add = if (multi_line_len + line.len <= multi_line_buf.len)
-                line
-            else
-                line[0 .. multi_line_buf.len - multi_line_len];
-            for (line_to_add, 0..) |ch, i| {
-                multi_line_buf[multi_line_len + i] = ch;
-            }
-            multi_line_len += line_to_add.len;
-
-            // Continue reading if brackets are unclosed or line ends with =
-            if (bracket_depth > 0 or ends_with_equals) {
-                continue;
-            }
-
-            // Get the complete input
-            const input = multi_line_buf[0..multi_line_len];
-
-            // Reset multi-line buffer
-            multi_line_len = 0;
-            bracket_depth = 0;
-
-            if (input.len == 0) continue;
-
-            if (std.mem.startsWith(u8, input, ":")) {
-                self.handleCommand(input, stdout_fd) catch |err| {
-                    try printStr(stdout_fd, "Error: {}\n", .{err});
+            if (std.mem.startsWith(u8, line, ":")) {
+                self.handleCommand(line, stdout_fd) catch |err| {
+                    try printTo(stdout_fd, "Error: {}\n", .{err});
                 };
                 continue;
             }
 
+            const input = try self.readMultiLine(line);
+            defer self.allocator.free(input);
+
+            if (input.len == 0) continue;
+
+            _ = ln.historyAdd(line_ptr);
+            _ = ln.historySave(history_path.ptr);
+
             self.addToHistory(input) catch {};
+
             self.evalInput(input, stdout_fd) catch |err| {
-                try printStr(stdout_fd, "Error: {}\n", .{err});
+                try printTo(stdout_fd, "Error: {}\n", .{err});
             };
         }
     }
 
-    fn readLineWithCompletion(self: *Repl, fd: posix.fd_t, line_buf: []u8, stdout_fd: posix.fd_t) ![]const u8 {
-        var line_len: usize = 0;
-        while (line_len < line_buf.len) {
-            const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
-                if (err == error.EndOfStream) {
-                    if (line_len > 0) return line_buf[0..line_len];
-                    return error.ConnectionClosed;
-                }
-                return err;
-            };
-            if (n == 0) {
-                if (line_len > 0) return line_buf[0..line_len];
-                return error.ConnectionClosed;
-            }
-            const ch = line_buf[line_len];
+    fn readMultiLine(self: *Repl, first_line: []const u8) ![]const u8 {
+        var buf = std.ArrayList(u8).empty;
+        errdefer buf.deinit(self.allocator);
+        try buf.appendSlice(self.allocator, first_line);
 
-            // Handle backspace
-            if (ch == 0x7f or ch == '\x08') {
-                if (line_len > 0) {
-                    line_len -= 1;
-                    // Erase character on terminal
-                    try writeAll(stdout_fd, "\x08 \x08");
-                }
-                continue;
+        var bracket_depth: i32 = 0;
+        var needs_body = false;
+
+        while (true) {
+            // Count brackets in current buffer
+            bracket_depth = 0;
+            for (buf.items) |ch| {
+                if (ch == '(' or ch == '{' or ch == '[') bracket_depth += 1;
+                if (ch == ')' or ch == '}' or ch == ']') bracket_depth -= 1;
             }
 
-            // Handle tab completion
-            if (ch == '\t') {
-                // Find the current word being typed
-                var word_start = line_len;
-                while (word_start > 0) {
-                    const prev = line_buf[word_start - 1];
-                    if (prev == ' ' or prev == '\t' or prev == '(' or prev == ')' or prev == ',' or prev == '\n') break;
-                    word_start -= 1;
-                }
-                const prefix = line_buf[word_start..line_len];
-
-                if (prefix.len > 0) {
-                    // Find completions and pick the longest common prefix
-                    var first_match: ?[]const u8 = null;
-                    var match_count: usize = 0;
-                    var all_same = true;
-
-                    // Check keywords
-                    for (ko_keywords) |kw| {
-                        if (std.mem.startsWith(u8, kw, prefix)) {
-                            if (first_match == null) {
-                                first_match = kw;
-                            } else if (all_same and !std.mem.eql(u8, first_match.?, kw)) {
-                                all_same = false;
-                            }
-                            match_count += 1;
-                        }
-                    }
-
-                    // Check builtins
-                    for (ko_builtins) |b| {
-                        if (std.mem.startsWith(u8, b, prefix)) {
-                            if (first_match == null) {
-                                first_match = b;
-                            } else if (all_same and !std.mem.eql(u8, first_match.?, b)) {
-                                all_same = false;
-                            }
-                            match_count += 1;
-                        }
-                    }
-
-                    // Check user-defined names from accumulated source
-                    var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
-                    while (lines.next()) |line| {
-                        var name: ?[]const u8 = null;
-                        // Look for "fn name" patterns
-                        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "fn ")) {
-                            const trimmed = std.mem.trimStart(u8, line, " \t");
-                            const after_fn = trimmed[3..];
-                            var name_end: usize = 0;
-                            while (name_end < after_fn.len and after_fn[name_end] != ' ' and after_fn[name_end] != '=') : (name_end += 1) {}
-                            if (name_end > 0) name = after_fn[0..name_end];
-                        }
-                        // Look for "let name" patterns
-                        if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "let ")) {
-                            const trimmed = std.mem.trimStart(u8, line, " \t");
-                            const after_let = trimmed[4..];
-                            var name_end: usize = 0;
-                            while (name_end < after_let.len and after_let[name_end] != ' ' and after_let[name_end] != '=' and after_let[name_end] != ':' and after_let[name_end] != '\t') : (name_end += 1) {}
-                            if (name_end > 0) name = after_let[0..name_end];
-                        }
-                        if (name) |nm| {
-                            if (std.mem.startsWith(u8, nm, prefix) and nm.len > 0) {
-                                // Check for duplicates
-                                var is_dup = false;
-                                if (first_match) |fm| {
-                                    if (std.mem.eql(u8, fm, nm)) is_dup = true;
-                                }
-                                if (!is_dup) {
-                                    if (first_match == null) {
-                                        first_match = nm;
-                                    } else if (all_same and !std.mem.eql(u8, first_match.?, nm)) {
-                                        all_same = false;
-                                    }
-                                    match_count += 1;
-                                }
-                            }
-                        }
-                    }
-
-                    if (match_count == 1 and first_match != null) {
-                        // Single match - complete it
-                        const completion = first_match.?;
-                        const suffix = completion[prefix.len..];
-                        if (line_len + suffix.len <= line_buf.len) {
-                            // Move existing content after cursor
-                            var i: usize = line_len;
-                            while (i > word_start) : (i -= 1) {
-                                line_buf[i + suffix.len - 1] = line_buf[i - 1];
-                            }
-                            // Insert completion
-                            for (suffix, 0..) |s, idx| {
-                                line_buf[word_start + idx] = s;
-                            }
-                            line_len += suffix.len;
-                            // Clear and redraw line
-                            try printStr(stdout_fd, "\r\x1b[K", .{});
-                            try printStr(stdout_fd, "ko> ", .{});
-                            try writeAll(stdout_fd, line_buf[0..line_len]);
-                        }
-                    } else if (match_count > 1) {
-                        // Multiple matches - show them and re-prompt
-                        try printStr(stdout_fd, "\n", .{});
-                        // Print all matches (keywords + builtins + user defs)
-                        var printed: usize = 0;
-                        for (ko_keywords) |kw| {
-                            if (std.mem.startsWith(u8, kw, prefix)) {
-                                if (printed > 0) try printStr(stdout_fd, "  ", .{});
-                                try printStr(stdout_fd, "{s}", .{kw});
-                                printed += 1;
-                            }
-                        }
-                        for (ko_builtins) |b| {
-                            if (std.mem.startsWith(u8, b, prefix)) {
-                                if (printed > 0) try printStr(stdout_fd, "  ", .{});
-                                try printStr(stdout_fd, "{s}", .{b});
-                                printed += 1;
-                            }
-                        }
-                        var lines2 = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
-                        while (lines2.next()) |line| {
-                            var name: ?[]const u8 = null;
-                            if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "fn ")) {
-                                const trimmed = std.mem.trimStart(u8, line, " \t");
-                                const after_fn = trimmed[3..];
-                                var name_end: usize = 0;
-                                while (name_end < after_fn.len and after_fn[name_end] != ' ' and after_fn[name_end] != '=') : (name_end += 1) {}
-                                if (name_end > 0) name = after_fn[0..name_end];
-                            }
-                            if (std.mem.startsWith(u8, std.mem.trimStart(u8, line, " \t"), "let ")) {
-                                const trimmed = std.mem.trimStart(u8, line, " \t");
-                                const after_let = trimmed[4..];
-                                var name_end: usize = 0;
-                                while (name_end < after_let.len and after_let[name_end] != ' ' and after_let[name_end] != '=' and after_let[name_end] != ':' and after_let[name_end] != '\t') : (name_end += 1) {}
-                                if (name_end > 0) name = after_let[0..name_end];
-                            }
-                            if (name) |nm| {
-                                if (std.mem.startsWith(u8, nm, prefix) and nm.len > 0) {
-                                    // Skip duplicates
-                                    var is_dup = false;
-                                    for (ko_keywords) |kw| {
-                                        if (std.mem.eql(u8, kw, nm)) is_dup = true;
-                                    }
-                                    for (ko_builtins) |b| {
-                                        if (std.mem.eql(u8, b, nm)) is_dup = true;
-                                    }
-                                    if (!is_dup) {
-                                        if (printed > 0) try printStr(stdout_fd, "  ", .{});
-                                        try printStr(stdout_fd, "{s}", .{nm});
-                                        printed += 1;
-                                    }
-                                }
-                            }
-                        }
-                        try printStr(stdout_fd, "\nko> ", .{});
-                        try writeAll(stdout_fd, line_buf[0..line_len]);
+            // Check if line needs a body (ends with = or then without else)
+            const trimmed = std.mem.trimEnd(u8, buf.items, " \t");
+            needs_body = false;
+            if (trimmed.len > 0) {
+                const last_ch = trimmed[trimmed.len - 1];
+                if (last_ch == '=') {
+                    needs_body = true;
+                } else if (std.mem.endsWith(u8, trimmed, "then")) {
+                    // Check if there's an else after then
+                    const then_pos = std.mem.lastIndexOf(u8, trimmed, "then") orelse 0;
+                    const after_then = trimmed[then_pos + 4 ..];
+                    if (std.mem.indexOf(u8, after_then, "else") == null) {
+                        needs_body = true;
                     }
                 }
-                continue;
             }
 
-            // Handle escape sequences (arrow keys, etc.)
-            if (ch == '\x1b') {
-                // Read next char (should be '[')
-                var seq_buf: [1]u8 = undefined;
-                const seq_n = rawRead(fd, &seq_buf) catch 0;
-                if (seq_n == 1 and seq_buf[0] == '[') {
-                    // Read the key character
-                    var key_buf: [1]u8 = undefined;
-                    const key_n = rawRead(fd, &key_buf) catch 0;
-                    if (key_n == 1) {
-                        const key = key_buf[0];
-                        if (key == 'A') {
-                            // Up arrow - previous history
-                            if (self.history.items.len > 0) {
-                                const new_idx = if (self.history_index) |idx|
-                                    if (idx > 0) idx - 1 else 0
-                                else
-                                    self.history.items.len - 1;
+            // If brackets are balanced and no body needed, try parsing
+            if (bracket_depth <= 0 and !needs_body) {
+                const source_z = try self.allocator.dupeZ(u8, buf.items);
+                defer self.allocator.free(source_z);
 
-                                self.history_index = new_idx;
-                                const hist_item = self.history.items[new_idx];
-
-                                // Clear current line and replace with history
-                                line_len = 0;
-                                if (hist_item.len <= line_buf.len) {
-                                    for (hist_item, 0..) |c, i| {
-                                        line_buf[i] = c;
-                                    }
-                                    line_len = hist_item.len;
-                                }
-
-                                // Clear and redraw line
-                                try printStr(stdout_fd, "\r\x1b[K", .{});
-                                try printStr(stdout_fd, "ko> ", .{});
-                                try writeAll(stdout_fd, line_buf[0..line_len]);
-                            }
-                        } else if (key == 'B') {
-                            // Down arrow - next history
-                            if (self.history_index) |idx| {
-                                if (idx < self.history.items.len - 1) {
-                                    const new_idx = idx + 1;
-                                    self.history_index = new_idx;
-                                    const hist_item = self.history.items[new_idx];
-
-                                    line_len = 0;
-                                    if (hist_item.len <= line_buf.len) {
-                                        for (hist_item, 0..) |c, i| {
-                                            line_buf[i] = c;
-                                        }
-                                        line_len = hist_item.len;
-                                    }
-                                } else {
-                                    // At end of history, clear line
-                                    self.history_index = null;
-                                    line_len = 0;
-                                }
-
-                                // Clear and redraw line
-                                try printStr(stdout_fd, "\r\x1b[K", .{});
-                                try printStr(stdout_fd, "ko> ", .{});
-                                try writeAll(stdout_fd, line_buf[0..line_len]);
-                            }
-                        }
+                if (parser.Parser.init(self.allocator, source_z)) |p| {
+                    var parser_inst = p;
+                    defer parser_inst.deinit();
+                    if (parser_inst.parse_program()) |_| {
+                        // Parse succeeded — input is complete
+                        break;
+                    } else |_| {
+                        // Parse error — might be incomplete input
                     }
+                } else |_| {
+                    // Parser init failed — likely incomplete input
                 }
-                continue;
             }
 
-            if (ch == '\n') {
-                line_len += 1;
-                break;
-            }
-            // Echo character to terminal
-            try writeAll(stdout_fd, line_buf[line_len .. line_len + 1]);
-            line_len += 1;
+            // Need more input
+            try buf.append(self.allocator, '\n');
+            const cont_ptr = ln.linenoise("... ") orelse break;
+            defer ln.linenoiseFree(cont_ptr);
+            const cont = std.mem.sliceTo(cont_ptr, 0);
+            if (cont.len == 0) break; // Empty line terminates multi-line
+            try buf.appendSlice(self.allocator, cont);
         }
-        // Strip trailing \r\n
-        while (line_len > 0) {
-            const last_ch = line_buf[line_len - 1];
-            if (last_ch == '\n' or last_ch == '\r') {
-                line_len -= 1;
-            } else {
-                break;
-            }
-        }
-        return line_buf[0..line_len];
+        return try buf.toOwnedSlice(self.allocator);
     }
 
-    fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {
-        const is_def = isDefinition(input);
-
-        if (is_def) {
-            var source = std.ArrayList(u8).empty;
-            defer source.deinit(self.allocator);
-
-            if (self.accumulated_source.items.len > 0) {
-                try source.appendSlice(self.allocator, self.accumulated_source.items);
-                try source.append(self.allocator, '\n');
-            }
-
-            // Convert "let name = value" to "fn name = value" for codegen compatibility
-            const trimmed = std.mem.trimStart(u8, input, " \t");
-            if (std.mem.startsWith(u8, trimmed, "let ")) {
-                try source.appendSlice(self.allocator, "fn ");
-                try source.appendSlice(self.allocator, trimmed[4..]);
-            } else {
-                try source.appendSlice(self.allocator, input);
-            }
-            try source.append(self.allocator, '\n');
-
-            const source_z = try self.allocator.dupeZ(u8, source.items);
-            defer self.allocator.free(source_z);
-            var p = try parser.Parser.init(self.allocator, source_z);
-            defer p.deinit();
-            const prog = try p.parse_program();
-
-            var inferer = typecheck.Inferer.init(self.allocator);
-            defer inferer.deinit();
-            try inferer.inferProgram(&prog);
-
+    fn addToHistory(self: *Repl, input: []const u8) !void {
+        if (isDefinition(input)) {
             if (self.accumulated_source.items.len > 0) {
                 try self.accumulated_source.append(self.allocator, '\n');
             }
-
-            // Store as-is (don't convert to fn) so let bindings work in eval bodies
             try self.accumulated_source.appendSlice(self.allocator, input);
             try self.accumulated_source.append(self.allocator, '\n');
+        }
+    }
 
-            try printStr(stdout_fd, "Defined.\n", .{});
-        } else {
-            const eval_name_raw = try std.fmt.allocPrint(self.allocator, "__repl_eval_{d}", .{self.eval_counter});
-            defer self.allocator.free(eval_name_raw);
-            const eval_name = try self.allocator.dupeZ(u8, eval_name_raw);
-            defer self.allocator.free(eval_name);
-            self.eval_counter += 1;
+    fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {
+        if (isDefinition(input)) {
+            try writeAll(stdout_fd, "\nDefined.\n\n");
+            return;
+        }
 
-            var source = std.ArrayList(u8).empty;
-            defer source.deinit(self.allocator);
+        const eval_name_raw = try std.fmt.allocPrint(self.allocator, "__repl_eval_{d}", .{self.eval_counter});
+        defer self.allocator.free(eval_name_raw);
+        const eval_name = try self.allocator.dupeZ(u8, eval_name_raw);
+        defer self.allocator.free(eval_name);
+        self.eval_counter += 1;
 
-            // Separate fn defs from let bindings in accumulated source
-            // fn defs go before the eval function; let bindings go inside it
-            var fn_defs = std.ArrayList(u8).empty;
-            defer fn_defs.deinit(self.allocator);
-            var let_bindings = std.ArrayList(u8).empty;
-            defer let_bindings.deinit(self.allocator);
+        var source = std.ArrayList(u8).empty;
+        defer source.deinit(self.allocator);
 
-            if (self.accumulated_source.items.len > 0) {
-                var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
-                var in_fn_body = false;
-                while (lines.next()) |line| {
-                    const trimmed_line = std.mem.trimStart(u8, line, " \t");
-                    if (trimmed_line.len == 0) {
+        var fn_defs = std.ArrayList(u8).empty;
+        defer fn_defs.deinit(self.allocator);
+        var let_bindings = std.ArrayList(u8).empty;
+        defer let_bindings.deinit(self.allocator);
+
+        if (self.accumulated_source.items.len > 0) {
+            var lines = std.mem.splitScalar(u8, self.accumulated_source.items, '\n');
+            var in_fn_body = false;
+            while (lines.next()) |line| {
+                const trimmed_line = std.mem.trimStart(u8, line, " \t");
+                if (trimmed_line.len == 0) {
+                    in_fn_body = false;
+                    continue;
+                }
+                if (std.mem.startsWith(u8, trimmed_line, "fn ") or
+                    std.mem.startsWith(u8, trimmed_line, "type "))
+                {
+                    try fn_defs.appendSlice(self.allocator, line);
+                    try fn_defs.append(self.allocator, '\n');
+                    const trimmed_end = std.mem.trimEnd(u8, trimmed_line, " \t");
+                    in_fn_body = trimmed_end.len > 0 and trimmed_end[trimmed_end.len - 1] == '=';
+                } else if (in_fn_body) {
+                    try fn_defs.appendSlice(self.allocator, line);
+                    try fn_defs.append(self.allocator, '\n');
+                    if (line.len > 0 and line[0] != ' ' and line[0] != '\t') {
                         in_fn_body = false;
-                        continue;
                     }
-                    if (std.mem.startsWith(u8, trimmed_line, "fn ") or
-                        std.mem.startsWith(u8, trimmed_line, "type "))
-                    {
-                        try fn_defs.appendSlice(self.allocator, line);
-                        try fn_defs.append(self.allocator, '\n');
-                        // Check if fn def ends with = (body on next lines)
-                        const trimmed_end = std.mem.trimEnd(u8, trimmed_line, " \t");
-                        in_fn_body = trimmed_end.len > 0 and trimmed_end[trimmed_end.len - 1] == '=';
-                    } else if (in_fn_body) {
-                        // Continuation of multi-line fn body — keep with fn_defs
-                        try fn_defs.appendSlice(self.allocator, line);
-                        try fn_defs.append(self.allocator, '\n');
-                        // If this line doesn't look indented anymore, stop fn body
-                        if (line.len > 0 and line[0] != ' ' and line[0] != '\t') {
-                            in_fn_body = false;
-                        }
-                    } else {
-                        // let bindings and other defs go inside eval fn body
-                        try let_bindings.appendSlice(self.allocator, "  ");
-                        try let_bindings.appendSlice(self.allocator, line);
-                        try let_bindings.append(self.allocator, '\n');
-                    }
+                } else {
+                    try let_bindings.appendSlice(self.allocator, "  ");
+                    try let_bindings.appendSlice(self.allocator, line);
+                    try let_bindings.append(self.allocator, '\n');
                 }
             }
+        }
 
-            try source.appendSlice(self.allocator, fn_defs.items);
-            try source.appendSlice(self.allocator, "fn ");
-            try source.appendSlice(self.allocator, eval_name);
-            try source.appendSlice(self.allocator, " =\n");
-            try source.appendSlice(self.allocator, let_bindings.items);
-            try source.appendSlice(self.allocator, "  ");
-            try source.appendSlice(self.allocator, input);
-            try source.append(self.allocator, '\n');
+        try source.appendSlice(self.allocator, fn_defs.items);
+        try source.appendSlice(self.allocator, "fn ");
+        try source.appendSlice(self.allocator, eval_name);
+        try source.appendSlice(self.allocator, " =\n");
+        try source.appendSlice(self.allocator, let_bindings.items);
+        try source.appendSlice(self.allocator, "  ");
+        try source.appendSlice(self.allocator, input);
+        try source.append(self.allocator, '\n');
 
-            const source_z = try self.allocator.dupeZ(u8, source.items);
-            defer self.allocator.free(source_z);
-            var p = try parser.Parser.init(self.allocator, source_z);
-            defer p.deinit();
-            const prog = try p.parse_program();
+        const source_z = try self.allocator.dupeZ(u8, source.items);
+        defer self.allocator.free(source_z);
+        var p = try parser.Parser.init(self.allocator, source_z);
+        defer p.deinit();
+        const prog = try p.parse_program();
 
-            var inferer = typecheck.Inferer.init(self.allocator);
-            defer inferer.deinit();
-            try inferer.inferProgram(&prog);
+        var inferer = typecheck.Inferer.init(self.allocator);
+        defer inferer.deinit();
+        try inferer.inferProgram(&prog);
 
-            var cg = codegen_mod.Codegen.init(self.allocator, "ko_repl");
-            defer cg.deinit();
-            cg.module_owned_by_jit = true;
-            cg.quiet = true;
-            cg.expr_type_tags = &inferer.expr_type_tags;
-            cg.expr_elem_tags = &inferer.expr_elem_tags;
-            cg.param_arity = &inferer.param_arity;
-            cg.var_type_tags = &inferer.var_type_tags;
-            try cg.codegenProgram(prog);
+        var hl = hir_lower.HirLower.init(self.allocator, &inferer);
+        defer hl.deinit();
+        try hl.lowerProgram(&prog);
 
-            var jit = try codegen_mod.Jit.init(cg.module, 0);
-            defer jit.deinit();
-            cg.mapBuiltinsToNative(jit.engine);
+        var beta = hir_beta.HirBeta.init(self.allocator, &hl.expressions);
+        beta.run();
+        var let_simpl = hir_let_simpl.HirLetSimpl.init(self.allocator, &hl.expressions);
+        let_simpl.run();
+        var known = hir_known_match.HirKnownMatch.init(self.allocator, &hl.expressions);
+        known.run();
+        var fold = hir_fold.HirFold.init(self.allocator, &hl.expressions);
+        fold.run();
+        var dce = hir_dce.HirDce.init(self.allocator, &hl.expressions);
+        dce.run(hl.roots.items);
 
-            const fn_addr = llvm_engine.LLVMGetFunctionAddress(jit.engine, eval_name.ptr);
-            if (fn_addr == 0) {
-                try printStr(stdout_fd, "Error: could not find evaluation function\n", .{});
-                return;
+        var ll = lir_lower.LirLower.init(self.allocator, hl.expressions.items, hl.defs.items, &inferer);
+        defer ll.deinit();
+        const lir_fns = try ll.lowerProgram();
+
+        var lcg = codegen_lir.CodegenLir.init(self.allocator, "ko_repl");
+        defer lcg.deinit();
+        lcg.declareRuntime();
+        try lcg.codegenProgram(lir_fns);
+
+        lcg.module_owned_by_jit = true;
+        var jit = try codegen_mod.Jit.init(lcg.module, 0);
+        defer jit.deinit();
+        mapLirJitFns(lcg.module, jit.engine);
+
+        const fn_addr = llvm_engine.LLVMGetFunctionAddress(jit.engine, eval_name.ptr);
+        if (fn_addr == 0) {
+            try writeAll(stdout_fd, "Error: could not find evaluation function\n");
+            return;
+        }
+
+        const eval_fn: *const fn () callconv(.c) i64 = @ptrFromInt(fn_addr);
+
+        const trimmed_input = std.mem.trimStart(u8, input, " \t");
+        const is_side_effect = blk: {
+            if (std.mem.startsWith(u8, trimmed_input, "println")) break :blk true;
+            if (std.mem.startsWith(u8, trimmed_input, "print ")) break :blk true;
+            if (std.mem.startsWith(u8, trimmed_input, "inspect")) break :blk true;
+            if (std.mem.startsWith(u8, trimmed_input, "panic")) break :blk true;
+            if (std.mem.startsWith(u8, trimmed_input, "assert")) break :blk true;
+            for (trimmed_input, 0..) |ch, i| {
+                if (ch == ':' and i + 1 < trimmed_input.len and trimmed_input[i + 1] == '=') break :blk true;
             }
+            break :blk false;
+        };
 
-            const eval_fn: *const fn () callconv(.c) i64 = @ptrFromInt(fn_addr);
+        if (is_side_effect) {
+            try writeAll(stdout_fd, "\n");
+        }
+        const result = eval_fn();
+        flushStdout();
 
-            // Check if this is a side-effect expression (before calling the function)
-            const trimmed_input = std.mem.trimStart(u8, input, " \t");
-            const is_side_effect = blk: {
-                if (std.mem.startsWith(u8, trimmed_input, "println")) break :blk true;
-                if (std.mem.startsWith(u8, trimmed_input, "print ")) break :blk true;
-                if (std.mem.startsWith(u8, trimmed_input, "inspect")) break :blk true;
-                if (std.mem.startsWith(u8, trimmed_input, "panic")) break :blk true;
-                if (std.mem.startsWith(u8, trimmed_input, "assert")) break :blk true;
-                for (trimmed_input, 0..) |ch, i| {
-                    if (ch == ':' and i + 1 < trimmed_input.len and trimmed_input[i + 1] == '=') break :blk true;
-                }
-                break :blk false;
-            };
+        if (!is_side_effect) {
+            try printTo(stdout_fd, "\n= {d}\n\n", .{result});
+        } else if (std.mem.startsWith(u8, trimmed_input, "inspect") or
+            std.mem.startsWith(u8, trimmed_input, "print "))
+        {
+            try writeAll(stdout_fd, "\n");
+        }
+    }
 
-            // Add newline before side-effect output for cleaner display
-            if (is_side_effect) {
-                try writeAll(stdout_fd, "\n");
+    fn mapLirJitFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionEngineRef) void {
+        const result_names = [_][*:0]const u8{
+            "ko_result_is_ok", "ko_result_is_err", "ko_result_unwrap", "ko_result_unwrap_or",
+            "ko_result_map", "ko_result_fold", "ko_result_and_then",
+            "ko_panic", "ko_panic_str", "ko_assert", "ko_assert_eq",
+        };
+        const result_ptrs = [_]*const anyopaque{
+            @ptrCast(&stdlib.ko_result_is_ok),
+            @ptrCast(&stdlib.ko_result_is_err),
+            @ptrCast(&stdlib.ko_result_unwrap_panic),
+            @ptrCast(&stdlib.ko_result_unwrap_or),
+            @ptrCast(&stdlib.ko_result_map),
+            @ptrCast(&stdlib.ko_result_fold),
+            @ptrCast(&stdlib.ko_result_and_then),
+            @ptrCast(&stdlib.ko_panic),
+            @ptrCast(&stdlib.ko_panic_str),
+            @ptrCast(&stdlib.ko_assert),
+            @ptrCast(&stdlib.ko_assert_eq),
+        };
+        for (result_names, result_ptrs) |name, impl| {
+            if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {
+                engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(impl));
             }
-            const result = eval_fn();
-
-            // Flush C stdout buffer (println/print use C printf)
-            flushStdout();
-
-            if (!is_side_effect) {
-                try printStr(stdout_fd, "\n= {d}\n\n", .{result});
-            } else if (std.mem.startsWith(u8, trimmed_input, "inspect")) {
-                // inspect doesn't add \n — add one for clean display
-                try printStr(stdout_fd, "\n", .{});
-            } else if (std.mem.startsWith(u8, trimmed_input, "print ")) {
-                // print (not println) doesn't end with \n — add one
-                try printStr(stdout_fd, "\n", .{});
-            }
-            // println already adds its own \n, no extra needed
         }
     }
 
     fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: posix.fd_t) !void {
         if (std.mem.eql(u8, cmd, ":quit") or std.mem.eql(u8, cmd, ":q") or std.mem.eql(u8, cmd, ":exit")) {
-            try printStr(stdout_fd, "Bye!\n", .{});
+            try writeAll(stdout_fd, "Bye!\n");
             std.process.exit(0);
         } else if (std.mem.eql(u8, cmd, ":help") or std.mem.eql(u8, cmd, ":h")) {
-            try printStr(stdout_fd, "Commands:\n", .{});
-            try printStr(stdout_fd, "  :quit, :q, :exit  Exit the REPL\n", .{});
-            try printStr(stdout_fd, "  :type <expr>      Show the type of an expression\n", .{});
-            try printStr(stdout_fd, "  :env              Show accumulated definitions\n", .{});
-            try printStr(stdout_fd, "  :reset            Clear accumulated source\n", .{});
-            try printStr(stdout_fd, "  :history          Show input history\n", .{});
-            try printStr(stdout_fd, "  :load <file>      Load a .ko file into the session\n", .{});
-            try printStr(stdout_fd, "  :help, :h         Show this help\n", .{});
-            try printStr(stdout_fd, "\nMulti-line input:\n", .{});
-            try printStr(stdout_fd, "  Unclosed brackets/parens continue to next line (shown as '... ')\n", .{});
+            try writeAll(stdout_fd, "Commands:\n");
+            try writeAll(stdout_fd, "  :quit, :q, :exit  Exit the REPL\n");
+            try writeAll(stdout_fd, "  :type <expr>      Show the type of an expression\n");
+            try writeAll(stdout_fd, "  :env              Show accumulated definitions\n");
+            try writeAll(stdout_fd, "  :reset            Clear accumulated source\n");
+            try writeAll(stdout_fd, "  :help, :h         Show this help\n");
+            try writeAll(stdout_fd, "\nLine editing (Linenoise):\n");
+            try writeAll(stdout_fd, "  Ctrl-A/E          Move to start/end of line\n");
+            try writeAll(stdout_fd, "  Ctrl-K            Kill from cursor to end of line\n");
+            try writeAll(stdout_fd, "  Ctrl-U            Kill from cursor to start of line\n");
+            try writeAll(stdout_fd, "  Ctrl-W            Delete word before cursor\n");
+            try writeAll(stdout_fd, "  Ctrl-Y            Yank (paste) last killed text\n");
+            try writeAll(stdout_fd, "  Tab               Autocomplete keywords and builtins\n");
+            try writeAll(stdout_fd, "  Up/Down           Navigate command history\n");
         } else if (std.mem.eql(u8, cmd, ":env")) {
             if (self.accumulated_source.items.len == 0) {
-                try printStr(stdout_fd, "(empty)\n", .{});
+                try writeAll(stdout_fd, "(empty)\n");
             } else {
-                try printStr(stdout_fd, "{s}\n", .{self.accumulated_source.items});
+                try printTo(stdout_fd, "{s}\n", .{self.accumulated_source.items});
             }
         } else if (std.mem.eql(u8, cmd, ":reset")) {
             self.accumulated_source.clearRetainingCapacity();
             self.eval_counter = 0;
-            try printStr(stdout_fd, "Reset.\n", .{});
-        } else if (std.mem.eql(u8, cmd, ":history")) {
-            if (self.history.items.len == 0) {
-                try printStr(stdout_fd, "(no history)\n", .{});
-            } else {
-                for (self.history.items, 0..) |h, i| {
-                    try printStr(stdout_fd, "  {d}: {s}\n", .{ i + 1, h });
-                }
-            }
-        } else if (std.mem.startsWith(u8, cmd, ":load ")) {
-            const filename = cmd[6..];
-            if (filename.len == 0) {
-                try printStr(stdout_fd, "Usage: :load <file.ko>\n", .{});
-                return;
-            }
-            // Read file using raw Linux syscalls
-            const fd: i32 = @intCast(linux.open(@ptrCast(filename.ptr), .{}, 0));
-            if (fd < 0) {
-                try printStr(stdout_fd, "Error opening file\n", .{});
-                return;
-            }
-            defer _ = linux.close(fd);
-            var file_buf: [65536]u8 = undefined;
-            const buf_ptr: [*]u8 = @ptrCast(&file_buf);
-            const n: i32 = @intCast(linux.read(fd, buf_ptr, file_buf.len));
-            if (n < 0) {
-                try printStr(stdout_fd, "Error reading file\n", .{});
-                return;
-            }
-            const content = file_buf[0..@intCast(n)];
-
-            // Add to accumulated source
-            if (self.accumulated_source.items.len > 0) {
-                try self.accumulated_source.append(self.allocator, '\n');
-            }
-            try self.accumulated_source.appendSlice(self.allocator, content);
-            try printStr(stdout_fd, "Loaded {s} ({d} bytes)\n", .{ filename, n });
+            try writeAll(stdout_fd, "Reset.\n");
         } else if (std.mem.startsWith(u8, cmd, ":type ")) {
             const expr = cmd[6..];
             if (expr.len == 0) {
-                try printStr(stdout_fd, "Usage: :type <expression>\n", .{});
+                try writeAll(stdout_fd, "Usage: :type <expression>\n");
                 return;
             }
 
@@ -854,19 +482,19 @@ pub const Repl = struct {
             var inferer = typecheck.Inferer.init(self.allocator);
             defer inferer.deinit();
             inferer.inferProgram(&prog) catch |err| {
-                try printStr(stdout_fd, "Error: {}\n", .{err});
+                try printTo(stdout_fd, "Error: {}\n", .{err});
                 return;
             };
 
             if (inferer.global.getScheme(type_fn_name)) |scheme| {
                 const type_str = try typecheck.typeToString(self.allocator, scheme.body.*);
                 defer self.allocator.free(type_str);
-                try printStr(stdout_fd, "{s} : {s}\n", .{ expr, type_str });
+                try printTo(stdout_fd, "{s} : {s}\n", .{ expr, type_str });
             } else {
-                try printStr(stdout_fd, "Error: could not infer type\n", .{});
+                try writeAll(stdout_fd, "Error: could not infer type\n");
             }
         } else {
-            try printStr(stdout_fd, "Unknown command: {s}\n", .{cmd});
+            try printTo(stdout_fd, "Unknown command: {s}\n", .{cmd});
         }
     }
 };

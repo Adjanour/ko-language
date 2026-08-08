@@ -1,0 +1,30 @@
+# Binary Search -- efficient search in sorted array
+# Demonstrates: recursion, if-then-else chains
+
+type List a = Cons a (List a) | Nil
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn get xs n = match xs
+  | Cons x rest =>
+    if n == 0 then x
+    else get rest (n - 1)
+  | Nil => 0
+
+fn binarySearch xs target low high =
+  if low > high then -1
+  else
+    let mid = (low + high) / 2
+    let midVal = get xs mid
+    if midVal == target then mid
+    else if midVal < target then binarySearch xs target (mid + 1) high
+    else binarySearch xs target low (mid - 1)
+
+fn main =
+  let sorted = Cons 1 (Cons 3 (Cons 5 (Cons 7 (Cons 9 (Cons 11 Nil)))))
+  let len = length sorted
+  println (binarySearch sorted 5 0 (len - 1))
+  println (binarySearch sorted 9 0 (len - 1))
+  println (binarySearch sorted 6 0 (len - 1))

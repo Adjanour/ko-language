@@ -14,6 +14,19 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    ko_exe.root_module.addIncludePath(b.path("vendor"));
+    const linenoise_mod = b.createModule(.{
+        .root_source_file = b.path("src/linenoise.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    linenoise_mod.addCSourceFile(.{
+        .file = b.path("vendor/linenoise.c"),
+        .flags = &.{"-D_GNU_SOURCE"},
+    });
+    linenoise_mod.addIncludePath(b.path("vendor"));
+    ko_exe.root_module.addImport("linenoise", linenoise_mod);
     ko_exe.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),
         .target = target,

@@ -1,0 +1,47 @@
+# Merge Sort -- divide and conquer sorting
+# Demonstrates: recursion, list splitting, higher-order functions
+
+type List a = Cons a (List a) | Nil
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn take n xs = match xs
+  | Cons x rest =>
+    if n <= 0 then Nil
+    else Cons x (take (n - 1) rest)
+  | Nil => Nil
+
+fn drop n xs = match xs
+  | Cons x rest =>
+    if n <= 0 then Cons x rest
+    else drop (n - 1) rest
+  | Nil => Nil
+
+fn merge xs ys = match xs
+  | Cons x xrest => match ys
+    | Cons y yrest =>
+      if x <= y then Cons x (merge xrest ys)
+      else Cons y (merge xs yrest)
+    | Nil => Cons x xrest
+  | Nil => ys
+
+fn mergeSort xs =
+  let len = length xs
+  if len <= 1 then xs
+  else
+    let mid = len / 2
+    let left = mergeSort (take mid xs)
+    let right = mergeSort (drop mid xs)
+    merge left right
+
+fn sumList xs = match xs
+  | Cons x rest => x + sumList rest
+  | Nil => 0
+
+fn main =
+  let unsorted = Cons 38 (Cons 27 (Cons 43 (Cons 3 (Cons 9 (Cons 82 (Cons 10 Nil))))))
+  let sorted = mergeSort unsorted
+  println (sumList sorted)
+  println (length sorted)

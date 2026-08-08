@@ -1,0 +1,38 @@
+# Combinatorics -- permutations and combinations
+# Demonstrates: recursion, higher-order functions, list operations
+
+type List a = Cons a (List a) | Nil
+
+fn length xs = match xs
+  | Cons _ rest => 1 + length rest
+  | Nil => 0
+
+fn factorial n =
+  if n <= 1 then 1
+  else n * factorial (n - 1)
+
+fn append xs ys = match xs
+  | Cons x rest => Cons x (append rest ys)
+  | Nil => ys
+
+fn filter pred xs = match xs
+  | Cons x rest =>
+    if pred x then Cons x (filter pred rest)
+    else filter pred rest
+  | Nil => Nil
+
+fn remove val xs = match xs
+  | Cons x rest =>
+    if x == val then rest
+    else Cons x (remove val rest)
+  | Nil => Nil
+
+fn map f xs = match xs
+  | Cons x rest => Cons (f x) (map f rest)
+  | Nil => Nil
+
+fn main =
+  let perms3 = factorial 3
+  let perms5 = factorial 5
+  println perms3
+  println perms5
