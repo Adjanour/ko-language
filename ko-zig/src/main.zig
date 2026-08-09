@@ -27,7 +27,7 @@ const module_loader_mod = @import("module_loader.zig");
 const diagnostics_mod = @import("diagnostics.zig");
 const monomorphize_mod = @import("monomorphize.zig");
 
-const VERSION = "0.3.0-alpha";
+const VERSION = "0.3.2";
 
 fn nowNs() u64 {
     var ts: std.c.timespec = undefined;
@@ -56,7 +56,7 @@ fn printHelp(io: Io) void {
         \\  ko --repl                   Start interactive REPL
         \\  ko --dump-ir <file.ko>      Show generated LLVM IR
         \\  ko --dump-hir <file.ko>     Show HIR (High-level IR)
-        \\  ko --dump-lir <file.ko>     Show LIR (Low-level IR) [requires --use-lir]
+        \\  ko --dump-lir <file.ko>     Show LIR (Low-level IR)
         \\  ko --emit-ir <out> <file>   Write LLVM IR to file
         \\  ko --emit-obj <out> <file>  Compile to object file
         \\  ko --emit-exe <out> <file>  Compile to executable
@@ -64,8 +64,7 @@ fn printHelp(io: Io) void {
         \\Options:
         \\  -h, --help       Show this help
         \\  -v, --version    Show version
-        \\  --use-lir        Use experimental HIR→LIR→LLVM pipeline
-        \\                   (run/--dump-ir/--emit-ir only)
+        \\  --use-legacy     Use legacy AST→LLVM pipeline (frozen, for unsupported features)
         \\  --warn <kind>    Enable warnings (unused, shadow, all)
         \\  -Werror          Treat warnings as errors
         \\
@@ -214,7 +213,7 @@ pub fn main(init: std.process.Init) !void {
     var filename: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
-    var use_lir = false;
+    var use_lir = true;
     var skip_linearity = false;
     var enabled_warnings = diagnostics_mod.WarningSet{};
     var warnings_as_errors = false;
@@ -241,6 +240,8 @@ pub fn main(init: std.process.Init) !void {
             output = args.next();
         } else if (std.mem.eql(u8, arg, "--use-lir")) {
             use_lir = true;
+        } else if (std.mem.eql(u8, arg, "--use-legacy")) {
+            use_lir = false;
         } else if (std.mem.eql(u8, arg, "--skip-linearity")) {
             skip_linearity = true;
         } else if (std.mem.eql(u8, arg, "--emit-ir")) {
@@ -448,11 +449,15 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    // Experimental HIR → LIR → LLVM pipeline (--use-lir)
-    if (use_lir) {
+    // HIR → LIR → LLVM pipeline (default, with legacy fallback for unsupported features)
+    if (use_lir) use_lir_path: {
         var ll = lir_lower.LirLower.init(init.arena.allocator(), hl.expressions.items, hl.defs.items, &inferer);
         defer ll.deinit();
         const lir_fns = ll.lowerProgram() catch |err| {
+            if (err == error.Unsupported) {
+                reportError(io, fname, null, "LIR: unsupported feature, falling back to legacy codegen", .{});
+                break :use_lir_path;
+            }
             reportError(io, fname, null, "LIR lowering error: {s}", .{@errorName(err)});
             std.process.exit(1);
         };
@@ -575,7 +580,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    // Codegen (legacy AST→LLVM path)
+    // Legacy codegen (AST→LLVM path, frozen)
     var cg = codegen_mod.Codegen.init(init.arena.allocator(), "ko_module");
     defer cg.deinit();
     cg.expr_type_tags = &inferer.expr_type_tags;

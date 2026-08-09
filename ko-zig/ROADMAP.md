@@ -26,11 +26,11 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 
 ---
 
-## Current State (v0.3.1-alpha) — August 2026
+## Current State (v0.3.2) — August 2026
 
 ### What Works
 - Bidirectional type inference with let-polymorphism
-- Sum types, records, tuples, pattern matching
+- Sum types, records, tuples, pattern matching (including imported constructors)
 - Lambdas, closures, partial application
 - Reference counting with scope-based decref, recursive decref via bitmap
 - Compile-time evaluation (`comptime`)
@@ -39,14 +39,13 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - Multiple compilation modes (JIT, IR, object, executable)
 - String operations (KoString wrapper, length O(1), append, contains, trim, replace, split, toUpperCase, toLowerCase, charAt)
 - Linear type warnings (copyable types unrestricted)
-- HIR/LIR pipeline with optimization passes (DCE, let-simplification, fold)
+- HIR/LIR pipeline with optimization passes (DCE, let-simplification, fold) — now the default codegen
 - AOT compilation via LIR pipeline (object files, linked executables)
-- 248 correctness tests, 50 .ko integration tests
+- Legacy codegen fallback for unsupported LIR features (top-level let, let_rec, etc.)
+- 256 correctness tests, 50 .ko integration tests
 
 ### What's Broken
 - LLVM 22 optimization bug (AOT compiles unoptimized) — fixed upstream, pending verification
-- `String.trim` only trims leading whitespace (not trailing)
-- Codegen crash with imported constructor patterns (e.g., `Cons x Nil` in pattern matching)
 
 ### What's Missing
 - `++` string concatenation operator
@@ -93,6 +92,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - [x] Implement HIR → LIR lowering pass (including pattern match compilation via matrix algorithm, closure conversion)
 - [x] Implement LIR → LLVM IR generation pass
 - [x] Port existing optimizations to new pipeline
+- [x] Make LIR the default codegen (with legacy fallback for unsupported features)
 
 See `docs/RESEARCH.md §6` for detailed IR design recommendations.
 

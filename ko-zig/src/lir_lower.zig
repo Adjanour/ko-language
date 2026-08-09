@@ -452,7 +452,7 @@ pub const LirLower = struct {
         for (self.defs) |def| {
             switch (def) {
                 .fn_def => |fd| try self.lowerFn(fd),
-                .let_binding => |lb| std.debug.print("lir_lower: top-level let '{s}' not yet supported; skipping\n", .{lb.name}),
+                .let_binding => return error.Unsupported,
                 else => {},
             }
         }
@@ -1247,6 +1247,10 @@ pub const LirLower = struct {
         }
         const name = try self.freshName("lam");
         try self.emitLiftLevel(name, params, 0, .{ .hir_body = lam.body }, cap_infos, final_ret);
+        // Mark captured values as consumed — closure takes shared ownership
+        for (cap_locals) |cap| {
+            self.consumeHeapValue(cap);
+        }
         return self.emit(.{ .make_closure = .{ .fn_name = name, .captures = cap_locals } }, .{ .opaque_type = {} });
     }
 
@@ -1441,6 +1445,8 @@ pub const LirLower = struct {
             const boxed = try self.coerce(try self.lowerExpr(ah), .{ .int = {} });
             const slot = try self.gepStruct(struct_ty, raw, i + 1, .{ .int = {} });
             try self.emitStore(slot, boxed);
+            // Parent takes shared ownership — incref and mark consumed
+            self.consumeHeapValue(boxed);
         }
         const result = try self.emit(.{ .ptrtoint = raw }, .{ .int = {} });
         // Track heap-allocated constructors (arity > 0) for decref at scope exit
@@ -2016,6 +2022,8 @@ pub const LirLower = struct {
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
             try self.emitStore(slot, v);
+            // Parent takes shared ownership — incref and mark consumed
+            self.consumeHeapValue(v);
         }
         return raw;
     }
@@ -2045,6 +2053,8 @@ pub const LirLower = struct {
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
             try self.emitStore(slot, v orelse return error.TypeError);
+            // Parent takes shared ownership — incref and mark consumed
+            if (v) |val| self.consumeHeapValue(val);
         }
         return raw;
     }
@@ -2154,6 +2164,23 @@ pub const LirLower = struct {
     /// Consumed values are NOT decreffed at scope exit — the parent owns them.
     fn markConsumed(self: *LirLower, heap_id: lir.LocalId) void {
         self.state.consumed_heap_values.put(heap_id, {}) catch {};
+    }
+
+    /// Emit incref for a heap value — call when storing inside a parent structure.
+    fn emitIncref(self: *LirLower, heap_id: lir.LocalId) void {
+        const ptr_ty = self.ptrTo(.{ .int = {} }) catch return;
+        const incref_ptr = self.emit(.{ .inttoptr = .{ .val = heap_id, .ty = ptr_ty } }, ptr_ty) catch return;
+        self.emitEffect(.{ .incref = incref_ptr }) catch {};
+    }
+
+    /// When storing a value inside a parent (constructor, tuple, record, closure),
+    /// check if it's a tracked heap allocation. If so, incref it (parent takes shared
+    /// ownership) and mark it consumed (skip decref at scope exit).
+    fn consumeHeapValue(self: *LirLower, value: lir.LocalId) void {
+        if (self.findHeapAlloc(value)) |_| {
+            self.emitIncref(value);
+            self.markConsumed(value);
+        }
     }
 
     /// Emit decref for ref values (type_tag=0) in scope_heap_values[from..] that
