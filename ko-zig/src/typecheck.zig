@@ -34,9 +34,11 @@ pub const Scheme = struct {
     body: *Type,
 };
 
-const CtorInfo = struct {
+pub const CtorInfo = struct {
     type_name: []const u8,
     arity: usize,
+    tag: u8 = 0,
+    value_arg_types: ?[]const *Type = null,
 };
 
 const TypeDefInfo = struct {
@@ -203,8 +205,8 @@ pub const Inferer = struct {
         inferer.type_names.put("Result", 2) catch {};
 
         // Pre-register True/False as built-in Bool constructors
-        inferer.ctors.put("True", .{ .type_name = "Bool", .arity = 0 }) catch {};
-        inferer.ctors.put("False", .{ .type_name = "Bool", .arity = 0 }) catch {};
+        inferer.ctors.put("True", .{ .type_name = "Bool", .arity = 0, .tag = 1 }) catch {};
+        inferer.ctors.put("False", .{ .type_name = "Bool", .arity = 0, .tag = 0 }) catch {};
         const bool_ty = inferer.newType(.bool) catch unreachable;
         inferer.global.set("True", .{ .quantified = &.{}, .body = bool_ty }) catch {};
         inferer.global.set("False", .{ .quantified = &.{}, .body = bool_ty }) catch {};
@@ -749,17 +751,19 @@ pub const Inferer = struct {
                     if (def == .type_def) {
                         switch (def.type_def.body) {
                             .sum => |ctors| {
-                                for (ctors) |ctor| {
+                                for (ctors, 0..) |ctor, tag_idx| {
                                     // Qualified: List.Cons
                                     const prefixed = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, ctor.name });
                                     try self.ctors.put(prefixed, .{
                                         .type_name = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, def.type_def.name }),
                                         .arity = ctor.params.len,
+                                        .tag = @intCast(tag_idx),
                                     });
                                     // Unqualified: Cons (with unqualified type name)
                                     try self.ctors.put(ctor.name, .{
                                         .type_name = try std.fmt.allocPrint(self.allocator, "{s}", .{def.type_def.name}),
                                         .arity = ctor.params.len,
+                                        .tag = @intCast(tag_idx),
                                     });
                                 }
                             },
@@ -1542,9 +1546,18 @@ pub const Inferer = struct {
                     try type_param_map.put(name, v);
                 }
 
-                for (ctors) |ctor| {
+                for (ctors, 0..) |ctor, tag_idx| {
                     const arity = ctor.params.len;
-                    try self.ctors.put(ctor.name, .{ .type_name = t.name, .arity = arity });
+                    // Collect value arg types for pretty-printing (with unresolved type vars)
+                    var value_arg_types: ?[]const *Type = null;
+                    if (arity > 0) {
+                        const typesSlice = try self.allocator.alloc(*Type, arity);
+                        for (typesSlice, 0..) |*slot, i| {
+                            slot.* = try self.ctorParamType(ctor.params[arity - 1 - i], &type_param_map);
+                        }
+                        value_arg_types = typesSlice;
+                    }
+                    try self.ctors.put(ctor.name, .{ .type_name = t.name, .arity = arity, .tag = @intCast(tag_idx), .value_arg_types = value_arg_types });
 
                     const result = try self.newType(.{ .con = .{ .name = t.name, .args = type_param_vars } });
                     var fn_type = result;

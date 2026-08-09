@@ -13,6 +13,7 @@ const codegen_mod = @import("codegen.zig");
 const codegen_lir = @import("codegen_lir.zig");
 const monomorphize_mod = @import("monomorphize.zig");
 const hir_lower = @import("hir_lower.zig");
+const prettyprint = @import("prettyprint.zig");
 const hir_beta = @import("hir_beta.zig");
 const hir_let_simpl = @import("hir_let_simpl.zig");
 const hir_known_match = @import("hir_known_match.zig");
@@ -385,7 +386,62 @@ pub const Repl = struct {
         flushStdout();
 
         if (!is_side_effect) {
-            try printTo(stdout_fd, "= {d}\n", .{result});
+            // Pretty-print the result using inspectValue
+            const result_str = blk: {
+                // Get the eval function's body type
+                const last_def = prog.definitions[prog.definitions.len - 1];
+                const fd = last_def.fn_def;
+                // Walk down blocks to find the innermost expression
+                var inner = fd.body;
+                while (true) {
+                    switch (inner.*) {
+                        .block => |blk| {
+                            if (blk.items.len > 0) {
+                                inner = blk.items[blk.items.len - 1];
+                                continue;
+                            }
+                        },
+                        else => {},
+                    }
+                    break;
+                }
+                const raw_ty = inferer.expr_types.get(inner) orelse
+                    inferer.expr_types.get(fd.body);
+                // Resolve type variables to their concrete types
+                const result_ty = if (raw_ty) |ty| resolve: {
+                    var cur = ty;
+                    while (cur.* == .variable) {
+                        if (cur.variable.instance) |inst| {
+                            cur = inst;
+                        } else break;
+                    }
+                    break :resolve cur;
+                } else null;
+                if (result_ty) |ty| {
+                    // Build ctor_tag_names from inferer.ctors
+                    var ctor_tag_names = std.StringHashMap(std.AutoHashMap(u8, []const u8)).init(self.allocator);
+                    defer {
+                        var it = ctor_tag_names.iterator();
+                        while (it.next()) |entry| {
+                            entry.value_ptr.deinit();
+                        }
+                        ctor_tag_names.deinit();
+                    }
+                    var ctors_it = inferer.ctors.iterator();
+                    while (ctors_it.next()) |entry| {
+                        const type_name = entry.value_ptr.type_name;
+                        const tag = entry.value_ptr.tag;
+                        var inner_map = ctor_tag_names.get(type_name) orelse std.AutoHashMap(u8, []const u8).init(self.allocator);
+                        try inner_map.put(tag, entry.key_ptr.*);
+                        try ctor_tag_names.put(type_name, inner_map);
+                    }
+                    break :blk prettyprint.inspectValue(self.allocator, result, ty, &ctor_tag_names, &inferer.ctors) catch
+                        try std.fmt.allocPrint(self.allocator, "{d}", .{result});
+                }
+                break :blk try std.fmt.allocPrint(self.allocator, "{d}", .{result});
+            };
+            defer self.allocator.free(result_str);
+            try printTo(stdout_fd, "= {s}\n", .{result_str});
         }
     }
 
