@@ -2159,6 +2159,8 @@ pub const LirLower = struct {
     /// Emit decref for ref values (type_tag=0) in scope_heap_values[from..] that
     /// are not the result value and not consumed by parent structures.
     /// Linear values (type_tag=1/2/3) are NOT decreffed — the compiler proves single-owner.
+    /// However, tuples (type_tag=2) and records (type_tag=3) containing heap-allocated
+    /// values need their contents cleaned up via markConsumed when stored inside parents.
     fn emitDecrefHeapValues(self: *LirLower, result: lir.LocalId, from: usize) LowerError!void {
         const ptr_ty = try self.ptrTo(.{ .int = {} });
         const items = self.state.scope_heap_values.items;

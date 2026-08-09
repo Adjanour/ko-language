@@ -455,7 +455,7 @@ pub const CodegenLir = struct {
             field_types[i] = try self.lirType(self.local_types[cap]);
         }
         const closure_ty = core.LLVMStructTypeInContext(self.context, field_types.ptr, @intCast(field_types.len), 0);
-        const raw = try self.codegenAlloc(closure_ty, 0);
+        const raw = try self.codegenAlloc(closure_ty, 10); // type_tag=10 for closures
 
         // Store the function pointer and each captured value.
         const i32_type = core.LLVMInt32TypeInContext(self.context);
