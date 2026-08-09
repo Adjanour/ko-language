@@ -1,7 +1,7 @@
 # Kō Language Roadmap
 
-> **Version:** 0.3.0-alpha  
-> **Date:** 2026-08-02  
+> **Version:** 0.3.1-alpha  
+> **Date:** 2026-08-09  
 > **Status:** Alpha Release
 
 ---
@@ -10,110 +10,92 @@
 
 This document outlines the development of Kō from a Python prototype to a production-ready language with a Zig compiler and LLVM backend.
 
-**Current state (v0.3.0-alpha):** Zig compiler with HM type inference, LLVM IR codegen, JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with pretty-printing, Result operations, linearity checker, and 247 passing tests.
+**Current state (v0.3.1-alpha):** Zig compiler with HM type inference, LIR pipeline (default) + legacy codegen (frozen), JIT/AOT compilation, reference counting, partial application, file-based module imports, `?` operator for error propagation, LSP server, REPL with type-aware pretty-printing, Result operations, linearity checker, comptime evaluation, stack overflow detection, and 256 passing tests.
+
+**Key architecture decision:** The LIR pipeline (`codegen_lir.zig`) is the default codegen path. The legacy `codegen.zig` is frozen — no new features or fixes. All new work goes through `AST → HIR → LIR → LLVM IR`.
 
 ---
 
-### Known Limitations (v0.2.0-alpha)
+### Known Limitations
 
 - **LLVM 22 optimization broken:** AOT compilation uses `LLVMCodeGenLevelNone`. `LLVMTargetMachineEmitToMemoryBuffer` hangs and `LLVMRunPasses` crashes with any optimization pass. Root cause: `CodeGenPrepare` infinite loop with bitcast+phi patterns. Fix expected in LLVM 23 ([PR #186468](https://github.com/llvm/llvm-project/pull/186468)).
-- **2 examples fail:** `expr_eval.ko` and `higher_order.ko` fail due to blank-line scoping in tokenizer `scan_indent`.
-- **1 example hangs:** `list_ops.ko` hangs due to pre-existing `reverse_aux` codegen bug.
+- **Closure codegen for multi-param lambdas:** `codegenApplyIndirect` direct path assumes 1-arg functions; `createPartialApp` breaks on tagged closure pointers. Partial fix applied.
+- **Full decref for intermediate variables:** LIR pipeline doesn't track tuples/records/closures in `scope_heap_values`; `emitDecrefHeapValues` only decrefs ref values (type_tag=0).
 - **Windows not supported:** LLVM 22 has no prebuilt Windows packages; MCJIT doesn't support Windows.
-- **Multi-line closures with free variables** cause LLVM codegen errors.
 
 ---
 
 ## Part 1: Language Feature Roadmap
 
-### 1.1 Current State (v0.3.0-alpha)
+### 1.1 Current State (v0.3.1-alpha)
 
-**Zig Compiler (complete):**
+**Zig Compiler:**
 
 - Lexer (~872 lines) — all token types, indentation tracking, comment tokens, `::` for cons
 - Parser (~1316 lines) — full grammar implementation, multi-line lambdas, block doc comments, `comptime fn`/`comptime expr`, `?` operator
-- Typechecker (~1495 lines) — Hindley-Milner inference, let-polymorphism, polymorphic println/print, `?` operator type checking, Result type propagation
-- Codegen (~3039 lines) — LLVM IR via kassane/llvm-zig bindings
+- Typechecker (~1500 lines) — HM inference, let-polymorphism, polymorphic println/print, `?` operator type checking, Result type propagation, CtorInfo with value_arg_types for pretty-printing
+- LIR pipeline (default codegen path):
+  - `codegen_lir.zig` — AST → LIR translation
+  - `lir_lower.zig` — LIR → LLVM IR lowering
+  - `hir.zig` / `hir_lower.zig` — HIR intermediate representation
+  - `linearity.zig` — linear variable usage verification
+- Legacy codegen (`codegen.zig`) — **frozen**, no new features or fixes
   - JIT execution (MCJIT) and AOT compilation
   - Sum types, records, tuples, lambdas, pattern matching
   - Built-in polymorphic functions (println, print, inspect)
   - Reference counting for heap-allocated objects
   - Partial application (currying)
-  - Module definitions with pub visibility
-  - `::` infix operator for list construction
-  - Compile-time evaluation (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else, pattern matching, constructors, tuples, string/list builtins
-  - `?` operator codegen (unwraps Ok values, propagates Err)
-  - Result operations as built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
-  - File-based module imports with selective import support
-- Linearity checker (`linearity.zig`) — verifies linear variable usage, 35/42 test files pass
-- Pretty-printer (`prettyprint.zig`) — type-directed value display for REPL/results
+  - `?` operator codegen
+- Pretty-printer (`prettyprint.zig`) — type-directed value display with constructor arity, recursive type support, zero-arg constructor detection
 - LSP server (`lsp.zig`) — hover, completion, diagnostics, documentSymbol, go-to-definition
-- REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands
+- REPL (`repl.zig`) — expression evaluation, definition binding, multi-line input, commands, type-aware pretty-printing via inspectValue
+- Comptime evaluator (`comptime.zig`) — literals, arithmetic, recursive fn calls, if-then-else, pattern matching, constructors, tuples, string/list builtins
+- Module loader (`module_loader.zig`) — file-based imports with selective import support
+- Stack overflow detection — runtime check with clear error message
 - VS Code extension (v0.5.0) with LSP client
 - Tree-sitter grammar (~450 lines) with nvim integration
-- 247 tests passing, 42 .ko test programs
+- 256 tests passing, 58 .ko test programs
 
 ### 1.2 Next Milestones
 
-#### v0.3.0 — Language Maturity
+#### v0.3.2 — Bug Fixes & Stability
 
-**A. Monomorphization (In Progress)**
+**A. Closure Codegen Fix (In Progress)**
+
+- Fix multi-param lambda partial application
+- Fix `codegenApplyIndirect` for multi-arg functions
+- Fix `createPartialApp` tagged closure pointer handling
+
+**B. Full Decref for Intermediate Variables (In Progress)**
+
+- Track tuples, records, closures in `scope_heap_values`
+- Fix `emitDecrefHeapValues` to handle all heap-allocated types
+- Fix ownership-based decref for intermediate values
+
+**C. Monomorphization (Planned)**
 
 - Add type annotation syntax for function parameters
 - Implement monomorphization pass (before typechecking)
 - Ownership-aware monomorphization (linear vs ref)
 - See DESIGN-polymorphism.md for details
 
-**B. Linear Types (In Progress)**
+#### v0.4.0 — Language Maturity
 
-- Linear type checker (implemented: `linearity.zig`)
-- `ref` types for shared data
-- Ownership-aware codegen (zero-cost for linear values)
-- See DESIGN-linear-types.md for details
+- Linear type system enhancements (ownership-aware codegen)
+- Record type syntax with field access
+- Bidirectional type inference (replace HM)
+- Module system v2 (hierarchical imports, first-class modules)
+- Traits/typeclasses
+- Named/struct parameters
 
-**C. Bidirectional Type Inference**
-
-- Replace HM with bidirectional inference
-- Function signatures mandatory for public, optional for private
-- See SPEC-0.md for details
-
-**D. Type System Enhancements**
-
-- Record type syntax: `type Point = { x: Int, y: Int }` with field access on values
-- Pattern matching on records in match arms
-- Named/struct parameters for constructors
-- Better error messages with source locations
-
-**C. Module System v2**
-
-- Hierarchical imports: `import std.collections.list`
-- First-class modules (modules as values)
-- Compile-time module instantiation
-- Import hooks (programmable resolution)
-
-**D. Trait/Typeclass System**
-
-```ko
-trait Printable {
-  fn to_string: Self -> String
-}
-
-impl Printable for User {
-  fn to_string user = concat user.name " user"
-}
-
-fn print[T: Printable] item =
-  println (T.to_string item)
-```
-
-#### v0.4.0 — Standard Library & Tooling
+#### v0.5.0 — Standard Library & Tooling
 
 - Comprehensive standard library (collections, I/O, math, string)
 - Package manager
 - Build system integration
 - Debugger support
 
-#### v0.5.0 — Polish & Release
+#### v0.6.0 — Polish & Release
 
 - Performance optimization
 - Documentation
@@ -130,7 +112,12 @@ fn print[T: Printable] item =
 | Stack overflow detection | High | Medium | Done |
 | Comptime evaluation | Medium | Medium | Done |
 | Result built-in operations | Medium | Low | Done |
+| REPL type-aware pretty-printing | Medium | Medium | Done |
+| LIR pipeline (default codegen) | High | High | Done |
+| Constructor arity + value_arg_types | Medium | Medium | Done |
 | LLVM optimization (AOT -O2) | Medium | Low | Blocked (LLVM 22 bug) |
+| Closure codegen fix | High | Medium | In Progress |
+| Full decref for intermediates | High | Medium | In Progress |
 | Staged compilation (`stage expr`) | High | High | Design |
 | AST construction helpers (`code expr`) | High | High | Design |
 | Record type syntax | High | Medium | Planned |
@@ -1030,11 +1017,20 @@ pub fn build(b: *std.Build) void {
 - [x] **`?` operator** — postfix try for Result error propagation
 - [x] **Result operations** — built-in functions (map, unwrap, fold, is_ok, is_err, and_then)
 - [x] **expr_type_tags** — per-expression type tags for correct println output
+- [x] **LIR pipeline** — AST → HIR → LIR → LLVM IR (default codegen path)
+- [x] **Constructor pretty-printing** — arity-aware, recursive type support, zero-arg detection
+- [x] **inspect vs println** — inspect shows raw constructors, println shows sugar
+
+### Phase 2.5: Bug Fixes (In Progress)
+
 - [ ] Closure codegen for multi-param lambdas (partial fix)
 - [ ] Full decref for intermediate variables
-- [ ] Fix multi-arg constructor pretty-printing in REPL
+- [x] Multi-arg constructor pretty-printing in REPL
+- [x] String.trim trailing whitespace (#16)
+- [x] inspect newlines (#27)
+- [x] inspect raw constructor form (Cons 1 2 3 vs [1, 2, 3])
 
-### Phase 3: Language Maturity (v0.3.0, In Progress)
+### Phase 3: Language Maturity (v0.4.0)
 
 - [ ] Staged compilation (`stage expr`)
 - [ ] AST construction helpers (`code expr`)
@@ -1043,15 +1039,16 @@ pub fn build(b: *std.Build) void {
 - [ ] Traits/typeclasses
 - [ ] Module system v2 (hierarchical imports, first-class modules)
 - [ ] Named/struct parameters
+- [ ] Bidirectional type inference
 
-### Phase 4: Standard Library & Tooling (v0.4.0)
+### Phase 4: Standard Library & Tooling (v0.5.0)
 
 - [ ] Comprehensive standard library
 - [ ] Package manager
 - [ ] Build system integration
 - [ ] Debugger support
 
-### Phase 5: Polish and Release (v0.5.0)
+### Phase 5: Polish and Release (v0.6.0)
 
 - [ ] Documentation
 - [ ] Examples and tutorials
@@ -1112,5 +1109,5 @@ pub fn build(b: *std.Build) void {
 ---
 
 *Document generated: 2026-06-20*  
-*Last updated: 2026-07-12*  
-*Status: v0.2.0-alpha Released*
+*Last updated: 2026-08-09*  
+*Status: v0.3.1-alpha*
