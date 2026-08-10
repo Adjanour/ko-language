@@ -75,6 +75,10 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Unit tests
+    // -Dtest-filter=<substring> runs only matching tests. The test binary links
+    // all of LLVM, so a full run is dominated by the relink; filtering keeps the
+    // edit/run loop short when iterating on one area.
+    const test_filter = b.option([]const u8, "test-filter", "Only run tests whose name contains this substring");
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/tests.zig"),
@@ -82,6 +86,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .link_libc = true,
         }),
+        .filters = if (test_filter) |f| &.{f} else &.{},
     });
     unit_tests.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),

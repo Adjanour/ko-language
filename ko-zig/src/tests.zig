@@ -3225,21 +3225,40 @@ pub const CapturedOutput = struct {
 /// Redirect stdout to a pipe, run main(), and capture all output.
 /// Returns the captured stdout and main()'s return value.
 pub fn captureStdout(jit: *codegen_mod.Jit) !CapturedOutput {
+    const c_fflush = @extern(*const fn (?*anyopaque) callconv(.c) c_int, .{ .name = "fflush" });
+
     // Save original stdout fd
     const saved_stdout = std.c.dup(1);
     if (saved_stdout < 0) return error.DupFailed;
-    defer _ = std.c.close(saved_stdout);
+
+    // Discard whatever is already sitting in the C stdout buffer. Under
+    // `zig build test` fd 1 is fully buffered, so JIT'd programs run by the
+    // non-capturing helpers leave their printf output there; flushing it later
+    // would attribute a previous test's output to this one. It cannot be flushed
+    // to fd 1 either — in `--listen=-` mode that descriptor is the build runner's
+    // IPC channel, and stray bytes corrupt the protocol and hang the build. So
+    // point fd 1 at /dev/null for the flush.
+    const devnull = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY }, @as(std.c.mode_t, 0));
+    if (devnull >= 0) {
+        _ = std.c.dup2(devnull, 1);
+        _ = c_fflush(null);
+        _ = std.c.close(devnull);
+    }
 
     // Create pipe: pipefds[0] = read end, pipefds[1] = write end
     var pipefds: [2]std.c.fd_t = undefined;
-    if (std.c.pipe(&pipefds) != 0) return error.PipeFailed;
-    defer {
-        _ = std.c.close(pipefds[0]);
-        _ = std.c.close(pipefds[1]);
+    if (std.c.pipe(&pipefds) != 0) {
+        _ = std.c.close(saved_stdout);
+        return error.PipeFailed;
     }
 
     // Redirect stdout (fd 1) to the write end of the pipe
-    if (std.c.dup2(pipefds[1], 1) < 0) return error.Dup2Failed;
+    if (std.c.dup2(pipefds[1], 1) < 0) {
+        _ = std.c.close(pipefds[0]);
+        _ = std.c.close(pipefds[1]);
+        _ = std.c.close(saved_stdout);
+        return error.Dup2Failed;
+    }
     // Close the original write end (fd 1 now points to it)
     _ = std.c.close(pipefds[1]);
 
@@ -3252,15 +3271,14 @@ pub fn captureStdout(jit: *codegen_mod.Jit) !CapturedOutput {
         return err;
     };
 
-    // Flush any buffered printf output before restoring stdout
-    // Use libc's fflush(stdout) to ensure all output is written to the pipe
-    const c_fflush = @extern(*const fn (?*anyopaque) callconv(.c) c_int, .{ .name = "fflush" });
+    // Flush the program's buffered printf output before restoring stdout
     _ = c_fflush(null);
 
     // Restore stdout
     _ = std.c.dup2(saved_stdout, 1);
+    _ = std.c.close(saved_stdout);
 
-    // Read captured output from pipe
+    // Read captured output from pipe — read end is still open, write end closed
     var buf: [65536]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
@@ -3958,4 +3976,15 @@ test "runtime: all example programs execute on LIR without crashing" {
         };
         _ = result;
     }
+}
+
+// ──── Test: output capture at end of file ────
+
+test "runtime output: println at end of file" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println 99
+    );
+    defer captured.deinit();
+    try std.testing.expectEqual(@as(i64, 99), captured.result);
+    try std.testing.expectEqualStrings("99\n", captured.output);
 }
