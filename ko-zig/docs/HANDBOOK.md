@@ -568,6 +568,9 @@ src/tests_ko/          -- .ko test programs (47+ files)
 # Full test suite (ALWAYS use --summary all)
 zig build test --summary all
 
+# Only tests whose name contains a substring
+zig build test -Dtest-filter="runtime output"
+
 # Run a program (JIT execute)
 ko file.ko
 
@@ -583,6 +586,34 @@ ko --emit-obj out.o file.ko
 # Emit linked executable
 ko --emit-exe out file.ko
 ```
+
+### Output Verification Tests (stdout capture)
+
+`testRuntimeOutput` / `testRuntimeOutputLir` compile a program, JIT-run it, and
+return what it printed. They work by pointing fd 1 at a pipe. Three properties of
+fd 1 make this sharper than it looks, and all three have already caused bugs:
+
+**fd 1 is a protocol channel under the build runner.** `zig build test` invokes
+the test binary with `--listen=-`, where fd 1 carries binary IPC between runner
+and test. Stray bytes there corrupt the stream, and the build *hangs* waiting for
+a well-formed message rather than failing. Never flush unknown buffered data to
+fd 1 to "get it out of the way" — send it to `/dev/null`.
+
+**stdout's buffering mode depends on what fd 1 is.** A terminal gives line
+buffering; the pipe used by `zig build test` gives full buffering. So a JIT'd
+program's `printf` output can sit in the C buffer indefinitely, and tests behave
+differently run directly versus under the build runner.
+
+**Buffered output belongs to whoever flushes it, not whoever wrote it.** The
+non-capturing helpers (`testRuntime`) run programs that print but never flush.
+That output accumulates until the next capture flushes it — and lands in *that*
+test's result. `captureStdout` therefore discards the buffer to `/dev/null`
+before installing its pipe. Any new helper that runs a program must preserve
+this, or it will silently donate its output to a later test.
+
+A limit worth knowing: `captureStdout` reads the pipe only after `runMain`
+returns, so a program emitting more than the pipe capacity (~64KB) blocks
+forever instead of failing. Keep captured output small.
 
 ### Testing a New Feature
 
@@ -613,6 +644,18 @@ ko --emit-exe out file.ko
 - `next_type_id` starts at 2 (Bool=0, Result=1) -- must match codegen
 - `registerTypeDef` called from multiple passes -- guard with `if (!type_ids.contains(name))`
 - Imported module types may not propagate to main inferer
+- A type recorded during inference is a snapshot, not a conclusion. Unification
+  keeps binding variables afterwards, so anything derived from a type at record
+  time can be stale -- `expr_elem_tags` pinned every list element to "unknown"
+  this way. Derive from `resolve()` after `inferProgram` finishes
+- A record type has two spellings: `record{name, fields}` from a literal or
+  `type` declaration, and `con{name}` from a bare type name. They do not unify.
+  `typeExprToType` returns the stored `record_type` so an annotation and a
+  literal agree
+- `generalize` must not quantify a variable that a field access was taken of.
+  Ko has no row polymorphism, so the record's layout can only come from the call
+  site; quantifying hands the body a fresh variable and leaves lowering with no
+  layout to emit a GEP against
 
 ### Codegen
 
@@ -630,6 +673,15 @@ ko --emit-exe out file.ko
 - Every `.ko` test must parse before it can test typecheck/codegen
 - Use `ArenaAllocator` wrapping `std.testing.allocator` for parser/typechecker tests
 - Never use `page_allocator` for tests (bypasses leak detection)
+- The test binary links all of LLVM, so editing `tests.zig` costs a recompile and
+  relink. Use `-Dtest-filter` while iterating; a filtered run is ~125ms against
+  ~3s for the suite
+- A suite that hangs is not a slow suite. If `zig build test` stalls, run the
+  binary from `.zig-cache/o/*/test` directly. Passing there but hanging under the
+  build runner points at fd 1 — see Output Verification Tests
+- Some tests print to stdout, so `; ModuleID` dumps and a stray `failed command:`
+  line appear in the build log on a fully passing run. `Build Summary` is the
+  authoritative result
 
 ---
 
