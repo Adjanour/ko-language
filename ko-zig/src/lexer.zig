@@ -342,6 +342,41 @@ pub const Tokenizer = struct {
         }
     }
 
+    /// Consume a `${...}` body, starting just after the `{`, leaving `index`
+    /// just past the matching `}`. Returns false if the literal ends first.
+    ///
+    /// Only enough structure is tracked to find the right `}`: brace depth, and
+    /// string/char literals so that a `}` or `"` inside one is not mistaken for
+    /// a delimiter. The expression itself is parsed later, from the token text.
+    fn skipInterpolation(self: *Tokenizer) bool {
+        var depth: usize = 1;
+        while (true) : (self.index += 1) {
+            switch (self.source[self.index]) {
+                0, '\n' => return false,
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        self.index += 1;
+                        return true;
+                    }
+                },
+                '"', '\'' => {
+                    const quote = self.source[self.index];
+                    self.index += 1;
+                    while (self.source[self.index] != quote) : (self.index += 1) {
+                        switch (self.source[self.index]) {
+                            0, '\n' => return false,
+                            '\\' => self.index += 1,
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     pub fn next(self: *Tokenizer) Token {
         if (self.pending_comment_count > 0) {
             const text = self.pending_comments[0].?;
@@ -622,6 +657,21 @@ pub const Tokenizer = struct {
                     0, '\n' => result.tag = .invalid,
                     '\\' => continue :state .string_backslash,
                     '"' => self.index += 1,
+                    // `${` opens an interpolation. Skip to its matching `}` so a
+                    // string literal in the embedded expression — `"a ${f "b"}"` —
+                    // does not close the outer literal. The parser re-scans the
+                    // token text and parses the expression from it.
+                    '$' => {
+                        if (self.source[self.index + 1] != '{') continue :state .string;
+                        self.index += 2;
+                        if (self.skipInterpolation()) {
+                            // Now just past the matching `}`; step back one so the
+                            // `self.index += 1` at the top of .string realigns.
+                            self.index -= 1;
+                            continue :state .string;
+                        }
+                        result.tag = .invalid;
+                    },
                     else => continue :state .string,
                 }
             },

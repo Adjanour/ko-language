@@ -15,7 +15,7 @@ Every status claim below was checked by compiling and running the feature, not b
 | Area | State |
 |------|-------|
 | Syntax | Function syntax (§4) complete: typed params, return types, `pub fn`. Tuple access `.0` landed in Stage 0. Two *frozen* forms still missing: record spread `..`, named args `~name:`. |
-| Strings | Phase 1 (KoString) done. Phase 2 partial. Phase 3 (`std.text`) not started. Interpolation not implemented. |
+| Strings | Phase 1 (KoString) and Phase 2 done in Stage 1, including interpolation and escapes. Phase 3 (`std.text`) not started. |
 | IO | Console output only. No file I/O of any kind. |
 | Data structures | Nothing. No Array, Map, Set, or `hash`. List/tuple/record work. |
 
@@ -38,7 +38,7 @@ Stage 0 cleared the first three; only `hash` remains. Everything after it is lar
 
 ```
 Stage 0 (prelude types, tuple access)  — DONE
-   ├── Stage 1  Strings Phase 2      (toInt/ord/chr/interpolation)
+   ├── Stage 1  Strings Phase 2      — DONE
    ├── Stage 2  Array                 ──┐
    │                                     ├── Stage 4  Set
    ├── Stage 3  hash + Map            ──┘
@@ -89,29 +89,63 @@ Three bugs surfaced that the plan did not predict, each blocking the one above i
 
 ---
 
-## Stage 1 — Strings Phase 2
+## Stage 1 — Strings Phase 2 — DONE
 
 **Goal:** close DESIGN-strings-characters §4 Phase 2.
 **Depends on:** Stage 0 (for `Maybe`).
 
-| # | Task | Notes |
-|---|------|-------|
-| 1.1 | `ord : Char -> Int`, `chr : Int -> Char` | Documented as builtins in §3; currently `undefined name` |
-| 1.2 | `String.toInt : String -> Maybe Int`, `String.toFloat` | Needs Stage 0 |
-| 1.3 | `String.fromInt`, `String.fromFloat` | `ko_int_to_string` already exists — wire it up |
-| 1.4 | **String interpolation** `"a ${e} b"` — desugar in the parser to `String.append` chains | The single highest-visibility gap; documented in two design docs and used throughout their examples |
-| 1.5 | Escape sequences `\x41`, `\u{00E9}` in char and string literals | `lexer.zig` |
-| 1.6 | Char predicates: `Char.isAlpha`, `isDigit`, `isUpper`, `isLower`, `toUpper`, `toLower` | Thin wrappers over libc |
+| # | Task | Status |
+|---|------|--------|
+| 1.1 | `ord : Char -> Int`, `chr : Int -> Char` (also `Char.toInt`/`Char.fromInt`) | done — representation-only, resolved during lowering with no runtime call |
+| 1.2 | `String.toInt : String -> Maybe Int`, `String.toFloat : String -> Maybe Float` | done — stricter than the old `ko_string_to_int`, which used `strtoll` with a null end pointer and so accepted `"abc"` as 0 and `"12x"` as 12 |
+| 1.3 | `String.fromInt`, `String.fromFloat` | done |
+| 1.4 | **String interpolation** `"a ${e} b"` | done — see below |
+| 1.5 | Escape sequences | done — `\n \t \r \0 \\ \" \' \$ \xNN \u{...}`. Scope was larger than stated: **no** escape was processed before, so `"a\nb"` printed a literal backslash-n |
+| 1.6 | Char predicates and case conversion | done — `isAlpha`, `isDigit`, `isAlnum`, `isSpace`, `isUpper`, `isLower`, `toUpper`, `toLower` |
 
 Already working, no action: `String.length` (O(1) bytes), `split`, `trim`, `contains`, `substring`, `indexOf`, `startsWith`, `endsWith`, `toUpperCase`, `toLowerCase`, `append`, `replace`.
 
-**Done when:**
-```ko
-fn main =
-  let name = "World"
-  println "Hello, ${name}! (${String.fromInt 42})"
+**Done when:** satisfied — the acceptance program prints `Hello, World! (42)`.
+
+### How interpolation works
+
+`"a ${e} b"` is desugared by the parser into a left-nested chain of `String.append`, with each embedded expression wrapped in `String.from`:
+
 ```
-prints `Hello, World! (42)`.
+"Hello, ${name}! n=${n}"
+  => String.append
+       (String.append
+          (String.append "Hello, " (String.from name))
+          "! n=")
+       (String.from n)
+```
+
+Four decisions worth knowing:
+
+**The lexer keeps the literal in one token.** It scans `${` and skips to the matching `}`, tracking brace depth and stepping over nested string and char literals. Without that, the inner quotes in `"len=${String.length "hello"}"` would close the outer literal. The parser then re-scans the token text and parses each embedded expression with a nested parser over that slice. The cost is location precision: an error inside an interpolation points at the string, not the exact column.
+
+**Escapes are decoded at parse time, in the same scan.** `string_literal` and `char_literal` now hold their final bytes, unquoted — the quote-stripping that used to live in `hir_lower` and `codegen` is gone. `\$` is how you write a literal `${`. An unrecognised escape is an error rather than a silent passthrough, so adding sequences later cannot change what an existing program means.
+
+**`String.from` is resolved from the static type, not a runtime tag.** Lowering reads the inferred type of the argument and emits `ko_int_to_string`, `ko_float_to_string`, `ko_bool_to_string`, `ko_char_to_string`, or nothing at all for a String. There is no dispatch and no boxing. The formats match `println_with_tag`, so `"${x}"` and `println x` agree on every type.
+
+**Non-primitives are a compile error, not a debug rendering.** Records, ADTs and lists are rejected by `validateInterpolations` after inference, naming the type. A value whose type is still polymorphic at that point — a generic function's parameter — is *also* rejected, because the conversion is picked statically and there is nothing to pick; defaulting to Int would print a Float's raw bits. The fix is an annotation:
+
+```ko
+fn showf (m : Maybe Float) =      # without the annotation, ${v} is an error
+  match m
+    | Just v => "got ${v}"
+    | Nothing => "none"
+```
+
+This deliberately does not reuse the formatter `println` has for records and lists. That is a debug format; making it reachable from ordinary string building would turn "how a record prints" into a compatibility commitment.
+
+### Three bugs found underneath
+
+- **Constructor patterns bound their fields to fresh, disconnected type variables.** `arg_types` was filled with new variables that were never linked to the scrutinee, so matching `Maybe Float` with `Just v` left `v` unbound and every use of it fell back to the integer representation — `"${v}"` printed a double's raw bits. Field types now come from the same instantiation the scrutinee type does. This also un-hid an ill-typed unit test: `Just x => x` / `Nothing => v` returns both `a` and `Maybe a`, and now correctly fails the occurs check.
+- **`typeExprToType` treated a type application as a value application.** `Maybe Float` unified the head — already `con("Maybe", [?a])` — against an arrow, which can never succeed, so no parameterised type could be written in an annotation at all. Same shape as the `ctorParamType` gap found in Stage 0.
+- **`ko_int_to_string` never passed the value to `snprintf`.** It supplied three arguments where `%ld` needs four, so it formatted whatever was in the register — in practice the buffer pointer. `Int.toString 42` returned the decimal digits of an address.
+
+**Also fixed:** `char_literal` kept its surrounding quotes while every consumer read `val[0]`, so *every* char literal evaluated to `'`. `println 'x'` printed a quote.
 
 ---
 

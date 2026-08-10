@@ -475,6 +475,12 @@ pub const LirLower = struct {
         try self.globals.put("Err", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Just", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Nothing", .{ .arity = 0, .kind = .ctor });
+        // Type-directed or representation-only, so resolved during lowering.
+        try self.globals.put("String.from", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("ord", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("chr", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Char.toInt", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Char.fromInt", .{ .arity = 1, .kind = .std_special });
         // I/O builtins with the *_with_tag calling convention.
         try self.globals.put("println", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("print", .{ .arity = 1, .kind = .std_special });
@@ -499,6 +505,18 @@ pub const LirLower = struct {
             .{ "String.substring", "ko_string_substring" },
             .{ "String.indexOf", "ko_string_index_of" },
             .{ "String.eq", "ko_string_eq" },
+            .{ "String.fromInt", "ko_int_to_string" },
+            .{ "String.fromFloat", "ko_float_to_string" },
+            .{ "String.toInt", "ko_string_to_maybe_int" },
+            .{ "String.toFloat", "ko_string_to_maybe_float" },
+            .{ "Char.isAlpha", "ko_char_is_alpha" },
+            .{ "Char.isDigit", "ko_char_is_digit" },
+            .{ "Char.isAlnum", "ko_char_is_alnum" },
+            .{ "Char.isSpace", "ko_char_is_space" },
+            .{ "Char.isUpper", "ko_char_is_upper" },
+            .{ "Char.isLower", "ko_char_is_lower" },
+            .{ "Char.toUpper", "ko_char_to_upper" },
+            .{ "Char.toLower", "ko_char_to_lower" },
             .{ "Int.toString", "ko_int_to_string" },
             .{ "Int.fromString", "ko_string_to_int" },
             .{ "Int.pow", "ko_int_pow" },
@@ -853,6 +871,11 @@ pub const LirLower = struct {
                 if (std.mem.eql(u8, name, "panic")) return self.lowerPanic(args, span);
                 if (std.mem.eql(u8, name, "assert")) return self.lowerAssert(args, span);
                 if (std.mem.eql(u8, name, "assert_eq")) return self.lowerAssertEq(args, span);
+                if (std.mem.eql(u8, name, "String.from")) return self.lowerStringFrom(args);
+                if (std.mem.eql(u8, name, "ord") or std.mem.eql(u8, name, "Char.toInt"))
+                    return self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+                if (std.mem.eql(u8, name, "chr") or std.mem.eql(u8, name, "Char.fromInt"))
+                    return self.coerce(try self.lowerExpr(args[0]), .{ .char = {} });
                 return self.lowerStdPrint(name, args);
             },
             .std_fn => return self.lowerStdFnCall(name, args, result_hir_ty),
@@ -943,6 +966,12 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_string_to_lower")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_string_trim")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_to_string")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .string = {} } };
+            if (std.mem.eql(u8, runtime, "ko_float_to_string")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .string = {} } };
+            if (std.mem.startsWith(u8, runtime, "ko_string_to_maybe_")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_char_to_string")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .string = {} } };
+            if (std.mem.eql(u8, runtime, "ko_bool_to_string")) break :blk .{ .params = &.{.{ .bool = {} }}, .ret = .{ .string = {} } };
+            if (std.mem.startsWith(u8, runtime, "ko_char_is_")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .bool = {} } };
+            if (std.mem.startsWith(u8, runtime, "ko_char_to_")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .char = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_pow")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_gcd")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_int_lcm")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
@@ -1092,6 +1121,38 @@ pub const LirLower = struct {
         const arg_ty = self.resolve(self.exprs[arg_hir].ty);
         const result_ty = try self.lowerType(arg_ty);
         return self.coerce(call_result, result_ty);
+    }
+
+    /// `String.from e` — what `${e}` desugars to. The conversion is chosen from
+    /// the static type of `e`, so there is no runtime tag and no dispatch cost;
+    /// a String argument is already the result and needs no call at all.
+    ///
+    /// The accepted set must match typecheck's validateInterpolations, which is
+    /// what produces the user-facing error for everything else.
+    fn lowerStringFrom(self: *LirLower, args: []const hir.HirId) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const v = try self.lowerExpr(args[0]);
+        // Dispatch on the inferred type, not the lowered one: `True` lowers as a
+        // Bool-typed constructor whose LIR local is an int, so asking the local
+        // would send it down the integer path.
+        const spec: struct { runtime: []const u8, ty: lir.LirType } = switch (self.resolve(self.exprs[args[0]].ty).*) {
+            .string => return v,
+            .float => .{ .runtime = "ko_float_to_string", .ty = .{ .float = {} } },
+            .bool => .{ .runtime = "ko_bool_to_string", .ty = .{ .bool = {} } },
+            .char => .{ .runtime = "ko_char_to_string", .ty = .{ .char = {} } },
+            // Unbound type variables reach here as ints, matching how println
+            // treats an unconstrained value.
+            else => .{ .runtime = "ko_int_to_string", .ty = .{ .int = {} } },
+        };
+        const arg = try self.coerce(v, spec.ty);
+        const fn_local = try self.emit(.{ .fn_ref = spec.runtime }, .{ .opaque_type = {} });
+        const param_tys = try self.allocator.alloc(lir.LirType, 1);
+        param_tys[0] = spec.ty;
+        return self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{arg}),
+            .fn_type = .{ .params = param_tys, .returns = .{ .string = {} } },
+        } }, .{ .string = {} });
     }
 
     /// `panic(msg)` — call ko_panic_str with the string's raw ptr.

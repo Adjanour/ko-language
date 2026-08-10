@@ -157,6 +157,9 @@ pub const Inferer = struct {
     expr_elem_tags: std.AutoHashMap(*const parser.Expr, i64),
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
     concrete_elem_tags: std.StringHashMap(i64),
+    /// Arguments of `String.from`, i.e. `${}` interpolation sites, with the loc
+    /// to report against. Checked by validateInterpolations() after inference.
+    interp_sites: std.AutoHashMap(*const parser.Expr, parser.Loc),
     /// Types that appeared as the object of a field access. See generalize().
     /// Stored as pointers, not ids: `unify` links a variable by setting
     /// `instance`, so the id that was current at field-access time may have
@@ -192,6 +195,7 @@ pub const Inferer = struct {
             .expr_elem_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
             .concrete_elem_tags = std.StringHashMap(i64).init(allocator),
+            .interp_sites = std.AutoHashMap(*const parser.Expr, parser.Loc).init(allocator),
             .field_access_vars = std.AutoHashMap(*Type, void).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
@@ -262,6 +266,7 @@ pub const Inferer = struct {
         self.expr_elem_tags.deinit();
         self.expr_types.deinit();
         self.concrete_elem_tags.deinit();
+        self.interp_sites.deinit();
         self.field_access_vars.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
@@ -672,12 +677,29 @@ pub const Inferer = struct {
                 return try self.newType(.{ .record = .{ .name = "", .fields = fts } });
             },
             .group => |inner| self.typeExprToType(inner.*),
+            // `Maybe Float`, `Result Error Int` — a type constructor applied to
+            // arguments, which is con(name, args). Treating it as a *value*
+            // application and unifying the head with an arrow (as this used to)
+            // fails, because typeExprToType already returns con("Maybe", [?a])
+            // for the head, and a con never unifies with an arrow.
             .application => |app| {
-                const func_ty = try self.typeExprToType(app.func.*);
-                const arg_ty = try self.typeExprToType(app.arg.*);
-                const result = try self.newVarType(try self.freshName("t"));
-                try self.unify(func_ty, try self.newType(.{ .arrow = .{ .from = arg_ty, .to = result } }));
-                return result;
+                var spine: std.ArrayList(*const parser.TypeExpr) = .empty;
+                defer spine.deinit(self.allocator);
+                try spine.append(self.allocator, app.arg);
+                var head: *const parser.TypeExpr = app.func;
+                while (head.* == .application) {
+                    try spine.append(self.allocator, head.application.arg);
+                    head = head.application.func;
+                }
+                const name = switch (head.*) {
+                    .constructor, .ident => |n| n,
+                    else => return try self.newVarType(try self.freshName("t")),
+                };
+                const args = try self.allocator.alloc(*Type, spine.items.len);
+                for (args, 0..) |*slot, i| {
+                    slot.* = try self.typeExprToType(spine.items[spine.items.len - 1 - i].*);
+                }
+                return try self.newType(.{ .con = .{ .name = name, .args = args } });
             },
         };
     }
@@ -907,6 +929,64 @@ pub const Inferer = struct {
         const string_to_int = try self.allocator.create(Type);
         string_to_int.* = .{ .arrow = .{ .from = string_ty, .to = try self.newType(.int) } };
         try self.global.set("String.length", .{ .quantified = &.{}, .body = string_to_int });
+
+        // String.from : a -> String — what `${e}` desugars to. It accepts any
+        // type here so inference never fails on it; validateInterpolations()
+        // rejects the types that have no text form once they are resolved, and
+        // lowering picks the concrete conversion from the static type.
+        {
+            const a = try self.newVarType("a");
+            const from_ty = try self.allocator.create(Type);
+            from_ty.* = .{ .arrow = .{ .from = a, .to = try self.newType(.string) } };
+            const q = try self.allocator.alloc(usize, 1);
+            q[0] = a.variable.id;
+            try self.global.set("String.from", .{ .quantified = q, .body = from_ty });
+        }
+
+        // String.fromInt / fromFloat, and the Char builtins.
+        {
+            const int_to_str = try self.allocator.create(Type);
+            int_to_str.* = .{ .arrow = .{ .from = try self.newType(.int), .to = try self.newType(.string) } };
+            try self.global.set("String.fromInt", .{ .quantified = &.{}, .body = int_to_str });
+
+            const float_to_str = try self.allocator.create(Type);
+            float_to_str.* = .{ .arrow = .{ .from = try self.newType(.float), .to = try self.newType(.string) } };
+            try self.global.set("String.fromFloat", .{ .quantified = &.{}, .body = float_to_str });
+
+            // String.toInt : String -> Maybe Int, String.toFloat : String -> Maybe Float
+            for ([_]struct { name: []const u8, elem: Type }{
+                .{ .name = "String.toInt", .elem = .{ .int = {} } },
+                .{ .name = "String.toFloat", .elem = .{ .float = {} } },
+            }) |spec| {
+                const args = try self.allocator.alloc(*Type, 1);
+                args[0] = try self.newType(spec.elem);
+                const maybe = try self.newType(.{ .con = .{ .name = "Maybe", .args = args } });
+                const ft = try self.allocator.create(Type);
+                ft.* = .{ .arrow = .{ .from = try self.newType(.string), .to = maybe } };
+                try self.global.set(spec.name, .{ .quantified = &.{}, .body = ft });
+            }
+
+            const char_to_int = try self.allocator.create(Type);
+            char_to_int.* = .{ .arrow = .{ .from = try self.newType(.char), .to = try self.newType(.int) } };
+            try self.global.set("ord", .{ .quantified = &.{}, .body = char_to_int });
+            try self.global.set("Char.toInt", .{ .quantified = &.{}, .body = char_to_int });
+
+            const int_to_char = try self.allocator.create(Type);
+            int_to_char.* = .{ .arrow = .{ .from = try self.newType(.int), .to = try self.newType(.char) } };
+            try self.global.set("chr", .{ .quantified = &.{}, .body = int_to_char });
+            try self.global.set("Char.fromInt", .{ .quantified = &.{}, .body = int_to_char });
+
+            for ([_][]const u8{ "Char.isAlpha", "Char.isDigit", "Char.isAlnum", "Char.isSpace", "Char.isUpper", "Char.isLower" }) |name| {
+                const pred = try self.allocator.create(Type);
+                pred.* = .{ .arrow = .{ .from = try self.newType(.char), .to = try self.newType(.bool) } };
+                try self.global.set(name, .{ .quantified = &.{}, .body = pred });
+            }
+            for ([_][]const u8{ "Char.toUpper", "Char.toLower" }) |name| {
+                const conv = try self.allocator.create(Type);
+                conv.* = .{ .arrow = .{ .from = try self.newType(.char), .to = try self.newType(.char) } };
+                try self.global.set(name, .{ .quantified = &.{}, .body = conv });
+            }
+        }
 
         const string_string_to_string = try self.allocator.create(Type);
         const string_param = try self.newType(.string);
@@ -1429,6 +1509,49 @@ pub const Inferer = struct {
         }
 
         self.finalizeElemTags();
+        self.validateInterpolations();
+    }
+
+    /// Reject `${e}` where `e` has no text form. This runs after inference
+    /// because the argument's type is usually still an unbound variable at the
+    /// point the call is seen. Types that pass here are exactly the ones
+    /// lowerStringFrom knows how to convert; the two lists must stay in step.
+    fn validateInterpolations(self: *Inferer) void {
+        const diags = self.diagnostics orelse return;
+        var it = self.interp_sites.iterator();
+        while (it.next()) |entry| {
+            const ty = self.expr_types.get(entry.key_ptr.*) orelse continue;
+            const r = self.resolve(ty);
+            switch (r.*) {
+                .string, .int, .float, .bool, .char => continue,
+                // A variable here means the value is polymorphic at this point,
+                // typically a generic function's parameter. The conversion is
+                // chosen from the static type, so there is nothing to choose;
+                // defaulting to Int would print a Float's raw bits.
+                .variable => {
+                    diags.addErrorCtx(
+                        "cannot interpolate a value whose type is not known here",
+                        entry.value_ptr.*,
+                        "the conversion is picked from the static type, and this one is still polymorphic",
+                        "annotate the parameter, or call String.fromInt / fromFloat explicitly",
+                    ) catch {};
+                    continue;
+                },
+                else => {},
+            }
+            const name = typeToString(self.allocator, r.*) catch null;
+            const msg = std.fmt.allocPrint(
+                self.allocator,
+                "cannot interpolate a value of type {s}",
+                .{name orelse "?"},
+            ) catch "cannot interpolate this value";
+            diags.addErrorCtx(
+                msg,
+                entry.value_ptr.*,
+                "only Int, Float, Bool, Char and String have a text form",
+                "convert it explicitly before interpolating",
+            ) catch {};
+        }
     }
 
     /// Element type tags must be computed once inference has finished: at the time
@@ -1849,7 +1972,20 @@ pub const Inferer = struct {
             },
             .record_literal => |rec| try self.inferRecordLiteral(env, rec.name, rec.fields),
             .field_access => |fa| try self.inferFieldAccess(env, fa.object, fa.field),
-            .fn_call => |call| try self.inferCall(env, call.func, call.args, call.named_args),
+            .fn_call => |call| blk: {
+                // Remember `String.from` arguments so their types can be checked
+                // once inference has finished — see validateInterpolations().
+                if (call.args.len == 1 and call.func.* == .field_access) {
+                    const fa = call.func.field_access;
+                    if (fa.object.* == .constructor and
+                        std.mem.eql(u8, fa.object.constructor.name, "String") and
+                        std.mem.eql(u8, fa.field, "from"))
+                    {
+                        self.interp_sites.put(call.args[0], call.loc) catch {};
+                    }
+                }
+                break :blk try self.inferCall(env, call.func, call.args, call.named_args);
+            },
             .lambda => |lam| try self.inferLambda(env, lam.params, lam.body),
             .unary_op => |u| try self.inferUnary(env, u.op, u.expr),
             .binary_op => |b| try self.inferBinary(env, b.op, b.left, b.right),
@@ -2505,13 +2641,19 @@ pub const Inferer = struct {
                 // type_name "Bool" but carry the primitive `bool` type, so reconstructing
                 // con("Bool") would fail to unify. A user-defined `type Bool = True | False`
                 // overwrites that scheme, so it still unifies as con("Bool").
+                //
+                // The field types come from that same instantiation. Leaving them as the
+                // fresh variables above would disconnect them from the scrutinee: matching
+                // `Maybe Float` on `Just v` would leave `v` unbound, and every use of `v`
+                // would fall back to the integer representation.
                 const con_ty = try self.newType(.{ .con = .{ .name = info.type_name, .args = type_args } });
                 const scrutinee_ty = blk: {
                     const scheme = self.global.getScheme(ctor.name) orelse break :blk con_ty;
                     var result = self.resolve(try self.instantiate(scheme));
-                    var remaining = info.arity;
-                    while (remaining > 0) : (remaining -= 1) {
+                    var idx: usize = 0;
+                    while (idx < info.arity) : (idx += 1) {
                         if (result.* != .arrow) break :blk con_ty;
+                        arg_types[idx] = result.arrow.from;
                         result = self.resolve(result.arrow.to);
                     }
                     break :blk result;

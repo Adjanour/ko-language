@@ -369,6 +369,11 @@ pub const StdlibCodegen = struct {
         const strtoll_type = core.LLVMFunctionType(self.i64Type(), &strtoll_params, 3, 0);
         _ = core.LLVMAddFunction(self.module, "strtoll", strtoll_type);
 
+        // strtod(ptr, ptr) -> double
+        var strtod_params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
+        const strtod_type = core.LLVMFunctionType(self.doubleType(), &strtod_params, 2, 0);
+        _ = core.LLVMAddFunction(self.module, "strtod", strtod_type);
+
         // abort() -> void
         var empty_params: [0]types.LLVMTypeRef = .{};
         const abort_type = core.LLVMFunctionType(self.voidType(), &empty_params, 0, 0);
@@ -412,6 +417,13 @@ pub const StdlibCodegen = struct {
         var tolower_params: [1]types.LLVMTypeRef = .{core.LLVMInt32TypeInContext(self.context)};
         const tolower_type = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &tolower_params, 1, 0);
         _ = core.LLVMAddFunction(self.module, "tolower", tolower_type);
+
+        // The ctype predicates backing Char.is*: all i32 -> i32.
+        for ([_][*:0]const u8{ "isalpha", "isdigit", "isalnum", "isspace", "isupper", "islower" }) |name| {
+            var ctype_params: [1]types.LLVMTypeRef = .{core.LLVMInt32TypeInContext(self.context)};
+            const ctype_ty = core.LLVMFunctionType(core.LLVMInt32TypeInContext(self.context), &ctype_params, 1, 0);
+            _ = core.LLVMAddFunction(self.module, name, ctype_ty);
+        }
 
         // isspace(i32) -> i32
         var isspace_params: [1]types.LLVMTypeRef = .{core.LLVMInt32TypeInContext(self.context)};
@@ -1985,14 +1997,115 @@ pub const StdlibCodegen = struct {
         // snprintf(buf, 32, "%ld", val) — returns number of characters written
         const snprintf_fn = core.LLVMGetNamedFunction(self.module, "snprintf");
         const fmt_str = self.globalStringConstant("%ld");
-        var snprintf_args: [3]types.LLVMValueRef = .{ buf, core.LLVMConstInt(self.i64Type(), 32, 0), fmt_str };
-        const written_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(snprintf_fn), snprintf_fn, &snprintf_args, 3, "written_len");
+        var snprintf_args: [4]types.LLVMValueRef = .{ buf, core.LLVMConstInt(self.i64Type(), 32, 0), fmt_str, val };
+        const written_len = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(snprintf_fn), snprintf_fn, &snprintf_args, 4, "written_len");
 
         // Wrap in KoString: ko_string_alloc(buf, written_len)
         const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_string_alloc");
         var alloc_args: [2]types.LLVMValueRef = .{ buf, written_len };
         const result = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "result");
         self.buildRet(result);
+    }
+
+    /// Emit `name(val: param_ty) -> KoString*` as snprintf into a scratch buffer
+    /// wrapped by ko_string_alloc. `fmt` must consume exactly one argument.
+    /// Formats match println_with_tag so `"${x}"` and `println x` agree.
+    fn emitToStringVia(
+        self: *StdlibCodegen,
+        name: [*:0]const u8,
+        param_ty: types.LLVMTypeRef,
+        fmt: [*:0]const u8,
+        buf_size: u64,
+        transform: enum { none, bitcast_double, trunc_i8 },
+    ) void {
+        var params: [1]types.LLVMTypeRef = .{param_ty};
+        const fn_val = self.createFunction(name, self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const raw = core.LLVMGetParam(fn_val, 0);
+        const val = switch (transform) {
+            .none => raw,
+            .bitcast_double => core.LLVMBuildBitCast(self.builder, raw, self.doubleType(), "f"),
+            // `%c` reads an int from the varargs, so the i8 a Kō Char lowers to
+            // has to be widened rather than passed at its own width.
+            .trunc_i8 => core.LLVMBuildSExt(self.builder, raw, core.LLVMInt32TypeInContext(self.context), "c"),
+        };
+
+        const malloc_fn = core.LLVMGetNamedFunction(self.module, "malloc");
+        var malloc_args: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), buf_size, 0)};
+        const buf = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(malloc_fn), malloc_fn, &malloc_args, 1, "buf");
+
+        const snprintf_fn = core.LLVMGetNamedFunction(self.module, "snprintf");
+        var args: [4]types.LLVMValueRef = .{ buf, core.LLVMConstInt(self.i64Type(), buf_size, 0), self.globalStringConstant(fmt), val };
+        const written = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(snprintf_fn), snprintf_fn, &args, 4, "written");
+
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_string_alloc");
+        var alloc_args: [2]types.LLVMValueRef = .{ buf, written };
+        self.buildRet(core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "result"));
+    }
+
+    /// Char predicates and case conversion. Chars are i64 at the Kō level, so
+    /// each wrapper truncates to the i32 the ctype functions take and widens the
+    /// result back. `ord`/`chr` are pure representation changes and need no
+    /// runtime function at all — see lowerCharOp.
+    pub fn codegenCharOps(self: *StdlibCodegen) void {
+        const pairs = [_]struct { ko: [*:0]const u8, libc: [*:0]const u8, boolean: bool }{
+            .{ .ko = "ko_char_is_alpha", .libc = "isalpha", .boolean = true },
+            .{ .ko = "ko_char_is_digit", .libc = "isdigit", .boolean = true },
+            .{ .ko = "ko_char_is_alnum", .libc = "isalnum", .boolean = true },
+            .{ .ko = "ko_char_is_space", .libc = "isspace", .boolean = true },
+            .{ .ko = "ko_char_is_upper", .libc = "isupper", .boolean = true },
+            .{ .ko = "ko_char_is_lower", .libc = "islower", .boolean = true },
+            .{ .ko = "ko_char_to_upper", .libc = "toupper", .boolean = false },
+            .{ .ko = "ko_char_to_lower", .libc = "tolower", .boolean = false },
+        };
+        const i32_ty = core.LLVMInt32TypeInContext(self.context);
+        for (pairs) |p| {
+            var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+            const fn_val = self.createFunction(p.ko, self.i64Type(), &params);
+            const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+            core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+            const ch = core.LLVMBuildTrunc(self.builder, core.LLVMGetParam(fn_val, 0), i32_ty, "ch");
+            const libc_fn = core.LLVMGetNamedFunction(self.module, p.libc) orelse unreachable;
+            var args: [1]types.LLVMValueRef = .{ch};
+            const res = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(libc_fn), libc_fn, &args, 1, "res");
+
+            // The ctype predicates return any nonzero value for true, not 1.
+            const normalized = if (p.boolean)
+                core.LLVMBuildZExt(self.builder, core.LLVMBuildICmp(self.builder, .LLVMIntNE, res, core.LLVMConstInt(i32_ty, 0, 0), "is_set"), self.i64Type(), "out")
+            else
+                core.LLVMBuildSExt(self.builder, res, self.i64Type(), "out");
+            self.buildRet(normalized);
+        }
+    }
+
+    // Parameter types must be the LLVM types the LIR uses for these Kō types —
+    // double, i8, i1 — not the i64 the older runtime helpers take, or the call
+    // site and the body disagree about the argument's width.
+    pub fn codegenFloatToString(self: *StdlibCodegen) void {
+        self.emitToStringVia("ko_float_to_string", self.doubleType(), "%f", 64, .none);
+    }
+
+    pub fn codegenCharToString(self: *StdlibCodegen) void {
+        self.emitToStringVia("ko_char_to_string", self.i8Type(), "%c", 8, .trunc_i8);
+    }
+
+    pub fn codegenBoolToString(self: *StdlibCodegen) void {
+        // "True"/"False", matching println rather than the lowercase C spelling.
+        var params: [1]types.LLVMTypeRef = .{core.LLVMInt1TypeInContext(self.context)};
+        const fn_val = self.createFunction("ko_bool_to_string", self.ptrType(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+
+        const is_true = core.LLVMGetParam(fn_val, 0);
+        const text = core.LLVMBuildSelect(self.builder, is_true, self.globalStringConstant("True"), self.globalStringConstant("False"), "text");
+        const len = core.LLVMBuildSelect(self.builder, is_true, core.LLVMConstInt(self.i64Type(), 4, 0), core.LLVMConstInt(self.i64Type(), 5, 0), "len");
+
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_string_alloc");
+        var alloc_args: [2]types.LLVMValueRef = .{ text, len };
+        self.buildRet(core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "result"));
     }
 
     // ============================================================
@@ -2034,6 +2147,70 @@ pub const StdlibCodegen = struct {
 
         // return 1 (success)
         self.buildRet(core.LLVMConstInt(self.i64Type(), 1, 0));
+    }
+
+    /// `String.toInt` / `String.toFloat`, returning `Maybe`.
+    ///
+    /// The Maybe is built here in the constructor layout lowerConstructorApply
+    /// emits — arity-0 `Nothing` is the bare tag 1, and `Just x` is a heap
+    /// `{tag, payload}` with type_tag 1 — so the result matches a Maybe the
+    /// compiler built and can be pattern-matched like one.
+    ///
+    /// Parsing is stricter than the older ko_string_to_int, which used strtoll
+    /// with a null end pointer and so reported success for "abc" (value 0) and
+    /// for trailing junk like "12x". Here anything left unconsumed is Nothing.
+    fn emitStringToMaybe(self: *StdlibCodegen, name: [*:0]const u8, is_float: bool) void {
+        var params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fn_val = self.createFunction(name, self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const parse_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "parse");
+        const just_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "just");
+        const nothing_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "nothing");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const str = core.LLVMGetParam(fn_val, 0);
+        const end_slot = core.LLVMBuildAlloca(self.builder, self.ptrType(), "end_slot");
+        const is_null = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, str, core.LLVMConstNull(self.ptrType()), "is_null");
+        _ = core.LLVMBuildCondBr(self.builder, is_null, nothing_bb, parse_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, parse_bb);
+        const parsed = blk: {
+            if (is_float) {
+                const strtod_fn = core.LLVMGetNamedFunction(self.module, "strtod") orelse unreachable;
+                var args: [2]types.LLVMValueRef = .{ str, end_slot };
+                const d = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strtod_fn), strtod_fn, &args, 2, "d");
+                break :blk core.LLVMBuildBitCast(self.builder, d, self.i64Type(), "bits");
+            }
+            const strtoll_fn = core.LLVMGetNamedFunction(self.module, "strtoll") orelse unreachable;
+            var args: [3]types.LLVMValueRef = .{ str, end_slot, core.LLVMConstInt(self.i64Type(), 10, 0) };
+            break :blk core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(strtoll_fn), strtoll_fn, &args, 3, "n");
+        };
+        const end = core.LLVMBuildLoad2(self.builder, self.ptrType(), end_slot, "end");
+        // Nothing unless strtoll/strtod consumed at least one character and
+        // stopped exactly at the NUL.
+        const consumed_none = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, end, str, "consumed_none");
+        const last = core.LLVMBuildLoad2(self.builder, self.i8Type(), end, "last");
+        const has_trailing = core.LLVMBuildICmp(self.builder, .LLVMIntNE, last, core.LLVMConstInt(self.i8Type(), 0, 0), "has_trailing");
+        const bad = core.LLVMBuildOr(self.builder, consumed_none, has_trailing, "bad");
+        _ = core.LLVMBuildCondBr(self.builder, bad, nothing_bb, just_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, just_bb);
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+        var alloc_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+        const cell = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "cell");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), cell); // Just = tag 0
+        var payload_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const payload = core.LLVMBuildGEP2(self.builder, self.i8Type(), cell, &payload_idx, 1, "payload");
+        _ = core.LLVMBuildStore(self.builder, parsed, payload);
+        self.buildRet(core.LLVMBuildPtrToInt(self.builder, cell, self.i64Type(), "just"));
+
+        core.LLVMPositionBuilderAtEnd(self.builder, nothing_bb);
+        self.buildRet(core.LLVMConstInt(self.i64Type(), 1, 0)); // Nothing = tag 1
+    }
+
+    pub fn codegenStringToMaybe(self: *StdlibCodegen) void {
+        self.emitStringToMaybe("ko_string_to_maybe_int", false);
+        self.emitStringToMaybe("ko_string_to_maybe_float", true);
     }
 
     // ============================================================
@@ -3449,6 +3626,10 @@ pub const StdlibCodegen = struct {
         self.codegenStringSubstring();
         self.codegenStringIndexOf();
         self.codegenIntToString();
+        self.codegenFloatToString();
+        self.codegenCharToString();
+        self.codegenBoolToString();
+        self.codegenCharOps();
         self.codegenStringToInt();
 
         self.codegenFloatOfInt();
@@ -3458,6 +3639,8 @@ pub const StdlibCodegen = struct {
         self.codegenFloatPredicates();
 
         self.codegenKoAlloc();
+        // After codegenKoAlloc: these build Maybe cells with it.
+        self.codegenStringToMaybe();
         self.codegenKoIncref();
 
         // Pre-declare ko_decref so ko_decref_value can call it recursively.

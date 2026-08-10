@@ -3736,11 +3736,15 @@ test "lir_lower: switch dispatch with wildcard" {
 
 test "lir_lower: decision tree with nested constructors (Maybe)" {
     // Two-arm match on Maybe — tests linear fallback for 2-arm matches.
+    // The Nothing arm returns 0, not `v`: `Just x => x` has the element type
+    // while `v` has the Maybe type, so returning `v` is ill-typed. It used to
+    // pass only because constructor patterns bound their fields to fresh
+    // variables disconnected from the scrutinee, which hid the mismatch.
     try std.testing.expectEqual(@as(i64, 42), try testRuntimeLir(
         \\type Maybe a = Just a | Nothing
         \\fn from_just v = match v
         \\  Just x => x
-        \\  Nothing => v
+        \\  Nothing => 0
         \\fn main = from_just (Just 42)
     ));
 }
@@ -4079,3 +4083,129 @@ test "runtime output: record field access through a function parameter" {
 // runner's own process, so the abort() at the end of ko_panic takes the runner
 // down with it. The stdout-flush fix it needs is checked by running a panicking
 // program under a pipe by hand.
+
+// ──── Stage 1: strings phase 2 ────
+
+test "runtime output: string interpolation of a String" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let name = "World"
+        \\  println "Hello, ${name}!"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("Hello, World!\n", captured.output);
+}
+
+test "runtime output: interpolation converts each primitive" {
+    // Formats match println_with_tag so the two agree on every type.
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println "i=${1} f=${2.5} b=${True} c=${'z'} s=${"str"}"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("i=1 f=2.500000 b=True c=z s=str\n", captured.output);
+}
+
+test "runtime output: interpolation of an arbitrary expression" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println "expr=${1 + 2 * 3} up=${String.toUpperCase "abc"}"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("expr=7 up=ABC\n", captured.output);
+}
+
+test "runtime output: string literal inside an interpolation" {
+    // The lexer has to skip the nested quotes, or the inner `"` closes the
+    // outer literal and the rest of the line lexes as code.
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println "len=${String.length "hello"}"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("len=5\n", captured.output);
+}
+
+test "runtime output: escape sequences" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println "a\tb|\"q\"|\\|\$notinterp|\x41|\u{00E9}"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("a\tb|\"q\"|\\|$notinterp|A|\u{00E9}\n", captured.output);
+}
+
+test "runtime output: char literal is its own byte" {
+    // char_literal used to carry its quotes while consumers read val[0], so
+    // every char literal evaluated to '\''.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  println 'x'
+        \\  println '\n'
+        \\  println (ord 'A')
+        \\  println (chr 66)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("x\n\n\n65\nB\n", captured.output);
+}
+
+test "runtime output: char predicates and case conversion" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  println (Char.isDigit '7')
+        \\  println (Char.isAlpha '7')
+        \\  println (Char.toUpper 'q')
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("True\nFalse\nQ\n", captured.output);
+}
+
+test "runtime output: Int.toString formats the value" {
+    // ko_int_to_string passed snprintf only three arguments, so `%ld` consumed
+    // whatever happened to be in the register — usually the buffer pointer.
+    var captured = try testRuntimeOutputLir(
+        \\fn main = println (String.append (Int.toString 7) "!")
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("7!\n", captured.output);
+}
+
+test "runtime output: String.toInt rejects trailing junk" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe Int) =
+        \\  match m
+        \\    | Just v => "got ${v}"
+        \\    | Nothing => "none"
+        \\fn main =
+        \\  println (describe (String.toInt "42"))
+        \\  println (describe (String.toInt "12x"))
+        \\  println (describe (String.toInt "abc"))
+        \\  println (describe (String.toInt ""))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("got 42\nnone\nnone\nnone\n", captured.output);
+}
+
+test "runtime output: constructor pattern binds the scrutinee's field type" {
+    // `Just v` on a Maybe Float used to bind v to a variable disconnected from
+    // the scrutinee, so v fell back to the integer representation and printed
+    // the double's raw bits.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  match String.toFloat "3.5"
+        \\    | Just v => println "got ${v}"
+        \\    | Nothing => println "none"
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("got 3.500000\n", captured.output);
+}
+
+test "typecheck: parameterised type annotation resolves to a con" {
+    // `Maybe Float` is a type application; it used to be treated as a *value*
+    // application and unified against an arrow, which could never succeed.
+    var captured = try testRuntimeOutputLir(
+        \\fn unwrapOr (d : Float) (m : Maybe Float) =
+        \\  match m
+        \\    | Just v => v
+        \\    | Nothing => d
+        \\fn main = println (unwrapOr 0.0 (String.toFloat "1.5"))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("1.500000\n", captured.output);
+}

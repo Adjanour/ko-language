@@ -389,15 +389,9 @@ pub const HirLower = struct {
             .float_literal => |val| self.allocExpr(.{ .float = val }, ty, expr),
             .bool_literal => |val| self.allocExpr(.{ .bool = val }, ty, expr),
             .char_literal => |val| self.allocExpr(.{ .char = if (val.len > 0) val[0] else 0 }, ty, expr),
-            .string_literal => |val| blk: {
-                // Strip surrounding quotes once, here — downstream paths
-                // (HIR folds, LIR lowering, codegen) see clean string bytes.
-                const inner = if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"')
-                    val[1 .. val.len - 1]
-                else
-                    val;
-                break :blk self.allocExpr(.{ .string = inner }, ty, expr);
-            },
+            // The parser already stripped the quotes and decoded escapes, so the
+            // literal holds its final bytes.
+            .string_literal => |val| self.allocExpr(.{ .string = val }, ty, expr),
             .identifier => |id| {
                 const local = self.lookupLocal(id.name);
                 if (local) |lid| {

@@ -153,11 +153,8 @@ pub const CompileTimeWorld = struct {
             .int_literal => |v| .{ .int = v },
             .float_literal => |v| .{ .float = v },
             .bool_literal => |v| .{ .bool_val = v },
-            .char_literal => |v| blk: {
-                const inner = if (v.len >= 2 and v[0] == '\'' and v[v.len - 1] == '\'')
-                    v[1 .. v.len - 1]
-                else
-                    v;
+            .char_literal => |inner| blk: {
+                // The parser already unquoted and decoded it to one byte.
                 if (inner.len == 0) break :blk .{ .char = 0 };
                 break :blk .{ .char = inner[0] };
             },

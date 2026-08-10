@@ -719,22 +719,13 @@ pub const Codegen = struct {
                 break :blk core.LLVMConstBitCast(double_val, i64_type);
             },
             .bool_literal => |val| core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intFromBool(val), 0),
-            .char_literal => |val| blk: {
-                // Char literal includes quotes, strip them
-                const inner = if (val.len >= 2 and val[0] == '\'' and val[val.len - 1] == '\'')
-                    val[1 .. val.len - 1]
-                else
-                    val;
-                // Char literal is a single character, represent as i64
+            .char_literal => |inner| blk: {
+                // The parser already unquoted and decoded it to one byte.
                 if (inner.len == 0) break :blk core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), 0, 0);
                 break :blk core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), inner[0], 0);
             },
-            .string_literal => |val| blk: {
-                // Strip surrounding quotes from the literal
-                const inner = if (val.len >= 2 and val[0] == '"' and val[val.len - 1] == '"')
-                    val[1 .. val.len - 1]
-                else
-                    val;
+            .string_literal => |inner| blk: {
+                // Quotes were stripped and escapes decoded by the parser.
                 // Create a global string constant
                 const str_val = core.LLVMConstStringInContext(self.context, @ptrCast(inner.ptr), @intCast(inner.len), NULL_TERMINATE);
                 const global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(str_val), "str");

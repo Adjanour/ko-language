@@ -874,6 +874,200 @@ pub const Parser = struct {
         }
     }
 
+    // =========================================================================
+    // String literals: escapes and `${}` interpolation
+    // =========================================================================
+
+    /// Decode the escape whose introducing `\` is at `body[i]`. Appends the
+    /// decoded bytes to `out` and returns the index just past the sequence.
+    /// An unrecognised escape is an error rather than a silent passthrough, so
+    /// that adding sequences later cannot change the meaning of old programs.
+    fn decodeEscape(self: *Parser, body: []const u8, i: usize, out: *std.ArrayList(u8)) Error!usize {
+        if (i + 1 >= body.len) return self.fail("string ends in a trailing backslash", .{});
+        const c = body[i + 1];
+        const simple: ?u8 = switch (c) {
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '0' => 0,
+            '\\' => '\\',
+            '"' => '"',
+            '\'' => '\'',
+            // `\$` writes a literal `$`, the only way to put `${` in a string.
+            '$' => '$',
+            else => null,
+        };
+        if (simple) |b| {
+            try out.append(self.allocator, b);
+            return i + 2;
+        }
+        if (c == 'x') {
+            if (i + 3 >= body.len) return self.fail("\\x needs two hex digits", .{});
+            const byte = std.fmt.parseInt(u8, body[i + 2 .. i + 4], 16) catch
+                return self.fail("\\x needs two hex digits", .{});
+            try out.append(self.allocator, byte);
+            return i + 4;
+        }
+        if (c == 'u') {
+            if (i + 2 >= body.len or body[i + 2] != '{') return self.fail("\\u must be written \\u{{...}}", .{});
+            const close = std.mem.indexOfScalarPos(u8, body, i + 3, '}') orelse
+                return self.fail("unterminated \\u{{...}}", .{});
+            const cp = std.fmt.parseInt(u21, body[i + 3 .. close], 16) catch
+                return self.fail("\\u{{...}} needs hex digits", .{});
+            var buf: [4]u8 = undefined;
+            const n = std.unicode.utf8Encode(cp, &buf) catch
+                return self.fail("\\u{{{s}}} is not a valid codepoint", .{body[i + 3 .. close]});
+            try out.appendSlice(self.allocator, buf[0..n]);
+            return close + 1;
+        }
+        return self.fail("unknown escape '\\{c}'", .{c});
+    }
+
+    /// Index just past the `}` closing a `${` that opened at `body[start]`.
+    /// Mirrors the lexer's `skipInterpolation`: brace depth, and quotes skipped
+    /// so a `}` inside a nested literal is not read as the terminator.
+    fn interpolationEnd(self: *Parser, body: []const u8, start: usize) Error!usize {
+        var depth: usize = 1;
+        var i = start;
+        while (i < body.len) : (i += 1) {
+            switch (body[i]) {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) return i;
+                },
+                '"', '\'' => {
+                    const quote = body[i];
+                    i += 1;
+                    while (i < body.len and body[i] != quote) : (i += 1) {
+                        if (body[i] == '\\') i += 1;
+                    }
+                },
+                else => {},
+            }
+        }
+        return self.fail("unterminated '${{' in string literal", .{});
+    }
+
+    /// Parse the text of a `${...}` as an expression, using a nested parser over
+    /// a copy of just that slice. Locations inside it are relative to the slice,
+    /// so errors point at the interpolation rather than the exact column.
+    fn parse_interpolated_expr(self: *Parser, src: []const u8, loc: Loc) Error!*Expr {
+        const trimmed = std.mem.trim(u8, src, " \t\r\n");
+        if (trimmed.len == 0) return self.fail("empty '${{}}' in string literal", .{});
+        const owned = try self.allocator.allocSentinel(u8, trimmed.len, 0);
+        @memcpy(owned, trimmed);
+        var sub = try Parser.init(self.allocator, owned);
+        const expr = sub.parse_expr() catch |err| {
+            if (sub.last_error) |ec| self.last_error = .{ .message = ec.message, .loc = loc };
+            return err;
+        };
+        return expr;
+    }
+
+    /// Build `String.append lhs rhs`.
+    fn appendCall(self: *Parser, lhs: *Expr, rhs: *Expr, loc: Loc) Error!*Expr {
+        const ns = try self.newExpr(.{ .constructor = .{ .name = "String", .loc = loc } }, loc);
+        const callee = try self.newExpr(.{ .field_access = .{ .object = ns, .field = "append" } }, loc);
+        return self.newExpr(.{ .fn_call = .{
+            .func = callee,
+            .args = try self.allocExprPtrSlice(&.{ lhs, rhs }),
+            .named_args = &.{},
+            .loc = loc,
+        } }, loc);
+    }
+
+    /// Build `String.from e` — the conversion interpolation inserts around a
+    /// non-string. It is resolved to a concrete runtime call from the static
+    /// type of `e` during lowering; there is no runtime dispatch.
+    fn stringFromCall(self: *Parser, e: *Expr, loc: Loc) Error!*Expr {
+        const ns = try self.newExpr(.{ .constructor = .{ .name = "String", .loc = loc } }, loc);
+        const callee = try self.newExpr(.{ .field_access = .{ .object = ns, .field = "from" } }, loc);
+        return self.newExpr(.{ .fn_call = .{
+            .func = callee,
+            .args = try self.allocExprPtrSlice(&.{e}),
+            .named_args = &.{},
+            .loc = loc,
+        } }, loc);
+    }
+
+    /// Decode a char token to its single byte. The raw slice still has its
+    /// quotes, and consumers read `val[0]`, so returning it unprocessed makes
+    /// `'x'` mean `'`. Escapes are decoded with the same table strings use.
+    fn parse_char_literal(self: *Parser, tok: lexer.Token) Error![]const u8 {
+        const raw = self.slice(tok);
+        const body = if (raw.len >= 2 and raw[0] == '\'' and raw[raw.len - 1] == '\'')
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        if (body.len > 0 and body[0] == '\\') {
+            _ = try self.decodeEscape(body, 0, &buf);
+        } else {
+            try buf.appendSlice(self.allocator, body);
+        }
+
+        if (buf.items.len == 0) return self.fail("empty character literal", .{});
+        if (buf.items.len > 1) {
+            return self.fail("a Char holds one byte; '{s}' needs {d}", .{ body, buf.items.len });
+        }
+        return self.allocSlice(u8, buf.items);
+    }
+
+    /// Turn a string token into an expression: a plain literal when there is no
+    /// `${}`, otherwise a left-nested chain of `String.append`.
+    ///
+    /// Escapes are decoded here, so `string_literal` downstream always holds the
+    /// final bytes with no quotes — nothing further should try to strip them.
+    fn parse_string_literal(self: *Parser, tok: lexer.Token) Error!*Expr {
+        const loc = self.tokenLoc(tok);
+        const raw = self.slice(tok);
+        const body = if (raw.len >= 2 and raw[0] == '"' and raw[raw.len - 1] == '"')
+            raw[1 .. raw.len - 1]
+        else
+            raw;
+
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(self.allocator);
+        // Null until the first segment is produced; each new segment is appended
+        // onto it, so `"a${x}b"` folds as append(append("a", x), "b").
+        var acc: ?*Expr = null;
+
+        var i: usize = 0;
+        while (i < body.len) {
+            if (body[i] == '\\') {
+                i = try self.decodeEscape(body, i, &buf);
+                continue;
+            }
+            if (body[i] == '$' and i + 1 < body.len and body[i + 1] == '{') {
+                const end = try self.interpolationEnd(body, i + 2);
+                if (buf.items.len > 0) {
+                    const lit = try self.newExpr(.{ .string_literal = try self.allocSlice(u8, buf.items) }, loc);
+                    acc = if (acc) |a| try self.appendCall(a, lit, loc) else lit;
+                    buf.clearRetainingCapacity();
+                }
+                const inner = try self.parse_interpolated_expr(body[i + 2 .. end], loc);
+                const conv = try self.stringFromCall(inner, loc);
+                acc = if (acc) |a| try self.appendCall(a, conv, loc) else conv;
+                i = end + 1;
+                continue;
+            }
+            try buf.append(self.allocator, body[i]);
+            i += 1;
+        }
+
+        if (acc == null) {
+            return self.newExpr(.{ .string_literal = try self.allocSlice(u8, buf.items) }, loc);
+        }
+        if (buf.items.len > 0) {
+            const lit = try self.newExpr(.{ .string_literal = try self.allocSlice(u8, buf.items) }, loc);
+            return self.appendCall(acc.?, lit, loc);
+        }
+        return acc.?;
+    }
+
     fn newTypeExpr(self: *Parser, te: TypeExpr) !*TypeExpr {
         const ptr = try self.allocator.create(TypeExpr);
         ptr.* = te;
@@ -1194,8 +1388,14 @@ pub const Parser = struct {
                 }
                 return self.newExpr(.{ .int_literal = try std.fmt.parseInt(i64, s, 10) }, self.tokenLoc(t));
             },
-            .string => return self.newExpr(.{ .string_literal = self.slice(self.advance()) }, self.tokenLoc(t)),
-            .char => return self.newExpr(.{ .char_literal = self.slice(self.advance()) }, self.tokenLoc(t)),
+            .string => {
+                _ = self.advance();
+                return self.parse_string_literal(t);
+            },
+            .char => {
+                _ = self.advance();
+                return self.newExpr(.{ .char_literal = try self.parse_char_literal(t) }, self.tokenLoc(t));
+            },
             .keyword_true => { _ = self.advance(); return self.newExpr(.{ .bool_literal = true }, self.tokenLoc(t)); },
             .keyword_false => { _ = self.advance(); return self.newExpr(.{ .bool_literal = false }, self.tokenLoc(t)); },
             .identifier => {
@@ -1345,11 +1545,16 @@ pub const Parser = struct {
             },
             .string => {
                 _ = self.advance();
-                return .{ .literal = .{ .string = self.slice(t) } };
+                // Patterns match against a fixed value, so interpolation has
+                // nothing to match; parse_string_literal rejects it by yielding
+                // a non-literal expression.
+                const e = try self.parse_string_literal(t);
+                if (e.* != .string_literal) return self.fail("'${{}}' cannot appear in a pattern", .{});
+                return .{ .literal = .{ .string = e.string_literal } };
             },
             .char => {
                 _ = self.advance();
-                return .{ .literal = .{ .char = self.slice(t) } };
+                return .{ .literal = .{ .char = try self.parse_char_literal(t) } };
             },
             .keyword_true => { _ = self.advance(); return .{ .literal = .{ .bool = true } }; },
             .keyword_false => { _ = self.advance(); return .{ .literal = .{ .bool = false } }; },

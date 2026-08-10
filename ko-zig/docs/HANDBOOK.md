@@ -252,6 +252,14 @@ a float when it follows a number, so `t.0.1` lexes as `t` `.` `0.1`, one token.
 `parse_field_access` splits a numeric field on `.` and emits one access per
 component.
 
+**String and char literals hold final bytes.** `parse_string_literal` and
+`parse_char_literal` strip the quotes and decode escapes, so `string_literal`
+and `char_literal` carry exactly the bytes that reach codegen. Do not add
+quote-stripping downstream — it used to live in `hir_lower` and `codegen`, and
+would corrupt a literal whose decoded content happens to begin and end with a
+quote. A string containing `${` is not a literal at all; it becomes a chain of
+`String.append` calls.
+
 ### Step 4: Typechecker (`src/typecheck.zig`)
 
 Add inference in `inferBinary()` (line ~1100). Find the switch on `.op`:
@@ -535,6 +543,23 @@ different representative later. Anything remembering a variable across inference
 steps must store the `*Type` and re-resolve at the point of use, the way
 `generalize` does with `field_access_vars`. Storing the bare id gives a set that
 silently stops matching.
+
+**Bindings must come from the same instantiation as the thing they destructure.**
+A constructor pattern instantiates the constructor's scheme once; the arrow's
+`from` types are the field types and the final result is the scrutinee type.
+Allocating fresh variables for the fields instead leaves them unconnected to the
+scrutinee, so matching `Maybe Float` with `Just v` binds `v` to nothing in
+particular. That does not fail — it degrades: `v` resolves to a variable, every
+consumer falls back to the integer representation, and a Float prints as its raw
+bits. It also suppresses genuine type errors in the arms.
+
+### Type expressions
+
+`typeExprToType` and `ctorParamType` both walk `parser.TypeExpr`, and both need
+`.application` to mean *type application* — `Maybe Float` is `con("Maybe",
+[Float])`. Treating it as a value application and unifying the head against an
+arrow cannot succeed, because the head is already a `con`. Collect the spine to
+the head, then build the `con`.
 
 ---
 
