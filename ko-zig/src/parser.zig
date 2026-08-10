@@ -207,7 +207,7 @@ pub const Parser = struct {
     fn is_expr_start(tag: lexer.Token.Tag) bool {
         return switch (tag) {
             .number, .string, .char, .identifier, .constructor, .keyword_true, .keyword_false,
-            .lparen, .keyword_if, .keyword_match, .backslash, .keyword_not, .keyword_ref => true,
+            .lparen, .lbracket, .keyword_if, .keyword_match, .backslash, .keyword_not, .keyword_ref => true,
             else => false,
         };
     }
@@ -991,6 +991,54 @@ pub const Parser = struct {
         } }, loc);
     }
 
+    /// Build a call to `Ns.name` with the given arguments.
+    fn builtinCall(self: *Parser, ns: []const u8, name: []const u8, args: []const *Expr, loc: Loc) Error!*Expr {
+        const ns_expr = try self.newExpr(.{ .constructor = .{ .name = ns, .loc = loc } }, loc);
+        const callee = try self.newExpr(.{ .field_access = .{ .object = ns_expr, .field = name } }, loc);
+        return self.newExpr(.{ .fn_call = .{
+            .func = callee,
+            .args = try self.allocExprPtrSlice(args),
+            .named_args = &.{},
+            .loc = loc,
+        } }, loc);
+    }
+
+    /// `[a, b, c]` — an array literal, desugared to
+    /// `Array.push (Array.push (Array.new 3) a) b) c`.
+    ///
+    /// Desugaring rather than adding an AST node keeps every later pass
+    /// unchanged. It relies on `push` returning the array: elements live inline
+    /// after the header, so growing one moves it and the handle cannot be
+    /// stable. `Array.new` takes the final length as a capacity hint, so a
+    /// literal allocates exactly once despite the chain.
+    fn parse_array_literal(self: *Parser) Error!*Expr {
+        const open = self.current();
+        const loc = self.tokenLoc(open);
+        _ = try self.expect(.lbracket);
+
+        var items: std.ArrayList(*Expr) = .empty;
+        defer items.deinit(self.allocator);
+        self.skip_layout();
+        while (self.current().tag != .rbracket and self.current().tag != .eof) {
+            try items.append(self.allocator, try self.parse_expr());
+            self.skip_layout();
+            if (self.match(.comma)) {
+                self.skip_layout();
+                continue;
+            }
+            break;
+        }
+        self.skip_layout();
+        _ = try self.expect(.rbracket);
+
+        const cap = try self.newExpr(.{ .int_literal = @intCast(items.items.len) }, loc);
+        var acc = try self.builtinCall("Array", "new", &.{cap}, loc);
+        for (items.items) |item| {
+            acc = try self.builtinCall("Array", "push", &.{ acc, item }, loc);
+        }
+        return acc;
+    }
+
     /// Decode a char token to its single byte. The raw slice still has its
     /// quotes, and consumers read `val[0]`, so returning it unprocessed makes
     /// `'x'` mean `'`. Escapes are decoded with the same table strings use.
@@ -1412,6 +1460,7 @@ pub const Parser = struct {
                 return self.newExpr(.{ .constructor = .{ .name = name } }, self.tokenLoc(t));
             },
             .lparen => return self.parse_group_or_tuple(),
+            .lbracket => return self.parse_array_literal(),
             .backslash => return self.parse_lambda(),
             .keyword_comptime => return self.parse_comptime(),
             .keyword_if => return self.parse_if(),

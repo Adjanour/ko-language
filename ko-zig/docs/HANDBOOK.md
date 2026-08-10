@@ -553,6 +553,28 @@ particular. That does not fail — it degrades: `v` resolves to a variable, ever
 consumer falls back to the integer representation, and a Float prints as its raw
 bits. It also suppresses genuine type errors in the arms.
 
+### Calling a Kō function from runtime code
+
+Runtime functions that take a callback (`ko_array_map`, `ko_result_map`, …) see
+a function value in one of two shapes, distinguished by **bit 0**: set means a
+closure, whose slot 0 holds the real function pointer and which passes itself as
+the first argument; clear means a bare function pointer taking the argument
+alone. `lir_lower` sets that bit when an arrow-typed value is passed to a
+runtime call.
+
+Two things about this bite:
+
+**A curried application produces an untagged closure.** Applying a two-argument
+curried function to one argument returns another closure — but as a plain
+pointer, because the tag is only applied at the boundary. Runtime code doing a
+second application (any fold) must set bit 0 itself before calling again, or it
+jumps to whatever slot 0 happens to hold.
+
+**A `Bool`-returning Kō function returns `i1`.** Only the low bit of the return
+register is defined. Runtime code that reads the result as an i64 and tests it
+against zero will see the undefined high bits — a predicate written that way
+accepts everything. Mask bit 0.
+
 ### Type expressions
 
 `typeExprToType` and `ctorParamType` both walk `parser.TypeExpr`, and both need

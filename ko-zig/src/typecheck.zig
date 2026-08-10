@@ -224,6 +224,120 @@ pub const Inferer = struct {
         return inferer;
     }
 
+    /// Build `t0 -> t1 -> ... -> ret` from a slice of parameter types.
+    fn arrowOf(self: *Inferer, params: []const *Type, ret: *Type) Error!*Type {
+        var out = ret;
+        var i = params.len;
+        while (i > 0) : (i -= 1) {
+            const node = try self.allocator.create(Type);
+            node.* = .{ .arrow = .{ .from = params[i - 1], .to = out } };
+            out = node;
+        }
+        return out;
+    }
+
+    /// `Array a` is a builtin con with one parameter. Every signature below is
+    /// polymorphic in the element type, so each is generalized over the
+    /// variables it introduces.
+    ///
+    /// `push` returns the array rather than Unit, unlike DESIGN-data-structures
+    /// §3: elements live inline after the header, so growing an array moves it
+    /// and no handle into it can stay valid. `set` mutates in place and does
+    /// return Unit, since it never reallocates.
+    fn registerArrayBuiltins(self: *Inferer) Error!void {
+        try self.type_names.put("Array", 1);
+
+        const Sig = struct { name: []const u8, kind: enum { new, make, get, set, push, pop, length, is_empty } };
+        for ([_]Sig{
+            .{ .name = "Array.new", .kind = .new },
+            .{ .name = "Array.make", .kind = .make },
+            .{ .name = "Array.get", .kind = .get },
+            .{ .name = "Array.set", .kind = .set },
+            .{ .name = "Array.push", .kind = .push },
+            .{ .name = "Array.pop", .kind = .pop },
+            .{ .name = "Array.length", .kind = .length },
+            .{ .name = "Array.isEmpty", .kind = .is_empty },
+        }) |sig| {
+            const a = try self.newVarType("a");
+            const arr_args = try self.allocator.alloc(*Type, 1);
+            arr_args[0] = a;
+            const arr = try self.newType(.{ .con = .{ .name = "Array", .args = arr_args } });
+            const int_ty = try self.newType(.int);
+
+            const ty = switch (sig.kind) {
+                .new => try self.arrowOf(&.{int_ty}, arr),
+                .make => try self.arrowOf(&.{ int_ty, a }, arr),
+                .get => try self.arrowOf(&.{ arr, int_ty }, a),
+                .set => try self.arrowOf(&.{ arr, int_ty, a }, try self.newType(.unit)),
+                .push => try self.arrowOf(&.{ arr, a }, arr),
+                .pop => blk: {
+                    const m_args = try self.allocator.alloc(*Type, 1);
+                    m_args[0] = a;
+                    break :blk try self.arrowOf(&.{arr}, try self.newType(.{ .con = .{ .name = "Maybe", .args = m_args } }));
+                },
+                .length => try self.arrowOf(&.{arr}, int_ty),
+                .is_empty => try self.arrowOf(&.{arr}, try self.newType(.bool)),
+            };
+            const q = try self.allocator.alloc(usize, 1);
+            q[0] = a.variable.id;
+            try self.global.set(sig.name, .{ .quantified = q, .body = ty });
+        }
+
+        // Higher-order operations, which introduce a second element type.
+        const Sig2 = struct { name: []const u8, kind: enum { map, filter, foldl, foldr, reverse } };
+        for ([_]Sig2{
+            .{ .name = "Array.map", .kind = .map },
+            .{ .name = "Array.filter", .kind = .filter },
+            .{ .name = "Array.foldl", .kind = .foldl },
+            .{ .name = "Array.foldr", .kind = .foldr },
+            .{ .name = "Array.reverse", .kind = .reverse },
+        }) |sig| {
+            const a = try self.newVarType("a");
+            const b = try self.newVarType("b");
+            const arr_a_args = try self.allocator.alloc(*Type, 1);
+            arr_a_args[0] = a;
+            const arr_a = try self.newType(.{ .con = .{ .name = "Array", .args = arr_a_args } });
+            const arr_b_args = try self.allocator.alloc(*Type, 1);
+            arr_b_args[0] = b;
+            const arr_b = try self.newType(.{ .con = .{ .name = "Array", .args = arr_b_args } });
+
+            const ty = switch (sig.kind) {
+                .map => try self.arrowOf(&.{ try self.arrowOf(&.{a}, b), arr_a }, arr_b),
+                .filter => try self.arrowOf(&.{ try self.arrowOf(&.{a}, try self.newType(.bool)), arr_a }, arr_a),
+                .foldl => try self.arrowOf(&.{ try self.arrowOf(&.{ b, a }, b), b, arr_a }, b),
+                .foldr => try self.arrowOf(&.{ try self.arrowOf(&.{ a, b }, b), b, arr_a }, b),
+                .reverse => try self.arrowOf(&.{arr_a}, arr_a),
+            };
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = a.variable.id;
+            q[1] = b.variable.id;
+            try self.global.set(sig.name, .{ .quantified = q, .body = ty });
+        }
+
+        // Array.sortWith : (a -> a -> Int) -> Array a -> Array a
+        {
+            const a = try self.newVarType("a");
+            const arr_args = try self.allocator.alloc(*Type, 1);
+            arr_args[0] = a;
+            const arr = try self.newType(.{ .con = .{ .name = "Array", .args = arr_args } });
+            const cmp = try self.arrowOf(&.{ a, a }, try self.newType(.int));
+            const q = try self.allocator.alloc(usize, 1);
+            q[0] = a.variable.id;
+            try self.global.set("Array.sortWith", .{ .quantified = q, .body = try self.arrowOf(&.{ cmp, arr }, arr) });
+        }
+
+        // Array.sort : Array Int -> Array Int — deliberately monomorphic. It
+        // orders the raw i64 payload, which is the value for an Int but a bit
+        // pattern for a Float and an address for a String. Sorting those needs
+        // Array.sortWith, and there are no typeclasses to pick an ordering.
+        {
+            const arr_args = try self.allocator.alloc(*Type, 1);
+            arr_args[0] = try self.newType(.int);
+            const arr_int = try self.newType(.{ .con = .{ .name = "Array", .args = arr_args } });
+            try self.global.set("Array.sort", .{ .quantified = &.{}, .body = try self.arrowOf(&.{arr_int}, arr_int) });
+        }
+    }
+
     /// `Maybe` and `Result` are declared here rather than in a `.ko` prelude
     /// because there is no prelude loader; every other built-in type is also
     /// hand-registered. Constructor tags must match `lir_lower.zig`'s
@@ -929,6 +1043,8 @@ pub const Inferer = struct {
         const string_to_int = try self.allocator.create(Type);
         string_to_int.* = .{ .arrow = .{ .from = string_ty, .to = try self.newType(.int) } };
         try self.global.set("String.length", .{ .quantified = &.{}, .body = string_to_int });
+
+        try self.registerArrayBuiltins();
 
         // String.from : a -> String — what `${e}` desugars to. It accepts any
         // type here so inference never fails on it; validateInterpolations()

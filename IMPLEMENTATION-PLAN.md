@@ -17,7 +17,7 @@ Every status claim below was checked by compiling and running the feature, not b
 | Syntax | Function syntax (§4) complete: typed params, return types, `pub fn`. Tuple access `.0` landed in Stage 0. Two *frozen* forms still missing: record spread `..`, named args `~name:`. |
 | Strings | Phase 1 (KoString) and Phase 2 done in Stage 1, including interpolation and escapes. Phase 3 (`std.text`) not started. |
 | IO | Console output only. No file I/O of any kind. |
-| Data structures | Nothing. No Array, Map, Set, or `hash`. List/tuple/record work. |
+| Data structures | Array landed in Stage 2 — literals, mutation, higher-order, sort. No Map, Set, or `hash` yet. List/tuple/record work; `List` is still user-declared, not builtin. |
 
 Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined `type Result e a = Ok a | Err e`, records with annotations, pattern matching, `ref`/`:=`/`!`, `|>` on one line, `::`, `comptime`.
 
@@ -39,7 +39,7 @@ Stage 0 cleared the first three; only `hash` remains. Everything after it is lar
 ```
 Stage 0 (prelude types, tuple access)  — DONE
    ├── Stage 1  Strings Phase 2      — DONE
-   ├── Stage 2  Array                 ──┐
+   ├── Stage 2  Array — DONE (2.5 deferred) ─┐
    │                                     ├── Stage 4  Set
    ├── Stage 3  hash + Map            ──┘
    └── Stage 5  IO                    (needs Result + panic)
@@ -149,24 +149,51 @@ This deliberately does not reuse the formatter `println` has for records and lis
 
 ---
 
-## Stage 2 — Array
+## Stage 2 — Array — DONE except 2.5
 
 **Goal:** DESIGN-data-structures §3.
 **Depends on:** Stage 0 (`Maybe` for `pop`, working `panic` for bounds checks).
 
-| # | Task |
-|---|------|
-| 2.1 | `KoArray` struct in the runtime — reuse the 32-byte header convention KoString uses so `ko_decref` stays generic; store `length` and `capacity` in the header, elements inline |
-| 2.2 | `ko_array_make`, `ko_array_get`, `ko_array_set`, `ko_array_length`, `ko_array_push` with doubling growth |
-| 2.3 | Array literal syntax `[1, 2, 3]` — parser currently says `expected expression` at `[` |
-| 2.4 | RC: recursive decref of elements, using the header's field bitmap |
-| 2.5 | `Array.toList` / `List.toArray` |
-| 2.6 | Higher-order: `map`, `filter`, `foldl`, `foldr`, `reverse` |
-| 2.7 | `Array.sort`, `sortWith` |
+| # | Task | Status |
+|---|------|--------|
+| 2.1 | `KoArray` in the runtime, KoString header convention, elements inline | done |
+| 2.2 | `make`, `new`, `get`, `set`, `length`, `isEmpty`, `push` (doubling), `pop` | done |
+| 2.3 | Array literal syntax `[1, 2, 3]` | done |
+| 2.4 | RC: recursive decref of elements | done |
+| 2.5 | `Array.toList` / `List.toArray` | **not done** — see below |
+| 2.6 | Higher-order: `map`, `filter`, `foldl`, `foldr`, `reverse` | done |
+| 2.7 | `Array.sort`, `sortWith` | done |
 
-**Design note:** the doc's `KoArray` sketch puts `refcount/length/capacity` at the front and returns a pointer to the struct. KoString instead returns a pointer to the *data* with the header at negative offsets, which is what makes `ko_decref` uniform. Follow the KoString convention and update §3 of the doc, or the two allocators will drift the way the string header did.
+### Representation
 
-**Done when:** the §9 Array example runs and prints the documented values.
+```
+[-32] refcount
+[-24] type_tag: 11 = scalar elements, 12 = heap elements
+[-16] length
+[ -8] capacity
+[  0] elements, i64 each, contiguous
+```
+
+The value is a pointer to the elements with the header behind it, as KoString does, so `ko_decref` stays uniform. Two deviations from DESIGN-data-structures §3, both forced:
+
+**The element kind lives in the type tag, not a field bitmap.** An array is homogeneous, so one bit says everything a 64-element bitmap would, and that frees the fourth header word for the capacity `push` needs. `ko_decref` branches on tag 12 to walk and release elements, the same way it already branches on tag 10 for closures.
+
+**`Array.push` returns the array, where the doc says `Unit`.** With elements inline, growing an array moves it, so no handle into it can stay valid — a `Unit`-returning push would leave every existing binding dangling after the first reallocation. `set` does return `Unit`, since it never reallocates. Array literals desugar to a chain of `push` over `Array.new n`, which needs no new AST node and allocates exactly once.
+
+`ko_decref_array` skips any element below one page: a nullary constructor is a bare tag rather than a pointer, so an `Array (Maybe a)` legitimately holds a mix, and reading a header 32 bytes below address 1 would fault.
+
+**`Array.sort` is deliberately monomorphic — `Array Int -> Array Int`.** It orders the raw i64 payload, which *is* the value for an Int but is a bit pattern for a Float and an address for a String. With no typeclasses there is nothing to pick an ordering from, so anything else uses `Array.sortWith`. Sorting is insertion sort: O(n²), and a self-contained thing to replace.
+
+### 2.5 needs a prerequisite the plan did not state
+
+`Array.toList` and `List.toArray` need a `List` type, and **there is no builtin `List`** — every program and test that uses one declares its own `type List a = Cons a (List a) | Nil`. The `::` operator and `println`'s list formatting work against whatever `Cons`/`Nil` are in scope.
+
+So 2.5 is not a matter of writing two conversions: it first requires deciding whether `List` joins `Maybe` and `Result` in the prelude. That is a language decision, not an implementation detail, and it interacts with every existing program that defines its own. Left for an explicit call rather than settled in passing.
+
+### Bugs found
+
+- **Curried application inside a runtime function loses the closure tag.** A function value crossing into a runtime call has bit 0 set to distinguish a closure from a bare function pointer, but the *result* of applying a curried function to one argument is a plain closure pointer with that bit clear. `foldl` called it as a raw function pointer and crashed. Runtime code doing a second application has to re-tag.
+- **A Bool-returning Kō function returns `i1`.** Only the low bit of the return register is defined, so `filter` testing the whole word accepted every element. It now masks bit 0.
 
 ---
 

@@ -475,6 +475,16 @@ pub const LirLower = struct {
         try self.globals.put("Err", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Just", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Nothing", .{ .arity = 0, .kind = .ctor });
+        // Array creation needs the element kind, which only the static type
+        // gives, so it is resolved during lowering rather than named directly.
+        try self.globals.put("Array.new", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Array.make", .{ .arity = 2, .kind = .std_special });
+        // These build a new array, so they also need the element tag.
+        try self.globals.put("Array.map", .{ .arity = 2, .kind = .std_special });
+        try self.globals.put("Array.filter", .{ .arity = 2, .kind = .std_special });
+        try self.globals.put("Array.reverse", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Array.sort", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Array.sortWith", .{ .arity = 2, .kind = .std_special });
         // Type-directed or representation-only, so resolved during lowering.
         try self.globals.put("String.from", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("ord", .{ .arity = 1, .kind = .std_special });
@@ -509,6 +519,14 @@ pub const LirLower = struct {
             .{ "String.fromFloat", "ko_float_to_string" },
             .{ "String.toInt", "ko_string_to_maybe_int" },
             .{ "String.toFloat", "ko_string_to_maybe_float" },
+            .{ "Array.get", "ko_array_get" },
+            .{ "Array.set", "ko_array_set" },
+            .{ "Array.push", "ko_array_push" },
+            .{ "Array.pop", "ko_array_pop" },
+            .{ "Array.length", "ko_array_length" },
+            .{ "Array.isEmpty", "ko_array_is_empty" },
+            .{ "Array.foldl", "ko_array_foldl" },
+            .{ "Array.foldr", "ko_array_foldr" },
             .{ "Char.isAlpha", "ko_char_is_alpha" },
             .{ "Char.isDigit", "ko_char_is_digit" },
             .{ "Char.isAlnum", "ko_char_is_alnum" },
@@ -871,6 +889,13 @@ pub const LirLower = struct {
                 if (std.mem.eql(u8, name, "panic")) return self.lowerPanic(args, span);
                 if (std.mem.eql(u8, name, "assert")) return self.lowerAssert(args, span);
                 if (std.mem.eql(u8, name, "assert_eq")) return self.lowerAssertEq(args, span);
+                if (std.mem.eql(u8, name, "Array.new")) return self.lowerArrayNew(args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.make")) return self.lowerArrayMake(args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.map")) return self.lowerArrayHof("ko_array_map", args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.filter")) return self.lowerArrayHof("ko_array_filter", args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.reverse")) return self.lowerArrayHof("ko_array_reverse", args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.sort")) return self.lowerArrayHof("ko_array_sort", args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Array.sortWith")) return self.lowerArrayHof("ko_array_sort_with", args, result_hir_ty);
                 if (std.mem.eql(u8, name, "String.from")) return self.lowerStringFrom(args);
                 if (std.mem.eql(u8, name, "ord") or std.mem.eql(u8, name, "Char.toInt"))
                     return self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
@@ -968,6 +993,15 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_int_to_string")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_float_to_string")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .string = {} } };
             if (std.mem.startsWith(u8, runtime, "ko_string_to_maybe_")) break :blk .{ .params = &.{.{ .string = {} }}, .ret = .{ .int = {} } };
+            // Arrays and their elements are all i64 at the ABI: the handle is a
+            // ptrtoint and elements are stored in the universal representation.
+            if (std.mem.eql(u8, runtime, "ko_array_length")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_array_is_empty")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .bool = {} } };
+            if (std.mem.eql(u8, runtime, "ko_array_pop")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_array_get")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_array_push")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_array_set")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.startsWith(u8, runtime, "ko_array_fold")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_char_to_string")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_bool_to_string")) break :blk .{ .params = &.{.{ .bool = {} }}, .ret = .{ .string = {} } };
             if (std.mem.startsWith(u8, runtime, "ko_char_is_")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .bool = {} } };
@@ -1121,6 +1155,109 @@ pub const LirLower = struct {
         const arg_ty = self.resolve(self.exprs[arg_hir].ty);
         const result_ty = try self.lowerType(arg_ty);
         return self.coerce(call_result, result_ty);
+    }
+
+    // Array type tags, matching stdlib_codegen: the element kind lives in the
+    // header's type_tag so ko_decref knows whether to walk the elements.
+    const array_tag_scalar: i64 = 11;
+    const array_tag_heap: i64 = 12;
+
+    /// The type tag to stamp on an array whose elements have type `elem`.
+    ///
+    /// An unresolved element type is treated as scalar. That can leak, but the
+    /// alternative — walking elements that turn out to be integers — corrupts
+    /// memory, and a leak is the safer failure.
+    fn arrayTagFor(self: *LirLower, elem: *const typecheck.Type) i64 {
+        return switch (self.resolve(elem).*) {
+            .string, .record, .tuple, .arrow, .con => array_tag_heap,
+            else => array_tag_scalar,
+        };
+    }
+
+    /// The element type of the `Array a` this expression produces.
+    fn arrayElemOf(self: *LirLower, arr_ty: *const typecheck.Type) ?*const typecheck.Type {
+        const r = self.resolve(arr_ty);
+        if (r.* == .con and std.mem.eql(u8, r.con.name, "Array") and r.con.args.len == 1) return r.con.args[0];
+        return null;
+    }
+
+    fn emitArrayAlloc(self: *LirLower, len: lir.LocalId, cap: lir.LocalId, tag: i64) LowerError!lir.LocalId {
+        const tag_local = try self.emit(.{ .int = tag }, .{ .int = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_array_alloc" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 3);
+        params[0] = .{ .int = {} };
+        params[1] = .{ .int = {} };
+        params[2] = .{ .int = {} };
+        const arr = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{ len, cap, tag_local }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        // Arrays are heap values: register for decref at scope exit. Tag 1
+        // (constructor) means "linear value, no RC needed at exit", which is the
+        // same treatment tuples and constructors get.
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
+        return arr;
+    }
+
+    /// `Array.new cap` — an empty array with room for `cap` elements.
+    fn lowerArrayNew(self: *LirLower, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const cap = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const zero = try self.emit(.{ .int = 0 }, .{ .int = {} });
+        const tag = if (self.arrayElemOf(result_hir_ty)) |e| self.arrayTagFor(e) else array_tag_scalar;
+        return self.emitArrayAlloc(zero, cap, tag);
+    }
+
+    /// `Array.make n v` — `n` copies of `v`.
+    fn lowerArrayMake(self: *LirLower, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        if (args.len != 2) return error.ArityMismatch;
+        const n = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const v = try self.coerce(try self.lowerExpr(args[1]), .{ .int = {} });
+        const tag = if (self.arrayElemOf(result_hir_ty)) |e| self.arrayTagFor(e) else array_tag_scalar;
+        const arr = try self.emitArrayAlloc(n, n, tag);
+
+        const fill_fn = try self.emit(.{ .fn_ref = "ko_array_fill" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 2);
+        params[0] = .{ .int = {} };
+        params[1] = .{ .int = {} };
+        _ = try self.emit(.{ .call = .{
+            .func = fill_fn,
+            .args = try self.dupeIds(&.{ arr, v }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        return arr;
+    }
+
+    /// `Array.map`, `Array.filter`, `Array.reverse` — each returns a fresh
+    /// array, so each needs the element tag of its *result*, which only the
+    /// static type provides. Everything crosses the ABI as i64.
+    fn lowerArrayHof(self: *LirLower, runtime: []const u8, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        const tag = if (self.arrayElemOf(result_hir_ty)) |e| self.arrayTagFor(e) else array_tag_scalar;
+
+        const call_args = try self.allocator.alloc(lir.LocalId, args.len + 1);
+        for (args, 0..) |ah, i| {
+            var v = try self.coerce(try self.lowerExpr(ah), .{ .int = {} });
+            // Runtime callers dispatch on bit 0 to tell a closure from a bare
+            // function pointer; see emitClosureCall1.
+            if (self.resolve(self.exprs[ah].ty).* == .arrow) {
+                const one = try self.emit(.{ .int = 1 }, .{ .int = {} });
+                v = try self.emit(.{ .primop = .{ .op = .or_, .args = try self.dupeIds(&.{ v, one }) } }, .{ .int = {} });
+            }
+            call_args[i] = v;
+        }
+        call_args[args.len] = try self.emit(.{ .int = tag }, .{ .int = {} });
+
+        const params = try self.allocator.alloc(lir.LirType, args.len + 1);
+        for (params) |*p| p.* = .{ .int = {} };
+        const fn_local = try self.emit(.{ .fn_ref = runtime }, .{ .opaque_type = {} });
+        const arr = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = call_args,
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
+        return arr;
     }
 
     /// `String.from e` — what `${e}` desugars to. The conversion is chosen from

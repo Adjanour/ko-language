@@ -4209,3 +4209,144 @@ test "typecheck: parameterised type annotation resolves to a con" {
     defer captured.deinit();
     try std.testing.expectEqualStrings("1.500000\n", captured.output);
 }
+
+// ──── Stage 2: Array ────
+
+test "runtime output: array literal, length and get" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = [10, 20, 30]
+        \\  println (Array.length a)
+        \\  println (Array.get a 0)
+        \\  println (Array.get a 2)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\n10\n30\n", captured.output);
+}
+
+test "runtime output: array push grows past its capacity" {
+    // The literal allocates exactly 3 slots, so the fourth push reallocates.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = [1, 2, 3]
+        \\  let b = Array.push a 4
+        \\  let c = Array.push b 5
+        \\  println (Array.length c)
+        \\  println (Array.get c 4)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("5\n5\n", captured.output);
+}
+
+test "runtime output: array make, set, isEmpty" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = Array.make 3 7
+        \\  println (Array.get a 1)
+        \\  Array.set a 1 99
+        \\  println (Array.get a 1)
+        \\  println (Array.isEmpty a)
+        \\  println (Array.isEmpty (Array.new 0))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("7\n99\nFalse\nTrue\n", captured.output);
+}
+
+test "runtime output: array pop returns Maybe" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe Int) =
+        \\  match m
+        \\    | Just v => "got ${v}"
+        \\    | Nothing => "empty"
+        \\fn main =
+        \\  let a = [1, 2]
+        \\  println (describe (Array.pop a))
+        \\  println (Array.length a)
+        \\  println (describe (Array.pop (Array.new 0)))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("got 2\n1\nempty\n", captured.output);
+}
+
+test "runtime output: array of strings" {
+    // Heap elements take type tag 12, so ko_decref walks and releases them.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let s = ["hi", "there"]
+        \\  println (Array.get s 0)
+        \\  println (Array.get s 1)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("hi\nthere\n", captured.output);
+}
+
+test "runtime output: array map and reverse" {
+    var captured = try testRuntimeOutputLir(
+        \\fn double x = x * 2
+        \\fn main =
+        \\  let a = [1, 2, 3]
+        \\  let d = Array.map double a
+        \\  println (Array.get d 0)
+        \\  println (Array.get d 2)
+        \\  let r = Array.reverse a
+        \\  println (Array.get r 0)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("2\n6\n3\n", captured.output);
+}
+
+test "runtime output: array filter keeps only matches" {
+    // A Bool-returning Kō function returns i1, so the runtime must test the low
+    // bit; testing the whole word accepted every element.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = [1, 2, 3, 4, 5, 6]
+        \\  let f = Array.filter (\x -> x > 3) a
+        \\  println (Array.length f)
+        \\  println (Array.get f 0)
+        \\  println (Array.get f 2)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\n4\n6\n", captured.output);
+}
+
+test "runtime output: array folds" {
+    // Each step is two applications of a curried function; the intermediate is
+    // a closure pointer that has to be re-tagged before the second call.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = [1, 2, 3, 4]
+        \\  println (Array.foldl (\acc x -> acc + x) 0 a)
+        \\  println (Array.foldr (\x acc -> acc - x) 0 a)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("10\n-10\n", captured.output);
+}
+
+test "runtime output: array sort and sortWith leave the source alone" {
+    var captured = try testRuntimeOutputLir(
+        \\fn desc a b = b - a
+        \\fn main =
+        \\  let a = [5, 3, 9, 1]
+        \\  let s = Array.sort a
+        \\  println (Array.get s 0)
+        \\  println (Array.get s 3)
+        \\  let d = Array.sortWith desc a
+        \\  println (Array.get d 0)
+        \\  println (Array.get a 0)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("1\n9\n9\n5\n", captured.output);
+}
+
+test "runtime output: array map to a different element type" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let a = [1, 2, 3]
+        \\  let s = Array.map (\x -> "n${x}") a
+        \\  println (Array.get s 0)
+        \\  println (Array.get s 2)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("n1\nn3\n", captured.output);
+}
