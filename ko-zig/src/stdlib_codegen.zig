@@ -2897,6 +2897,1012 @@ pub const StdlibCodegen = struct {
     }
 
     // ============================================================
+    // Map
+    //
+    // Open addressing with linear probing. Same header convention as Array,
+    // with two words of the payload reserved before the buckets:
+    //
+    //   [-32] refcount
+    //   [-24] type_tag = 13
+    //   [-16] length (live entries)
+    //   [ -8] capacity (bucket count, always a power of two)
+    //   [  0] key_tag — which hash and equality to use
+    //   [  8] flags: bit 0 = keys are heap, bit 1 = values are heap
+    //   [ 16] buckets: capacity × { state, key, value }, 24 bytes each
+    //
+    // The key tag and the heap flags live in the map rather than being passed
+    // in because ko_decref sees only the pointer: at teardown there is no call
+    // site left to read a static type from.
+    //
+    // Linear probing rather than the doc's separate chaining: buckets stay in
+    // one allocation, so there are no per-entry nodes to allocate, walk, or
+    // free, and the whole map is one ko_alloc.
+    // ============================================================
+
+    const map_type_tag: u64 = 13;
+    const map_bucket_bytes: u64 = 24;
+    const map_header_words: u64 = 16;
+
+    /// ko_hash(val, type_tag) -> i64
+    ///
+    /// Scalars are run through a bit mixer rather than used directly: linear
+    /// probing clusters badly when hashes are sequential, which is exactly what
+    /// identity-hashed integer keys are.
+    fn codegenHash(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_hash", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const string_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "string");
+        const scalar_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "scalar");
+        const float_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "float");
+        const mix_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "mix");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fnv_loop");
+        const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fnv_body");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fnv_done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const val = core.LLVMGetParam(fn_val, 0);
+        const tag = core.LLVMGetParam(fn_val, 1);
+        const is_string = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag, core.LLVMConstInt(self.i64Type(), 4, 0), "is_string");
+        self.buildCondBranch(is_string, string_bb, scalar_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, scalar_bb);
+        const is_float = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag, core.LLVMConstInt(self.i64Type(), 1, 0), "is_float");
+        self.buildCondBranch(is_float, float_bb, mix_bb);
+
+        // -0.0 and 0.0 must hash alike, since they compare equal.
+        core.LLVMPositionBuilderAtEnd(self.builder, float_bb);
+        const neg_zero = core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, @bitCast(@as(u64, 0x8000000000000000)))), 0);
+        const is_neg_zero = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, val, neg_zero, "is_neg_zero");
+        const norm = core.LLVMBuildSelect(self.builder, is_neg_zero, core.LLVMConstInt(self.i64Type(), 0, 0), val, "norm");
+        self.buildBranch(mix_bb);
+
+        // splitmix64 finalizer.
+        core.LLVMPositionBuilderAtEnd(self.builder, mix_bb);
+        const raw = core.LLVMBuildPhi(self.builder, self.i64Type(), "raw");
+        var raw_vals: [2]types.LLVMValueRef = .{ val, norm };
+        var raw_bbs: [2]types.LLVMBasicBlockRef = .{ scalar_bb, float_bb };
+        core.LLVMAddIncoming(raw, &raw_vals, &raw_bbs, 2);
+        var h = raw;
+        h = core.LLVMBuildXor(self.builder, h, core.LLVMBuildLShr(self.builder, h, core.LLVMConstInt(self.i64Type(), 30, 0), "s1"), "x1");
+        h = core.LLVMBuildMul(self.builder, h, core.LLVMConstInt(self.i64Type(), @bitCast(@as(u64, 0xbf58476d1ce4e5b9)), 0), "m1");
+        h = core.LLVMBuildXor(self.builder, h, core.LLVMBuildLShr(self.builder, h, core.LLVMConstInt(self.i64Type(), 27, 0), "s2"), "x2");
+        h = core.LLVMBuildMul(self.builder, h, core.LLVMConstInt(self.i64Type(), @bitCast(@as(u64, 0x94d049bb133111eb)), 0), "m2");
+        h = core.LLVMBuildXor(self.builder, h, core.LLVMBuildLShr(self.builder, h, core.LLVMConstInt(self.i64Type(), 31, 0), "s3"), "x3");
+        self.buildRet(h);
+
+        // FNV-1a over the string's bytes.
+        core.LLVMPositionBuilderAtEnd(self.builder, string_bb);
+        const sptr = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "sptr");
+        const len_fn = core.LLVMGetNamedFunction(self.module, "ko_string_byte_length") orelse unreachable;
+        var len_args: [1]types.LLVMValueRef = .{sptr};
+        const slen = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(len_fn), len_fn, &len_args, 1, "slen");
+        const hv_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "hv");
+        const si_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "si");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), @bitCast(@as(u64, 0xcbf29ce484222325)), 0), hv_slot);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), si_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const si = core.LLVMBuildLoad2(self.builder, self.i64Type(), si_slot, "si_val");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, si, slen, "more"), body_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        var byte_idx: [1]types.LLVMValueRef = .{si};
+        const byte_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), sptr, @ptrCast(&byte_idx), 1, "byte_ptr");
+        const byte = core.LLVMBuildZExt(self.builder, core.LLVMBuildLoad2(self.builder, self.i8Type(), byte_ptr, "byte"), self.i64Type(), "byte64");
+        const hv = core.LLVMBuildLoad2(self.builder, self.i64Type(), hv_slot, "hv_val");
+        const xored = core.LLVMBuildXor(self.builder, hv, byte, "xored");
+        const scaled = core.LLVMBuildMul(self.builder, xored, core.LLVMConstInt(self.i64Type(), 0x100000001b3, 0), "scaled");
+        _ = core.LLVMBuildStore(self.builder, scaled, hv_slot);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, si, core.LLVMConstInt(self.i64Type(), 1, 0), "si_next"), si_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRet(core.LLVMBuildLoad2(self.builder, self.i64Type(), hv_slot, "hv_final"));
+    }
+
+    /// ko_key_eq(a, b, type_tag) -> i64 (0/1)
+    /// Strings compare by content; everything else by payload bits, which is
+    /// the value for scalars.
+    fn codegenKeyEq(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_key_eq", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const string_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "string");
+        const raw_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "raw");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const a = core.LLVMGetParam(fn_val, 0);
+        const b = core.LLVMGetParam(fn_val, 1);
+        const tag = core.LLVMGetParam(fn_val, 2);
+        const is_string = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag, core.LLVMConstInt(self.i64Type(), 4, 0), "is_string");
+        self.buildCondBranch(is_string, string_bb, raw_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, string_bb);
+        const eq_fn = core.LLVMGetNamedFunction(self.module, "ko_string_eq") orelse unreachable;
+        var eq_args: [2]types.LLVMValueRef = .{
+            core.LLVMBuildIntToPtr(self.builder, a, self.ptrType(), "ap"),
+            core.LLVMBuildIntToPtr(self.builder, b, self.ptrType(), "bp"),
+        };
+        self.buildRet(core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(eq_fn), eq_fn, &eq_args, 2, "seq"));
+
+        core.LLVMPositionBuilderAtEnd(self.builder, raw_bb);
+        const same = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, a, b, "same");
+        self.buildRet(core.LLVMBuildZExt(self.builder, same, self.i64Type(), "out"));
+    }
+
+    fn mapLoadLen(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
+        return core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayHeaderPtr(ptr, -16, "mlen_ptr"), "mlen");
+    }
+
+    fn mapLoadCap(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
+        return core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayHeaderPtr(ptr, -8, "mcap_ptr"), "mcap");
+    }
+
+    /// Address of word `word` (0=state, 1=key, 2=value) of bucket `idx`.
+    fn mapSlotPtr(self: *StdlibCodegen, ptr: types.LLVMValueRef, idx: types.LLVMValueRef, word: u64) types.LLVMValueRef {
+        const base = core.LLVMBuildMul(self.builder, idx, core.LLVMConstInt(self.i64Type(), map_bucket_bytes, 0), "bucket_off");
+        const off = core.LLVMBuildAdd(self.builder, base, core.LLVMConstInt(self.i64Type(), map_header_words + word * 8, 0), "slot_off");
+        var gep_idx: [1]types.LLVMValueRef = .{off};
+        const p = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&gep_idx), 1, "slot_p");
+        return core.LLVMBuildBitCast(self.builder, p, self.ptrType(), "slot_ptr");
+    }
+
+    fn mapLoadKeyTag(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
+        return core.LLVMBuildLoad2(self.builder, self.i64Type(), ptr, "key_tag");
+    }
+
+    fn mapFlagsPtr(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
+        var idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const p = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&idx), 1, "flags_p");
+        return core.LLVMBuildBitCast(self.builder, p, self.ptrType(), "flags_ptr");
+    }
+
+    /// ko_map_new(capacity, key_tag, flags) -> i64
+    fn codegenMapNew(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_new", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const round_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "round");
+        const alloc_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "alloc");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const want = core.LLVMGetParam(fn_val, 0);
+        const cap_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "cap");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 8, 0), cap_slot);
+        self.buildBranch(round_bb);
+
+        // Capacity must be a power of two so `hash & (cap-1)` is the bucket.
+        core.LLVMPositionBuilderAtEnd(self.builder, round_bb);
+        const cur = core.LLVMBuildLoad2(self.builder, self.i64Type(), cap_slot, "cur");
+        const too_small = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, cur, want, "too_small");
+        const grow_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "round_grow");
+        self.buildCondBranch(too_small, grow_bb, alloc_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, grow_bb);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildMul(self.builder, cur, core.LLVMConstInt(self.i64Type(), 2, 0), "dbl"), cap_slot);
+        self.buildBranch(round_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, alloc_bb);
+        const cap = core.LLVMBuildLoad2(self.builder, self.i64Type(), cap_slot, "cap_val");
+        const bytes = core.LLVMBuildAdd(
+            self.builder,
+            core.LLVMBuildMul(self.builder, cap, core.LLVMConstInt(self.i64Type(), map_bucket_bytes, 0), "bucket_bytes"),
+            core.LLVMConstInt(self.i64Type(), map_header_words, 0),
+            "bytes",
+        );
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+        var alloc_args: [2]types.LLVMValueRef = .{ bytes, core.LLVMConstInt(self.i64Type(), map_type_tag, 0) };
+        const ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "map");
+
+        const memset_fn = core.LLVMGetNamedFunction(self.module, "memset") orelse unreachable;
+        var memset_args: [3]types.LLVMValueRef = .{ ptr, core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 0, 0), bytes };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(memset_fn), memset_fn, &memset_args, 3, "");
+
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), self.arrayHeaderPtr(ptr, -16, "len_ptr"));
+        _ = core.LLVMBuildStore(self.builder, cap, self.arrayHeaderPtr(ptr, -8, "cap_ptr"));
+        _ = core.LLVMBuildStore(self.builder, core.LLVMGetParam(fn_val, 1), ptr);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMGetParam(fn_val, 2), self.mapFlagsPtr(ptr));
+        self.buildRet(core.LLVMBuildPtrToInt(self.builder, ptr, self.i64Type(), "handle"));
+    }
+
+    /// ko_map_find(map, key) -> i64
+    /// Index of the bucket holding `key`, or -1. Tombstones are probed through
+    /// so a deleted entry never truncates a probe chain.
+    fn codegenMapFind(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_find", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "probe");
+        const occupied_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "occupied");
+        const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "next");
+        const miss_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "miss");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 0), self.ptrType(), "map");
+        const key = core.LLVMGetParam(fn_val, 1);
+        const cap = self.mapLoadCap(ptr);
+        const key_tag = self.mapLoadKeyTag(ptr);
+        const mask = core.LLVMBuildSub(self.builder, cap, core.LLVMConstInt(self.i64Type(), 1, 0), "mask");
+        const hash_fn = core.LLVMGetNamedFunction(self.module, "ko_hash") orelse unreachable;
+        var hash_args: [2]types.LLVMValueRef = .{ key, key_tag };
+        const h = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(hash_fn), hash_fn, &hash_args, 2, "h");
+        const idx_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "idx");
+        const steps_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "steps");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAnd(self.builder, h, mask, "start"), idx_slot);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), steps_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const steps = core.LLVMBuildLoad2(self.builder, self.i64Type(), steps_slot, "steps_val");
+        const exhausted = core.LLVMBuildICmp(self.builder, .LLVMIntSGE, steps, cap, "exhausted");
+        const probe_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "probe_body");
+        self.buildCondBranch(exhausted, miss_bb, probe_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, probe_bb);
+        const idx = core.LLVMBuildLoad2(self.builder, self.i64Type(), idx_slot, "idx_val");
+        const state = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, idx, 0), "state");
+        const is_empty = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, state, core.LLVMConstInt(self.i64Type(), 0, 0), "is_empty");
+        const check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "check");
+        self.buildCondBranch(is_empty, miss_bb, check_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, check_bb);
+        const is_occ = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, state, core.LLVMConstInt(self.i64Type(), 1, 0), "is_occ");
+        self.buildCondBranch(is_occ, occupied_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, occupied_bb);
+        const slot_key = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, idx, 1), "slot_key");
+        const eq_fn = core.LLVMGetNamedFunction(self.module, "ko_key_eq") orelse unreachable;
+        var eq_args: [3]types.LLVMValueRef = .{ slot_key, key, key_tag };
+        const eq = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(eq_fn), eq_fn, &eq_args, 3, "eq");
+        const hit = core.LLVMBuildICmp(self.builder, .LLVMIntNE, eq, core.LLVMConstInt(self.i64Type(), 0, 0), "hit");
+        const found_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "found");
+        self.buildCondBranch(hit, found_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, found_bb);
+        self.buildRet(core.LLVMBuildLoad2(self.builder, self.i64Type(), idx_slot, "found_idx"));
+
+        core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        const cur_idx = core.LLVMBuildLoad2(self.builder, self.i64Type(), idx_slot, "cur_idx");
+        const bumped = core.LLVMBuildAnd(self.builder, core.LLVMBuildAdd(self.builder, cur_idx, core.LLVMConstInt(self.i64Type(), 1, 0), "inc"), mask, "wrapped");
+        _ = core.LLVMBuildStore(self.builder, bumped, idx_slot);
+        const cur_steps = core.LLVMBuildLoad2(self.builder, self.i64Type(), steps_slot, "cur_steps");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, cur_steps, core.LLVMConstInt(self.i64Type(), 1, 0), "steps_next"), steps_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, miss_bb);
+        self.buildRet(core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -1)), 0));
+    }
+
+    /// ko_map_insert(map, key, value) -> i64 (unit)
+    /// Places an entry without growing; the caller guarantees room.
+    fn codegenMapInsert(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_insert", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const update_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "update");
+        const probe_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "probe");
+        const probe_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "probe_body");
+        const place_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "place");
+        const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "next");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const handle = core.LLVMGetParam(fn_val, 0);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, handle, self.ptrType(), "map");
+        const key = core.LLVMGetParam(fn_val, 1);
+        const value = core.LLVMGetParam(fn_val, 2);
+        const cap = self.mapLoadCap(ptr);
+        const key_tag = self.mapLoadKeyTag(ptr);
+        const mask = core.LLVMBuildSub(self.builder, cap, core.LLVMConstInt(self.i64Type(), 1, 0), "mask");
+
+        // An existing key is overwritten in place, leaving the length alone.
+        const find_fn = core.LLVMGetNamedFunction(self.module, "ko_map_find") orelse unreachable;
+        var find_args: [2]types.LLVMValueRef = .{ handle, key };
+        const existing = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(find_fn), find_fn, &find_args, 2, "existing");
+        const has_existing = core.LLVMBuildICmp(self.builder, .LLVMIntSGE, existing, core.LLVMConstInt(self.i64Type(), 0, 0), "has_existing");
+        self.buildCondBranch(has_existing, update_bb, probe_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, update_bb);
+        _ = core.LLVMBuildStore(self.builder, value, self.mapSlotPtr(ptr, existing, 2));
+        self.buildRet(core.LLVMConstInt(self.i64Type(), 0, 0));
+
+        core.LLVMPositionBuilderAtEnd(self.builder, probe_bb);
+        const hash_fn = core.LLVMGetNamedFunction(self.module, "ko_hash") orelse unreachable;
+        var hash_args: [2]types.LLVMValueRef = .{ key, key_tag };
+        const h = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(hash_fn), hash_fn, &hash_args, 2, "h");
+        const idx_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "idx");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAnd(self.builder, h, mask, "start"), idx_slot);
+        self.buildBranch(probe_body);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, probe_body);
+        const idx = core.LLVMBuildLoad2(self.builder, self.i64Type(), idx_slot, "idx_val");
+        const state = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, idx, 0), "state");
+        const free_slot = core.LLVMBuildICmp(self.builder, .LLVMIntNE, state, core.LLVMConstInt(self.i64Type(), 1, 0), "free_slot");
+        self.buildCondBranch(free_slot, place_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        const bumped = core.LLVMBuildAnd(self.builder, core.LLVMBuildAdd(self.builder, idx, core.LLVMConstInt(self.i64Type(), 1, 0), "inc"), mask, "wrapped");
+        _ = core.LLVMBuildStore(self.builder, bumped, idx_slot);
+        self.buildBranch(probe_body);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, place_bb);
+        const at = core.LLVMBuildLoad2(self.builder, self.i64Type(), idx_slot, "at");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), self.mapSlotPtr(ptr, at, 0));
+        _ = core.LLVMBuildStore(self.builder, key, self.mapSlotPtr(ptr, at, 1));
+        _ = core.LLVMBuildStore(self.builder, value, self.mapSlotPtr(ptr, at, 2));
+        const len = self.mapLoadLen(ptr);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, len, core.LLVMConstInt(self.i64Type(), 1, 0), "len_next"), self.arrayHeaderPtr(ptr, -16, "len_ptr"));
+        self.buildRet(core.LLVMConstInt(self.i64Type(), 0, 0));
+    }
+
+    /// ko_map_set(map, key, value) -> i64
+    /// Returns the map, which moves when it has to grow.
+    fn codegenMapSet(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_set", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const grow_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "grow");
+        const rehash_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rehash");
+        const rehash_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rehash_body");
+        const rehash_next = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rehash_next");
+        const insert_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "insert");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const handle = core.LLVMGetParam(fn_val, 0);
+        const key = core.LLVMGetParam(fn_val, 1);
+        const value = core.LLVMGetParam(fn_val, 2);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, handle, self.ptrType(), "map");
+        const len = self.mapLoadLen(ptr);
+        const cap = self.mapLoadCap(ptr);
+        // Grow at 3/4 occupancy. Linear probing degrades sharply past that, and
+        // tombstones count toward the bound only indirectly (via length), so the
+        // margin also absorbs a moderate number of deletions.
+        const limit = core.LLVMBuildAShr(self.builder, core.LLVMBuildMul(self.builder, cap, core.LLVMConstInt(self.i64Type(), 3, 0), "cap3"), core.LLVMConstInt(self.i64Type(), 2, 0), "limit");
+        const needs_grow = core.LLVMBuildICmp(self.builder, .LLVMIntSGE, core.LLVMBuildAdd(self.builder, len, core.LLVMConstInt(self.i64Type(), 1, 0), "len1"), limit, "needs_grow");
+        const handle_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "handle_slot");
+        _ = core.LLVMBuildStore(self.builder, handle, handle_slot);
+        self.buildCondBranch(needs_grow, grow_bb, insert_bb);
+
+        // Build a bigger map, re-insert every live entry, release the old one.
+        core.LLVMPositionBuilderAtEnd(self.builder, grow_bb);
+        const new_cap = core.LLVMBuildMul(self.builder, cap, core.LLVMConstInt(self.i64Type(), 2, 0), "new_cap");
+        const new_fn = core.LLVMGetNamedFunction(self.module, "ko_map_new") orelse unreachable;
+        var new_args: [3]types.LLVMValueRef = .{
+            new_cap,
+            self.mapLoadKeyTag(ptr),
+            core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapFlagsPtr(ptr), "flags"),
+        };
+        const fresh = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(new_fn), new_fn, &new_args, 3, "fresh");
+        const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "i");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+        self.buildBranch(rehash_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, rehash_bb);
+        const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_val");
+        const done_rehash = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rehash_done");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "more"), rehash_body, done_rehash);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, rehash_body);
+        const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 0), "st");
+        const live = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "live");
+        const move_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "move");
+        self.buildCondBranch(live, move_bb, rehash_next);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, move_bb);
+        const ins_fn = core.LLVMGetNamedFunction(self.module, "ko_map_insert") orelse unreachable;
+        var mv_args: [3]types.LLVMValueRef = .{
+            fresh,
+            core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 1), "mk"),
+            core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 2), "mv"),
+        };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ins_fn), ins_fn, &mv_args, 3, "");
+        self.buildBranch(rehash_next);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, rehash_next);
+        const i_now = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_now");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, i_now, core.LLVMConstInt(self.i64Type(), 1, 0), "i_next"), i_slot);
+        self.buildBranch(rehash_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_rehash);
+        // The entries moved wholesale, so the old table must be freed without
+        // releasing them — clear its length so ko_decref_map walks nothing.
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), self.arrayHeaderPtr(ptr, -16, "old_len"));
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), self.arrayHeaderPtr(ptr, -8, "old_cap"));
+        const decref_fn = core.LLVMGetNamedFunction(self.module, "ko_decref") orelse unreachable;
+        var dec_args: [1]types.LLVMValueRef = .{ptr};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_fn), decref_fn, &dec_args, 1, "");
+        _ = core.LLVMBuildStore(self.builder, fresh, handle_slot);
+        self.buildBranch(insert_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, insert_bb);
+        const final_handle = core.LLVMBuildLoad2(self.builder, self.i64Type(), handle_slot, "final_handle");
+        const ins2_fn = core.LLVMGetNamedFunction(self.module, "ko_map_insert") orelse unreachable;
+        var ins_args: [3]types.LLVMValueRef = .{ final_handle, key, value };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ins2_fn), ins2_fn, &ins_args, 3, "");
+        self.buildRet(final_handle);
+    }
+
+    /// ko_map_get(map, key) -> i64, a Maybe in the constructor layout.
+    fn codegenMapGet(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_get", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const hit_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "hit");
+        const miss_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "miss");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const handle = core.LLVMGetParam(fn_val, 0);
+        const find_fn = core.LLVMGetNamedFunction(self.module, "ko_map_find") orelse unreachable;
+        var find_args: [2]types.LLVMValueRef = .{ handle, core.LLVMGetParam(fn_val, 1) };
+        const idx = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(find_fn), find_fn, &find_args, 2, "idx");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSGE, idx, core.LLVMConstInt(self.i64Type(), 0, 0), "found"), hit_bb, miss_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, miss_bb);
+        self.buildRet(core.LLVMConstInt(self.i64Type(), 1, 0)); // Nothing
+
+        core.LLVMPositionBuilderAtEnd(self.builder, hit_bb);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, handle, self.ptrType(), "map");
+        const value = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, idx, 2), "value");
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+        var alloc_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 1, 0) };
+        const cell = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "cell");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), cell);
+        var payload_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const payload = core.LLVMBuildGEP2(self.builder, self.i8Type(), cell, &payload_idx, 1, "payload");
+        _ = core.LLVMBuildStore(self.builder, value, payload);
+        // The Just borrows the map's reference. Bump it so dropping the Just
+        // cannot free a value the map still holds.
+        const flags = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapFlagsPtr(ptr), "flags");
+        const vheap = core.LLVMBuildICmp(self.builder, .LLVMIntNE, core.LLVMBuildAnd(self.builder, flags, core.LLVMConstInt(self.i64Type(), 2, 0), "vbit"), core.LLVMConstInt(self.i64Type(), 0, 0), "vheap");
+        const inc_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "inc_value");
+        const ret_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret");
+        self.buildCondBranch(vheap, inc_bb, ret_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, inc_bb);
+        const big = core.LLVMBuildICmp(self.builder, .LLVMIntUGT, value, core.LLVMConstInt(self.i64Type(), 4096, 0), "is_ptr");
+        const do_inc = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "do_inc");
+        self.buildCondBranch(big, do_inc, ret_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, do_inc);
+        const incref_fn = core.LLVMGetNamedFunction(self.module, "ko_incref") orelse unreachable;
+        var inc_args: [1]types.LLVMValueRef = .{core.LLVMBuildIntToPtr(self.builder, value, self.ptrType(), "vp")};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(incref_fn), incref_fn, &inc_args, 1, "");
+        self.buildBranch(ret_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, ret_bb);
+        self.buildRet(core.LLVMBuildPtrToInt(self.builder, cell, self.i64Type(), "just"));
+    }
+
+    /// ko_map_contains(map, key) -> i64
+    fn codegenMapContains(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_contains", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const find_fn = core.LLVMGetNamedFunction(self.module, "ko_map_find") orelse unreachable;
+        var args: [2]types.LLVMValueRef = .{ core.LLVMGetParam(fn_val, 0), core.LLVMGetParam(fn_val, 1) };
+        const idx = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(find_fn), find_fn, &args, 2, "idx");
+        const found = core.LLVMBuildICmp(self.builder, .LLVMIntSGE, idx, core.LLVMConstInt(self.i64Type(), 0, 0), "found");
+        self.buildRet(core.LLVMBuildZExt(self.builder, found, self.i64Type(), "out"));
+    }
+
+    /// ko_map_delete(map, key) -> i64 (unit)
+    /// Leaves a tombstone so probe chains through the slot stay intact.
+    fn codegenMapDelete(self: *StdlibCodegen) void {
+        var params: [2]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_delete", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const hit_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "hit");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const handle = core.LLVMGetParam(fn_val, 0);
+        const find_fn = core.LLVMGetNamedFunction(self.module, "ko_map_find") orelse unreachable;
+        var find_args: [2]types.LLVMValueRef = .{ handle, core.LLVMGetParam(fn_val, 1) };
+        const idx = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(find_fn), find_fn, &find_args, 2, "idx");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSGE, idx, core.LLVMConstInt(self.i64Type(), 0, 0), "found"), hit_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, hit_bb);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, handle, self.ptrType(), "map");
+        self.emitMapReleaseSlot(fn_val, ptr, idx);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 2, 0), self.mapSlotPtr(ptr, idx, 0));
+        const len = self.mapLoadLen(ptr);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildSub(self.builder, len, core.LLVMConstInt(self.i64Type(), 1, 0), "len_next"), self.arrayHeaderPtr(ptr, -16, "len_ptr"));
+        self.buildBranch(done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRet(core.LLVMConstInt(self.i64Type(), 0, 0));
+    }
+
+    /// Release the key and value of an occupied bucket, honouring the flags.
+    /// Leaves the builder positioned in a fresh continuation block.
+    fn emitMapReleaseSlot(self: *StdlibCodegen, fn_val: types.LLVMValueRef, ptr: types.LLVMValueRef, idx: types.LLVMValueRef) void {
+        const flags = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapFlagsPtr(ptr), "flags");
+        const decref_fn = core.LLVMGetNamedFunction(self.module, "ko_decref") orelse unreachable;
+
+        inline for (.{ .{ 1, @as(u64, 1) }, .{ 2, @as(u64, 2) } }) |pair| {
+            const word = pair[0];
+            const bit = pair[1];
+            const set = core.LLVMBuildICmp(
+                self.builder,
+                .LLVMIntNE,
+                core.LLVMBuildAnd(self.builder, flags, core.LLVMConstInt(self.i64Type(), bit, 0), "bit"),
+                core.LLVMConstInt(self.i64Type(), 0, 0),
+                "is_heap",
+            );
+            const check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rel_check");
+            const skip_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rel_skip");
+            self.buildCondBranch(set, check_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, check_bb);
+            const v = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, idx, word), "rel_v");
+            // Nullary constructors are bare tags, not pointers.
+            const big = core.LLVMBuildICmp(self.builder, .LLVMIntUGT, v, core.LLVMConstInt(self.i64Type(), 4096, 0), "rel_is_ptr");
+            const do_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "rel_do");
+            self.buildCondBranch(big, do_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, do_bb);
+            var args: [1]types.LLVMValueRef = .{core.LLVMBuildIntToPtr(self.builder, v, self.ptrType(), "rel_p")};
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_fn), decref_fn, &args, 1, "");
+            self.buildBranch(skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, skip_bb);
+        }
+    }
+
+    /// ko_map_length(map) -> i64
+    fn codegenMapLength(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_map_length", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 0), self.ptrType(), "map");
+        self.buildRet(self.mapLoadLen(ptr));
+    }
+
+    /// ko_map_is_empty(map) -> i64 (0/1)
+    fn codegenMapIsEmpty(self: *StdlibCodegen) void {
+        var params: [1]types.LLVMTypeRef = .{self.i64Type()};
+        const fn_val = self.createFunction("ko_map_is_empty", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 0), self.ptrType(), "map");
+        const empty = core.LLVMBuildICmp(self.builder, .LLVMIntSLE, self.mapLoadLen(ptr), core.LLVMConstInt(self.i64Type(), 0, 0), "empty");
+        self.buildRet(core.LLVMBuildZExt(self.builder, empty, self.i64Type(), "out"));
+    }
+
+    /// ko_map_collect(map, which, elem_tag) -> i64
+    /// An Array of the keys (which=0), values (which=1) or (k, v) tuples (2).
+    fn codegenMapCollect(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_collect", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
+        const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "body");
+        const live_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "live");
+        const pair_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "pair");
+        const plain_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "plain");
+        const store_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "store");
+        const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "next");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 0), self.ptrType(), "map");
+        const which = core.LLVMGetParam(fn_val, 1);
+        const len = self.mapLoadLen(ptr);
+        const cap = self.mapLoadCap(ptr);
+        const out = self.emitArrayAllocPtr(len, len, core.LLVMGetParam(fn_val, 2));
+        const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "i");
+        const n_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "n");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), n_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_val");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "more"), body_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 0), "st");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "live"), live_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, live_bb);
+        const k = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 1), "k");
+        const v = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 2), "v");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntEQ, which, core.LLVMConstInt(self.i64Type(), 2, 0), "want_pair"), pair_bb, plain_bb);
+
+        // A tuple in the layout lowerTuple emits: ko_alloc'd, type tag 2.
+        core.LLVMPositionBuilderAtEnd(self.builder, pair_bb);
+        const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse unreachable;
+        var alloc_args: [2]types.LLVMValueRef = .{ core.LLVMConstInt(self.i64Type(), 16, 0), core.LLVMConstInt(self.i64Type(), 2, 0) };
+        const tup = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &alloc_args, 2, "tup");
+        _ = core.LLVMBuildStore(self.builder, k, tup);
+        var second_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const second = core.LLVMBuildGEP2(self.builder, self.i8Type(), tup, &second_idx, 1, "second");
+        _ = core.LLVMBuildStore(self.builder, v, second);
+        const tup_handle = core.LLVMBuildPtrToInt(self.builder, tup, self.i64Type(), "tup_handle");
+        self.buildBranch(store_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, plain_bb);
+        const plain = core.LLVMBuildSelect(self.builder, core.LLVMBuildICmp(self.builder, .LLVMIntEQ, which, core.LLVMConstInt(self.i64Type(), 0, 0), "want_key"), k, v, "plain");
+        self.buildBranch(store_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, store_bb);
+        const item = core.LLVMBuildPhi(self.builder, self.i64Type(), "item");
+        var item_vals: [2]types.LLVMValueRef = .{ tup_handle, plain };
+        var item_bbs: [2]types.LLVMBasicBlockRef = .{ pair_bb, plain_bb };
+        core.LLVMAddIncoming(item, &item_vals, &item_bbs, 2);
+        const n = core.LLVMBuildLoad2(self.builder, self.i64Type(), n_slot, "n_val");
+        _ = core.LLVMBuildStore(self.builder, item, self.arrayElemPtr(out, n));
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, n, core.LLVMConstInt(self.i64Type(), 1, 0), "n_next"), n_slot);
+        self.buildBranch(next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        const i_now = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_now");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, i_now, core.LLVMConstInt(self.i64Type(), 1, 0), "i_next"), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRet(core.LLVMBuildPtrToInt(self.builder, out, self.i64Type(), "handle"));
+    }
+
+    /// ko_decref_map(ptr) — release every live key and value. ko_decref frees
+    /// the table itself, as it does for arrays and closures.
+    fn codegenDecrefMap(self: *StdlibCodegen) void {
+        const fn_val = core.LLVMGetNamedFunction(self.module, "ko_decref_map").?;
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
+        const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "body");
+        const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "next");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ptr = core.LLVMGetParam(fn_val, 0);
+        const cap = self.mapLoadCap(ptr);
+        const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "i");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_val");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "more"), body_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 0), "st");
+        const live = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "live");
+        const rel_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "release");
+        self.buildCondBranch(live, rel_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, rel_bb);
+        const i_rel = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_rel");
+        self.emitMapReleaseSlot(fn_val, ptr, i_rel);
+        self.buildBranch(next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        const i_now = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_now");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, i_now, core.LLVMConstInt(self.i64Type(), 1, 0), "i_next"), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRetVoid();
+    }
+
+    /// Bump the refcount of an entry's key and value, per the map's flags.
+    /// A copied entry is referenced by both tables, so both must own it.
+    fn emitMapRetainSlot(self: *StdlibCodegen, fn_val: types.LLVMValueRef, src: types.LLVMValueRef, idx: types.LLVMValueRef, flags: types.LLVMValueRef) void {
+        const incref_fn = core.LLVMGetNamedFunction(self.module, "ko_incref") orelse unreachable;
+        inline for (.{ .{ 1, @as(u64, 1) }, .{ 2, @as(u64, 2) } }) |pair| {
+            const word = pair[0];
+            const bit = pair[1];
+            const set = core.LLVMBuildICmp(
+                self.builder,
+                .LLVMIntNE,
+                core.LLVMBuildAnd(self.builder, flags, core.LLVMConstInt(self.i64Type(), bit, 0), "rbit"),
+                core.LLVMConstInt(self.i64Type(), 0, 0),
+                "r_is_heap",
+            );
+            const check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret_check");
+            const skip_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret_skip");
+            self.buildCondBranch(set, check_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, check_bb);
+            const v = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(src, idx, word), "ret_v");
+            const big = core.LLVMBuildICmp(self.builder, .LLVMIntUGT, v, core.LLVMConstInt(self.i64Type(), 4096, 0), "ret_is_ptr");
+            const do_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "ret_do");
+            self.buildCondBranch(big, do_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, do_bb);
+            var args: [1]types.LLVMValueRef = .{core.LLVMBuildIntToPtr(self.builder, v, self.ptrType(), "ret_p")};
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(incref_fn), incref_fn, &args, 1, "");
+            self.buildBranch(skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, skip_bb);
+        }
+    }
+
+    /// ko_map_merge(a, b, mode) -> i64
+    /// mode 0 = union (b wins on conflict), 1 = intersection, 2 = difference.
+    ///
+    /// The destination is sized for the worst case up front so no insertion can
+    /// trigger a resize, which keeps the handle stable through the loops.
+    fn codegenMapMerge(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_merge", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const ha = core.LLVMGetParam(fn_val, 0);
+        const hb = core.LLVMGetParam(fn_val, 1);
+        const mode = core.LLVMGetParam(fn_val, 2);
+        const pa = core.LLVMBuildIntToPtr(self.builder, ha, self.ptrType(), "pa");
+        const pb = core.LLVMBuildIntToPtr(self.builder, hb, self.ptrType(), "pb");
+        const flags = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapFlagsPtr(pa), "flags");
+        const want = core.LLVMBuildMul(
+            self.builder,
+            core.LLVMBuildAdd(self.builder, self.mapLoadLen(pa), self.mapLoadLen(pb), "total"),
+            core.LLVMConstInt(self.i64Type(), 4, 0),
+            "want",
+        );
+        const new_fn = core.LLVMGetNamedFunction(self.module, "ko_map_new") orelse unreachable;
+        var new_args: [3]types.LLVMValueRef = .{ want, self.mapLoadKeyTag(pa), flags };
+        const dst = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(new_fn), new_fn, &new_args, 3, "dst");
+
+        const contains_fn = core.LLVMGetNamedFunction(self.module, "ko_map_contains") orelse unreachable;
+        const insert_fn = core.LLVMGetNamedFunction(self.module, "ko_map_insert") orelse unreachable;
+
+        // Pass 1 over `a`: which entries survive depends on the mode.
+        {
+            const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_loop");
+            const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_body");
+            const keep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_keep");
+            const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_next");
+            const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_done");
+            const cap = self.mapLoadCap(pa);
+            const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "ai");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+            self.buildBranch(loop_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+            const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "ai_val");
+            self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "a_more"), body_bb, done_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+            const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pa, i, 0), "a_st");
+            const live = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "a_live");
+            const test_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "a_test");
+            self.buildCondBranch(live, test_bb, next_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, test_bb);
+            const k = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pa, i, 1), "a_k");
+            var c_args: [2]types.LLVMValueRef = .{ hb, k };
+            const in_b = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(contains_fn), contains_fn, &c_args, 2, "in_b");
+            const in_b_bool = core.LLVMBuildICmp(self.builder, .LLVMIntNE, in_b, core.LLVMConstInt(self.i64Type(), 0, 0), "in_b_bool");
+            const is_inter = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, mode, core.LLVMConstInt(self.i64Type(), 1, 0), "is_inter");
+            const is_diff = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, mode, core.LLVMConstInt(self.i64Type(), 2, 0), "is_diff");
+            // union keeps everything; intersection keeps keys also in b;
+            // difference keeps keys absent from b.
+            const keep_inter = core.LLVMBuildSelect(self.builder, is_inter, in_b_bool, core.LLVMConstInt(core.LLVMInt1TypeInContext(self.context), 1, 0), "keep_inter");
+            const keep = core.LLVMBuildSelect(self.builder, is_diff, core.LLVMBuildNot(self.builder, in_b_bool, "not_in_b"), keep_inter, "keep");
+            self.buildCondBranch(keep, keep_bb, next_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, keep_bb);
+            const ik = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "a_ik");
+            self.emitMapRetainSlot(fn_val, pa, ik, flags);
+            const ik2 = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "a_ik2");
+            var ins_args: [3]types.LLVMValueRef = .{
+                dst,
+                core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pa, ik2, 1), "kk"),
+                core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pa, ik2, 2), "vv"),
+            };
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(insert_fn), insert_fn, &ins_args, 3, "");
+            self.buildBranch(next_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+            const ni = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "a_ni");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, ni, core.LLVMConstInt(self.i64Type(), 1, 0), "a_next_i"), i_slot);
+            self.buildBranch(loop_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        }
+
+        // Pass 2 over `b`, for union only.
+        {
+            const skip_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_skip");
+            const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_loop");
+            const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_body");
+            const keep_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_keep");
+            const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_next");
+            // Everything the loop needs must be emitted before the branch that
+            // terminates this block; anything after it lands past a terminator.
+            const cap = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayHeaderPtr(pb, -8, "bcap_ptr"), "bcap");
+            const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "bi");
+            const is_union = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, mode, core.LLVMConstInt(self.i64Type(), 0, 0), "is_union");
+            self.buildCondBranch(is_union, loop_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+            const walk_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "b_walk");
+            self.buildBranch(walk_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, walk_bb);
+            const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "bi_val");
+            self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "b_more"), body_bb, skip_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+            const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pb, i, 0), "b_st");
+            self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "b_live"), keep_bb, next_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, keep_bb);
+            const ik = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "b_ik");
+            self.emitMapRetainSlot(fn_val, pb, ik, flags);
+            const ik2 = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "b_ik2");
+            var ins_args: [3]types.LLVMValueRef = .{
+                dst,
+                core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pb, ik2, 1), "bk"),
+                core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(pb, ik2, 2), "bv"),
+            };
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(insert_fn), insert_fn, &ins_args, 3, "");
+            self.buildBranch(next_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+            const ni = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "b_ni");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, ni, core.LLVMConstInt(self.i64Type(), 1, 0), "b_next_i"), i_slot);
+            self.buildBranch(walk_bb);
+
+            core.LLVMPositionBuilderAtEnd(self.builder, skip_bb);
+        }
+
+        self.buildRet(dst);
+    }
+
+    /// ko_map_from_array(arr, key_tag, flags) -> i64
+    /// Builds a map from an Array of (k, v) tuples. Later duplicates win.
+    fn codegenMapFromArray(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_from_array", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
+        const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "body");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const arr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 0), self.ptrType(), "arr");
+        const flags = core.LLVMGetParam(fn_val, 2);
+        const len = self.arrayLoadLen(arr);
+        const new_fn = core.LLVMGetNamedFunction(self.module, "ko_map_new") orelse unreachable;
+        // Sized for every entry up front, so no insert can trigger a resize.
+        var new_args: [3]types.LLVMValueRef = .{
+            core.LLVMBuildMul(self.builder, len, core.LLVMConstInt(self.i64Type(), 4, 0), "want"),
+            core.LLVMGetParam(fn_val, 1),
+            flags,
+        };
+        const dst = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(new_fn), new_fn, &new_args, 3, "dst");
+        const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "i");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_val");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, len, "more"), body_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        const pair = core.LLVMBuildIntToPtr(
+            self.builder,
+            core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayElemPtr(arr, i), "pair_h"),
+            self.ptrType(),
+            "pair",
+        );
+        const k = core.LLVMBuildLoad2(self.builder, self.i64Type(), pair, "k");
+        var second_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
+        const second = core.LLVMBuildGEP2(self.builder, self.i8Type(), pair, &second_idx, 1, "second");
+        const v = core.LLVMBuildLoad2(self.builder, self.i64Type(), second, "v");
+        // The map takes its own reference; the tuple keeps holding one too.
+        const incref_fn = core.LLVMGetNamedFunction(self.module, "ko_incref") orelse unreachable;
+        inline for (.{ .{ 0, @as(u64, 1) }, .{ 1, @as(u64, 2) } }) |pr| {
+            const val = if (pr[0] == 0) k else v;
+            const set = core.LLVMBuildICmp(
+                self.builder,
+                .LLVMIntNE,
+                core.LLVMBuildAnd(self.builder, flags, core.LLVMConstInt(self.i64Type(), pr[1], 0), "fbit"),
+                core.LLVMConstInt(self.i64Type(), 0, 0),
+                "f_is_heap",
+            );
+            const chk = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fa_chk");
+            const skip = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fa_skip");
+            self.buildCondBranch(set, chk, skip);
+            core.LLVMPositionBuilderAtEnd(self.builder, chk);
+            const big = core.LLVMBuildICmp(self.builder, .LLVMIntUGT, val, core.LLVMConstInt(self.i64Type(), 4096, 0), "fa_ptr");
+            const doit = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "fa_do");
+            self.buildCondBranch(big, doit, skip);
+            core.LLVMPositionBuilderAtEnd(self.builder, doit);
+            var ia: [1]types.LLVMValueRef = .{core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "fa_p")};
+            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(incref_fn), incref_fn, &ia, 1, "");
+            self.buildBranch(skip);
+            core.LLVMPositionBuilderAtEnd(self.builder, skip);
+        }
+        const insert_fn = core.LLVMGetNamedFunction(self.module, "ko_map_insert") orelse unreachable;
+        var ins_args: [3]types.LLVMValueRef = .{ dst, k, v };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(insert_fn), insert_fn, &ins_args, 3, "");
+        const i_now = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_now");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, i_now, core.LLVMConstInt(self.i64Type(), 1, 0), "i_next"), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRet(dst);
+    }
+
+    /// ko_map_foldl(f, init, map) -> i64, with `f` curried as `f acc k v`.
+    fn codegenMapFoldl(self: *StdlibCodegen) void {
+        var params: [3]types.LLVMTypeRef = .{ self.i64Type(), self.i64Type(), self.i64Type() };
+        const fn_val = self.createFunction("ko_map_foldl", self.i64Type(), &params);
+        const entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "entry");
+        const loop_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
+        const body_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "body");
+        const live_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "live");
+        const next_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "next");
+        const done_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
+
+        core.LLVMPositionBuilderAtEnd(self.builder, entry);
+        const f = core.LLVMGetParam(fn_val, 0);
+        const ptr = core.LLVMBuildIntToPtr(self.builder, core.LLVMGetParam(fn_val, 2), self.ptrType(), "map");
+        const cap = self.mapLoadCap(ptr);
+        const acc_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "acc");
+        const i_slot = core.LLVMBuildAlloca(self.builder, self.i64Type(), "i");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMGetParam(fn_val, 1), acc_slot);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, loop_bb);
+        const i = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_val");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntSLT, i, cap, "more"), body_bb, done_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, body_bb);
+        const st = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 0), "st");
+        self.buildCondBranch(core.LLVMBuildICmp(self.builder, .LLVMIntEQ, st, core.LLVMConstInt(self.i64Type(), 1, 0), "live"), live_bb, next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, live_bb);
+        const k = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 1), "k");
+        const v = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(ptr, i, 2), "v");
+        const acc = core.LLVMBuildLoad2(self.builder, self.i64Type(), acc_slot, "acc_val");
+        // Three applications, each intermediate re-tagged as a closure.
+        const p1 = self.emitClosureCall1(fn_val, f, acc, "p1");
+        const p1t = core.LLVMBuildOr(self.builder, p1, core.LLVMConstInt(self.i64Type(), 1, 0), "p1t");
+        const p2 = self.emitClosureCall1(fn_val, p1t, k, "p2");
+        const p2t = core.LLVMBuildOr(self.builder, p2, core.LLVMConstInt(self.i64Type(), 1, 0), "p2t");
+        const stepped = self.emitClosureCall1(fn_val, p2t, v, "stepped");
+        _ = core.LLVMBuildStore(self.builder, stepped, acc_slot);
+        self.buildBranch(next_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, next_bb);
+        const i_now = core.LLVMBuildLoad2(self.builder, self.i64Type(), i_slot, "i_now");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMBuildAdd(self.builder, i_now, core.LLVMConstInt(self.i64Type(), 1, 0), "i_next"), i_slot);
+        self.buildBranch(loop_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, done_bb);
+        self.buildRet(core.LLVMBuildLoad2(self.builder, self.i64Type(), acc_slot, "result"));
+    }
+
+    pub fn codegenMapOps(self: *StdlibCodegen) void {
+        self.codegenHash();
+        self.codegenKeyEq();
+        self.codegenMapNew();
+        self.codegenMapFind();
+        self.codegenMapInsert();
+        self.codegenMapSet();
+        self.codegenMapGet();
+        self.codegenMapContains();
+        self.codegenMapDelete();
+        self.codegenMapLength();
+        self.codegenMapIsEmpty();
+        self.codegenMapCollect();
+        self.codegenMapMerge();
+        self.codegenMapFromArray();
+        self.codegenMapFoldl();
+        self.codegenDecrefMap();
+    }
+
+    // ============================================================
     // RC functions
     // ============================================================
 
@@ -3054,7 +4060,21 @@ pub const StdlibCodegen = struct {
         self.buildCondBranch(is_heap_array, array_walk_bb, not_heap_array_bb);
 
         core.LLVMPositionBuilderAtEnd(self.builder, not_heap_array_bb);
-        self.buildCondBranch(is_scalar_array, array_free_bb, decref_value_bb);
+        const map_check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_check");
+        self.buildCondBranch(is_scalar_array, array_free_bb, map_check_bb);
+
+        // Maps keep their bucket count in the capacity slot and have no field
+        // bitmap either, so they get their own walk.
+        core.LLVMPositionBuilderAtEnd(self.builder, map_check_bb);
+        const is_map = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), @intCast(map_type_tag), 0), "is_map");
+        const map_walk_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_walk");
+        self.buildCondBranch(is_map, map_walk_bb, decref_value_bb);
+
+        core.LLVMPositionBuilderAtEnd(self.builder, map_walk_bb);
+        const decref_map_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_map") orelse unreachable;
+        var dm_args: [1]types.LLVMValueRef = .{ptr};
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_map_fn), decref_map_fn, &dm_args, 1, "");
+        self.buildBranch(array_free_bb);
 
         core.LLVMPositionBuilderAtEnd(self.builder, array_walk_bb);
         const decref_array_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_array") orelse unreachable;
@@ -4368,6 +5388,10 @@ pub const StdlibCodegen = struct {
             const da_type = core.LLVMFunctionType(self.voidType(), @ptrCast(@constCast(&.{self.ptrType()})), 1, 0);
             _ = core.LLVMAddFunction(self.module, "ko_decref_array", da_type);
         }
+        if (core.LLVMGetNamedFunction(self.module, "ko_decref_map") == null) {
+            const dm_type = core.LLVMFunctionType(self.voidType(), @ptrCast(@constCast(&.{self.ptrType()})), 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_decref_map", dm_type);
+        }
         self.codegenKoDecref();
 
         self.codegenCheckedArithOverflow("ko_int_add_checked", "llvm.sadd.with.overflow.i64");
@@ -4383,6 +5407,7 @@ pub const StdlibCodegen = struct {
         self.codegenPanic();
         // After codegenPanic: bounds checks call ko_panic_str.
         self.codegenArrayOps();
+        self.codegenMapOps();
         self.codegenAssert();
         self.codegenAssertEq();
 

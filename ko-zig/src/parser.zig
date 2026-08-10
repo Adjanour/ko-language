@@ -207,7 +207,7 @@ pub const Parser = struct {
     fn is_expr_start(tag: lexer.Token.Tag) bool {
         return switch (tag) {
             .number, .string, .char, .identifier, .constructor, .keyword_true, .keyword_false,
-            .lparen, .lbracket, .keyword_if, .keyword_match, .backslash, .keyword_not, .keyword_ref => true,
+            .lparen, .lbracket, .lbrace, .keyword_if, .keyword_match, .backslash, .keyword_not, .keyword_ref => true,
             else => false,
         };
     }
@@ -1039,6 +1039,56 @@ pub const Parser = struct {
         return acc;
     }
 
+    /// Whether the `{` at the current position opens a record body rather than
+    /// a map literal. A record field is `name = value`; a map entry is
+    /// `key: value`, and `{}` is the empty map. One identifier plus one `=` of
+    /// lookahead separates them, which is what lets `P { x = 1 }` and
+    /// `Map.length {"k": 1}` both parse after the same prefix.
+    fn braceIsRecordBody(self: *Parser) bool {
+        if (self.current().tag != .lbrace) return false;
+        var i: usize = 1;
+        while (self.peek(i).tag == .newline or self.peek(i).tag == .indent) i += 1;
+        if (self.peek(i).tag != .identifier) return false;
+        var j = i + 1;
+        while (self.peek(j).tag == .newline or self.peek(j).tag == .indent) j += 1;
+        return self.peek(j).tag == .equal;
+    }
+
+    /// `{"a": 1, "b": 2}` — a map literal, desugared to
+    /// `Map.set (Map.set (Map.new ()) "a" 1) "b" 2`. `{}` is an empty map.
+    ///
+    /// A bare `{` is unambiguous today because a record literal always carries
+    /// a type name (`P { x = 1 }`). If anonymous records land later, the two
+    /// are still separable: the token after the first key is `:` for a map and
+    /// `=` for a record.
+    fn parse_map_literal(self: *Parser) Error!*Expr {
+        const open = self.current();
+        const loc = self.tokenLoc(open);
+        _ = try self.expect(.lbrace);
+
+        const unit = try self.newExpr(.{ .tuple = .{ .items = &.{} } }, loc);
+        var acc = try self.builtinCall("Map", "new", &.{unit}, loc);
+
+        self.skip_layout();
+        while (self.current().tag != .rbrace and self.current().tag != .eof) {
+            const key = try self.parse_expr();
+            self.skip_layout();
+            _ = try self.expect(.colon);
+            self.skip_layout();
+            const value = try self.parse_expr();
+            acc = try self.builtinCall("Map", "set", &.{ acc, key, value }, loc);
+            self.skip_layout();
+            if (self.match(.comma)) {
+                self.skip_layout();
+                continue;
+            }
+            break;
+        }
+        self.skip_layout();
+        _ = try self.expect(.rbrace);
+        return acc;
+    }
+
     /// Decode a char token to its single byte. The raw slice still has its
     /// quotes, and consumers read `val[0]`, so returning it unprocessed makes
     /// `'x'` mean `'`. Escapes are decoded with the same table strings use.
@@ -1333,7 +1383,7 @@ pub const Parser = struct {
             }
 
             // Handle record literal after field access (e.g., Geo.Point { x = 1 })
-            if (self.current().tag == .lbrace and expr.* == .field_access) {
+            if (self.braceIsRecordBody() and expr.* == .field_access) {
                 const fa = expr.field_access;
                 if (fa.object.* == .constructor) {
                     const combined = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ fa.object.constructor.name, fa.field });
@@ -1368,7 +1418,7 @@ pub const Parser = struct {
             }
 
             // Handle record literal after field access (e.g., Geo.Point { x = 1 })
-            if (self.current().tag == .lbrace and expr.* == .field_access) {
+            if (self.braceIsRecordBody() and expr.* == .field_access) {
                 const fa = expr.field_access;
                 if (fa.object.* == .constructor) {
                     // Geo.Point { ... } → record literal with name "Geo.Point"
@@ -1449,18 +1499,19 @@ pub const Parser = struct {
             .identifier => {
                 const name = self.slice(self.advance());
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                    if (self.current().tag == .lbrace) return self.parse_record_literal(name);
+                    if (self.braceIsRecordBody()) return self.parse_record_literal(name);
                     return self.newExpr(.{ .constructor = .{ .name = name } }, self.tokenLoc(t));
                 }
                 return self.newExpr(.{ .identifier = .{ .name = name } }, self.tokenLoc(t));
             },
             .constructor => {
                 const name = self.slice(self.advance());
-                if (self.current().tag == .lbrace) return self.parse_record_literal(name);
+                if (self.braceIsRecordBody()) return self.parse_record_literal(name);
                 return self.newExpr(.{ .constructor = .{ .name = name } }, self.tokenLoc(t));
             },
             .lparen => return self.parse_group_or_tuple(),
             .lbracket => return self.parse_array_literal(),
+            .lbrace => return self.parse_map_literal(),
             .backslash => return self.parse_lambda(),
             .keyword_comptime => return self.parse_comptime(),
             .keyword_if => return self.parse_if(),

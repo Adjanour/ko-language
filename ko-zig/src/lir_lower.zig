@@ -477,6 +477,17 @@ pub const LirLower = struct {
         try self.globals.put("Nothing", .{ .arity = 0, .kind = .ctor });
         // Array creation needs the element kind, which only the static type
         // gives, so it is resolved during lowering rather than named directly.
+        // Map.new needs the key tag and the heap flags, and the collectors need
+        // the element tag of the array they build, so all are resolved during
+        // lowering from the static type.
+        try self.globals.put("Map.new", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Map.keys", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Map.values", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Map.entries", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Map.fromArray", .{ .arity = 1, .kind = .std_special });
+        try self.globals.put("Map.union", .{ .arity = 2, .kind = .std_special });
+        try self.globals.put("Map.intersection", .{ .arity = 2, .kind = .std_special });
+        try self.globals.put("Map.difference", .{ .arity = 2, .kind = .std_special });
         try self.globals.put("Array.new", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("Array.make", .{ .arity = 2, .kind = .std_special });
         // These build a new array, so they also need the element tag.
@@ -527,6 +538,13 @@ pub const LirLower = struct {
             .{ "Array.isEmpty", "ko_array_is_empty" },
             .{ "Array.foldl", "ko_array_foldl" },
             .{ "Array.foldr", "ko_array_foldr" },
+            .{ "Map.get", "ko_map_get" },
+            .{ "Map.set", "ko_map_set" },
+            .{ "Map.delete", "ko_map_delete" },
+            .{ "Map.containsKey", "ko_map_contains" },
+            .{ "Map.length", "ko_map_length" },
+            .{ "Map.isEmpty", "ko_map_is_empty" },
+            .{ "Map.foldl", "ko_map_foldl" },
             .{ "Char.isAlpha", "ko_char_is_alpha" },
             .{ "Char.isDigit", "ko_char_is_digit" },
             .{ "Char.isAlnum", "ko_char_is_alnum" },
@@ -889,6 +907,14 @@ pub const LirLower = struct {
                 if (std.mem.eql(u8, name, "panic")) return self.lowerPanic(args, span);
                 if (std.mem.eql(u8, name, "assert")) return self.lowerAssert(args, span);
                 if (std.mem.eql(u8, name, "assert_eq")) return self.lowerAssertEq(args, span);
+                if (std.mem.eql(u8, name, "Map.new")) return self.lowerMapNew(args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Map.keys")) return self.lowerMapCollect(args, 0, result_hir_ty);
+                if (std.mem.eql(u8, name, "Map.values")) return self.lowerMapCollect(args, 1, result_hir_ty);
+                if (std.mem.eql(u8, name, "Map.entries")) return self.lowerMapCollect(args, 2, result_hir_ty);
+                if (std.mem.eql(u8, name, "Map.fromArray")) return self.lowerMapFromArray(args, result_hir_ty);
+                if (std.mem.eql(u8, name, "Map.union")) return self.lowerMapMerge(args, 0);
+                if (std.mem.eql(u8, name, "Map.intersection")) return self.lowerMapMerge(args, 1);
+                if (std.mem.eql(u8, name, "Map.difference")) return self.lowerMapMerge(args, 2);
                 if (std.mem.eql(u8, name, "Array.new")) return self.lowerArrayNew(args, result_hir_ty);
                 if (std.mem.eql(u8, name, "Array.make")) return self.lowerArrayMake(args, result_hir_ty);
                 if (std.mem.eql(u8, name, "Array.map")) return self.lowerArrayHof("ko_array_map", args, result_hir_ty);
@@ -1002,6 +1028,13 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_array_push")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_array_set")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.startsWith(u8, runtime, "ko_array_fold")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_length")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_is_empty")) break :blk .{ .params = &.{.{ .int = {} }}, .ret = .{ .bool = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_get")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_delete")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_contains")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} } }, .ret = .{ .bool = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_set")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
+            if (std.mem.eql(u8, runtime, "ko_map_foldl")) break :blk .{ .params = &.{ .{ .int = {} }, .{ .int = {} }, .{ .int = {} } }, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_char_to_string")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .string = {} } };
             if (std.mem.eql(u8, runtime, "ko_bool_to_string")) break :blk .{ .params = &.{.{ .bool = {} }}, .ret = .{ .string = {} } };
             if (std.mem.startsWith(u8, runtime, "ko_char_is_")) break :blk .{ .params = &.{.{ .char = {} }}, .ret = .{ .bool = {} } };
@@ -1226,6 +1259,104 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ arr, v }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
+        return arr;
+    }
+
+    /// `Map.new ()` — the key tag and the heap flags have to be baked into the
+    /// table, because ko_decref sees only a pointer and has no call site left
+    /// to read a static type from.
+    fn lowerMapNew(self: *LirLower, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        _ = args;
+        var key_tag: i64 = 0;
+        var flags: i64 = 0;
+        const r = self.resolve(result_hir_ty);
+        if (r.* == .con and std.mem.eql(u8, r.con.name, "Map") and r.con.args.len == 2) {
+            const k = self.resolve(r.con.args[0]);
+            key_tag = typeTag(k);
+            if (self.arrayTagFor(k) == array_tag_heap) flags |= 1;
+            if (self.arrayTagFor(r.con.args[1]) == array_tag_heap) flags |= 2;
+        }
+        const cap = try self.emit(.{ .int = 8 }, .{ .int = {} });
+        const kt = try self.emit(.{ .int = key_tag }, .{ .int = {} });
+        const fl = try self.emit(.{ .int = flags }, .{ .int = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_map_new" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 3);
+        for (params) |*p| p.* = .{ .int = {} };
+        const m = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{ cap, kt, fl }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = m, .type_tag = 1 });
+        return m;
+    }
+
+    /// `Map.fromArray pairs` — needs the same key tag and heap flags as
+    /// `Map.new`, taken from the Map type it produces.
+    fn lowerMapFromArray(self: *LirLower, args: []const hir.HirId, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const arr = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        var key_tag: i64 = 0;
+        var flags: i64 = 0;
+        const r = self.resolve(result_hir_ty);
+        if (r.* == .con and std.mem.eql(u8, r.con.name, "Map") and r.con.args.len == 2) {
+            const k = self.resolve(r.con.args[0]);
+            key_tag = typeTag(k);
+            if (self.arrayTagFor(k) == array_tag_heap) flags |= 1;
+            if (self.arrayTagFor(r.con.args[1]) == array_tag_heap) flags |= 2;
+        }
+        const kt = try self.emit(.{ .int = key_tag }, .{ .int = {} });
+        const fl = try self.emit(.{ .int = flags }, .{ .int = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_map_from_array" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 3);
+        for (params) |*p| p.* = .{ .int = {} };
+        const m = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{ arr, kt, fl }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = m, .type_tag = 1 });
+        return m;
+    }
+
+    /// `Map.union` / `intersection` / `difference` — one runtime function
+    /// selected by `mode`. The result takes its key tag and flags from the
+    /// left map, so both operands must already agree on those, which the type
+    /// `Map k v -> Map k v -> Map k v` guarantees.
+    fn lowerMapMerge(self: *LirLower, args: []const hir.HirId, mode: i64) LowerError!lir.LocalId {
+        if (args.len != 2) return error.ArityMismatch;
+        const a = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const b = try self.coerce(try self.lowerExpr(args[1]), .{ .int = {} });
+        const m = try self.emit(.{ .int = mode }, .{ .int = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_map_merge" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 3);
+        for (params) |*p| p.* = .{ .int = {} };
+        const out = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{ a, b, m }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = out, .type_tag = 1 });
+        return out;
+    }
+
+    /// `Map.keys` / `Map.values` / `Map.entries` — one runtime function
+    /// selected by `which`, needing the element tag of the Array it builds.
+    fn lowerMapCollect(self: *LirLower, args: []const hir.HirId, which: i64, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
+        if (args.len != 1) return error.ArityMismatch;
+        const m = try self.coerce(try self.lowerExpr(args[0]), .{ .int = {} });
+        const tag = if (self.arrayElemOf(result_hir_ty)) |e| self.arrayTagFor(e) else array_tag_scalar;
+        const which_local = try self.emit(.{ .int = which }, .{ .int = {} });
+        const tag_local = try self.emit(.{ .int = tag }, .{ .int = {} });
+        const fn_local = try self.emit(.{ .fn_ref = "ko_map_collect" }, .{ .opaque_type = {} });
+        const params = try self.allocator.alloc(lir.LirType, 3);
+        for (params) |*p| p.* = .{ .int = {} };
+        const arr = try self.emit(.{ .call = .{
+            .func = fn_local,
+            .args = try self.dupeIds(&.{ m, which_local, tag_local }),
+            .fn_type = .{ .params = params, .returns = .{ .int = {} } },
+        } }, .{ .int = {} });
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
         return arr;
     }
 

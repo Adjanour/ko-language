@@ -17,7 +17,7 @@ Every status claim below was checked by compiling and running the feature, not b
 | Syntax | Function syntax (§4) complete: typed params, return types, `pub fn`. Tuple access `.0` landed in Stage 0. Two *frozen* forms still missing: record spread `..`, named args `~name:`. |
 | Strings | Phase 1 (KoString) and Phase 2 done in Stage 1, including interpolation and escapes. Phase 3 (`std.text`) not started. |
 | IO | Console output only. No file I/O of any kind. |
-| Data structures | Array landed in Stage 2 — literals, mutation, higher-order, sort. No Map, Set, or `hash` yet. List/tuple/record work; `List` is still user-declared, not builtin. |
+| Data structures | Array (Stage 2) and Map (Stage 3) both landed. No Set yet, but Stage 3 unblocks it. List/tuple/record work; `List` is still user-declared, not builtin. |
 
 Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined `type Result e a = Ok a | Err e`, records with annotations, pattern matching, `ref`/`:=`/`!`, `|>` on one line, `::`, `comptime`.
 
@@ -30,9 +30,9 @@ Four things block disproportionately much, so they come first:
 - ~~**`Ok`/`Err`/`Just`/`Nothing` are undefined.**~~ Declared in the prelude in Stage 0, so `Array.pop : Maybe a`, `Map.get : Maybe v`, `String.toInt : Maybe Int` and the `Result`-returning I/O signatures are now spellable.
 - ~~**Tuple access `.0` does not parse.**~~ Landed in Stage 0. `Map.toList : List (k, v)` and `Map.fromList` are now spellable.
 - ~~**`panic` emits a terminator mid-block.**~~ It did not — see Stage 0. `panic` was already usable for the bounds checks the Array and Map designs specify.
-- **`hash` gates Map, and Map gates Set** (Set is specified as `Map a ()`).
+- ~~**`hash` gates Map, and Map gates Set.**~~ Landed in Stage 3, so Set (specified as `Map a ()`) is unblocked.
 
-Stage 0 cleared the first three; only `hash` remains. Everything after it is largely parallelisable.
+All four are now cleared — the first three in Stage 0, `hash` in Stage 3.
 
 ### Dependency graph
 
@@ -41,7 +41,7 @@ Stage 0 (prelude types, tuple access)  — DONE
    ├── Stage 1  Strings Phase 2      — DONE
    ├── Stage 2  Array — DONE (2.5 deferred) ─┐
    │                                     ├── Stage 4  Set
-   ├── Stage 3  hash + Map            ──┘
+   ├── Stage 3  hash + Map — code complete ──┘
    └── Stage 5  IO                    (needs Result + panic)
 
 Stage 6  Syntax leftovers   (independent, do opportunistically)
@@ -197,21 +197,65 @@ So 2.5 is not a matter of writing two conversions: it first requires deciding wh
 
 ---
 
-## Stage 3 — `hash` + Map
+## Stage 3 — `hash` + Map — CODE COMPLETE, TESTS NOT WRITTEN
 
 **Goal:** DESIGN-data-structures §4.
 **Depends on:** Stage 0 (`Maybe`), Stage 2 (buckets), tuple access from 0.3.
 
-| # | Task |
-|---|------|
-| 3.1 | `ko_hash(val, type_tag)` covering Int, Float, Bool, Char, String (FNV-1a), Unit, tuple, constructor |
-| 3.2 | `KoMap` with separate chaining; resize at load factor 0.75 |
-| 3.3 | `ko_map_new/get/set/delete`, `Map.length`, `containsKey` |
-| 3.4 | Map literal `{"k": v}` — note this collides with record-literal syntax; resolve before implementing |
-| 3.5 | `Map.keys`, `values`, `toList`, `fromList`, `foldl`, `forEach` |
-| 3.6 | `Map.union`, `intersection`, `difference` |
+| # | Task | Status |
+|---|------|--------|
+| 3.1 | `ko_hash(val, type_tag)` | done for Int, Float, Bool, Char, String, Unit. **Tuple and constructor keys are rejected at compile time** rather than hashed — see below |
+| 3.2 | `KoMap`, resize at load factor 0.75 | done — open addressing, not the doc's separate chaining |
+| 3.3 | `ko_map_new/get/set/delete`, `length`, `containsKey`, `isEmpty` | done |
+| 3.4 | Map literal `{"k": v}` | done |
+| 3.5 | `keys`, `values`, `entries`, `fromArray`, `foldl` | done (`forEach` not done — `foldl` covers it) |
+| 3.6 | `union`, `intersection`, `difference` | done |
 
-**Open question to settle first:** `{ ... }` is already record syntax. The doc proposes `{"name": "Alice"}` for maps and `{ name = "Alice" }` for records, distinguished by `:` vs `=`. That is decidable in the parser but subtle. Confirm the decision before 3.4 rather than during.
+**Remaining work: regression tests.** Every operation above was verified by hand against a scratch program, and the suite is green at 285/285, but no Stage 3 tests were added to `src/tests.zig`. That is the next thing to do. Follow the Stage 2 block at the end of that file; the scratch programs to turn into tests covered core get/set/delete, Int keys with String values, growth across several resizes (40 entries), `keys`/`values`/`entries`, `fromArray` round-tripping through `entries`, `foldl`, the three set operations, and map literals including `{}`.
+
+### Representation
+
+```
+[-32] refcount
+[-24] type_tag = 13
+[-16] length (live entries)
+[ -8] capacity (bucket count, power of two)
+[  0] key_tag — selects the hash and equality
+[  8] flags: bit 0 = keys are heap, bit 1 = values are heap
+[ 16] buckets: capacity × { state, key, value }, 24 bytes each
+```
+
+State is 0 empty, 1 occupied, 2 tombstone; deletes tombstone so probe chains stay intact.
+
+**Open addressing with linear probing, not the doc's separate chaining.** Buckets live in one allocation, so there are no per-entry nodes to allocate, walk or free, and the whole map is a single `ko_alloc`. Scalar hashes go through a splitmix64 finalizer — identity-hashed integer keys cluster badly under linear probing.
+
+**The key tag and heap flags live in the map, not at the call site.** `ko_decref` sees only a pointer; at teardown there is no call site left to read a static type from.
+
+**`Map.set` returns the map, where the doc says `Unit`** — same reason as `Array.push`: a resize moves the table. `delete` returns `Unit`, since it only tombstones.
+
+**`keys`/`values`/`entries` return `Array`, not the doc's `List`**, because there is no builtin `List` — the same gap that blocks Stage 2.5.
+
+### Unhashable keys are a compile error
+
+`ko_hash` handles the scalars and hashes String by content. Anything else would fall back to the payload bits, which for a tuple or constructor is its *address* — two structurally equal keys would land in different buckets and lookups would quietly miss. `validateMapKeys` rejects those after inference instead:
+
+```
+(Int, Int) cannot be a Map key
+  note: keys are hashed and compared structurally, and only Int, Float,
+        Bool, Char, String and Unit are
+  help: key by one of those instead — for a compound key, derive a String
+```
+
+The accepted set there must stay in step with what `ko_hash` and `ko_key_eq` implement.
+
+### The brace decision
+
+`{"k": v}` took the brace syntax. It was free: record literals require a type-name prefix (`P { x = 1 }`), and a bare `{` did not parse at all. `braceIsRecordBody` now separates the two with one identifier plus one `=` of lookahead, which is also what lets anonymous records (6.6) land later without conflict.
+
+### Two bugs found underneath
+
+- **`()` inferred as `tuple []`, not `unit`.** The two never unified, producing the memorable error `expected (), got ()`. Any signature taking `Unit` was unusable.
+- **Generalization had no value restriction.** `let m = Map.new ()` was generalized, so every use instantiated a fresh copy of the key and value variables while the binding's own copy stayed unbound — the map was built keying on tag 100 and every lookup missed. Let-bindings now generalize only syntactic values, which is ML's value restriction and exists for exactly this failure. It broke nothing in the suite.
 
 ---
 

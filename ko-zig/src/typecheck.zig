@@ -338,6 +338,126 @@ pub const Inferer = struct {
         }
     }
 
+    /// `Map k v` is a builtin con with two parameters.
+    ///
+    /// `set` returns the map rather than Unit, unlike DESIGN-data-structures
+    /// §4, for the same reason `Array.push` does: buckets live inline, so a
+    /// resize moves the table. `delete` returns Unit, since it only tombstones.
+    ///
+    /// `keys`/`values`/`entries` return `Array`, not the doc's `List`, because
+    /// there is no builtin `List` to return — see the Stage 2 note.
+    fn registerMapBuiltins(self: *Inferer) Error!void {
+        try self.type_names.put("Map", 2);
+
+        const Sig = struct { name: []const u8, kind: enum { new, get, set, delete, contains, length, is_empty, keys, values, entries } };
+        for ([_]Sig{
+            .{ .name = "Map.new", .kind = .new },
+            .{ .name = "Map.get", .kind = .get },
+            .{ .name = "Map.set", .kind = .set },
+            .{ .name = "Map.delete", .kind = .delete },
+            .{ .name = "Map.containsKey", .kind = .contains },
+            .{ .name = "Map.length", .kind = .length },
+            .{ .name = "Map.isEmpty", .kind = .is_empty },
+            .{ .name = "Map.keys", .kind = .keys },
+            .{ .name = "Map.values", .kind = .values },
+            .{ .name = "Map.entries", .kind = .entries },
+        }) |sig| {
+            const k = try self.newVarType("k");
+            const v = try self.newVarType("v");
+            const map_args = try self.allocator.alloc(*Type, 2);
+            map_args[0] = k;
+            map_args[1] = v;
+            const map = try self.newType(.{ .con = .{ .name = "Map", .args = map_args } });
+
+            const ty = switch (sig.kind) {
+                .new => try self.arrowOf(&.{try self.newType(.unit)}, map),
+                .get => blk: {
+                    const m_args = try self.allocator.alloc(*Type, 1);
+                    m_args[0] = v;
+                    break :blk try self.arrowOf(&.{ map, k }, try self.newType(.{ .con = .{ .name = "Maybe", .args = m_args } }));
+                },
+                .set => try self.arrowOf(&.{ map, k, v }, map),
+                .delete => try self.arrowOf(&.{ map, k }, try self.newType(.unit)),
+                .contains => try self.arrowOf(&.{ map, k }, try self.newType(.bool)),
+                .length => try self.arrowOf(&.{map}, try self.newType(.int)),
+                .is_empty => try self.arrowOf(&.{map}, try self.newType(.bool)),
+                .keys => blk: {
+                    const a_args = try self.allocator.alloc(*Type, 1);
+                    a_args[0] = k;
+                    break :blk try self.arrowOf(&.{map}, try self.newType(.{ .con = .{ .name = "Array", .args = a_args } }));
+                },
+                .values => blk: {
+                    const a_args = try self.allocator.alloc(*Type, 1);
+                    a_args[0] = v;
+                    break :blk try self.arrowOf(&.{map}, try self.newType(.{ .con = .{ .name = "Array", .args = a_args } }));
+                },
+                .entries => blk: {
+                    const pair_elems = try self.allocator.alloc(*Type, 2);
+                    pair_elems[0] = k;
+                    pair_elems[1] = v;
+                    const a_args = try self.allocator.alloc(*Type, 1);
+                    a_args[0] = try self.newType(.{ .tuple = pair_elems });
+                    break :blk try self.arrowOf(&.{map}, try self.newType(.{ .con = .{ .name = "Array", .args = a_args } }));
+                },
+            };
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = k.variable.id;
+            q[1] = v.variable.id;
+            try self.global.set(sig.name, .{ .quantified = q, .body = ty });
+        }
+
+        // Map.fromArray : Array (k, v) -> Map k v
+        {
+            const k = try self.newVarType("k");
+            const v = try self.newVarType("v");
+            const pair_elems = try self.allocator.alloc(*Type, 2);
+            pair_elems[0] = k;
+            pair_elems[1] = v;
+            const arr_args = try self.allocator.alloc(*Type, 1);
+            arr_args[0] = try self.newType(.{ .tuple = pair_elems });
+            const arr = try self.newType(.{ .con = .{ .name = "Array", .args = arr_args } });
+            const map_args = try self.allocator.alloc(*Type, 2);
+            map_args[0] = k;
+            map_args[1] = v;
+            const map = try self.newType(.{ .con = .{ .name = "Map", .args = map_args } });
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = k.variable.id;
+            q[1] = v.variable.id;
+            try self.global.set("Map.fromArray", .{ .quantified = q, .body = try self.arrowOf(&.{arr}, map) });
+        }
+
+        // Map.foldl : (b -> k -> v -> b) -> b -> Map k v -> b
+        {
+            const k = try self.newVarType("k");
+            const v = try self.newVarType("v");
+            const b = try self.newVarType("b");
+            const map_args = try self.allocator.alloc(*Type, 2);
+            map_args[0] = k;
+            map_args[1] = v;
+            const map = try self.newType(.{ .con = .{ .name = "Map", .args = map_args } });
+            const step = try self.arrowOf(&.{ b, k, v }, b);
+            const q = try self.allocator.alloc(usize, 3);
+            q[0] = k.variable.id;
+            q[1] = v.variable.id;
+            q[2] = b.variable.id;
+            try self.global.set("Map.foldl", .{ .quantified = q, .body = try self.arrowOf(&.{ step, b, map }, b) });
+        }
+
+        // Set operations: Map k v -> Map k v -> Map k v
+        for ([_][]const u8{ "Map.union", "Map.intersection", "Map.difference" }) |name| {
+            const k = try self.newVarType("k");
+            const v = try self.newVarType("v");
+            const map_args = try self.allocator.alloc(*Type, 2);
+            map_args[0] = k;
+            map_args[1] = v;
+            const map = try self.newType(.{ .con = .{ .name = "Map", .args = map_args } });
+            const q = try self.allocator.alloc(usize, 2);
+            q[0] = k.variable.id;
+            q[1] = v.variable.id;
+            try self.global.set(name, .{ .quantified = q, .body = try self.arrowOf(&.{ map, map }, map) });
+        }
+    }
+
     /// `Maybe` and `Result` are declared here rather than in a `.ko` prelude
     /// because there is no prelude loader; every other built-in type is also
     /// hand-registered. Constructor tags must match `lir_lower.zig`'s
@@ -1045,6 +1165,7 @@ pub const Inferer = struct {
         try self.global.set("String.length", .{ .quantified = &.{}, .body = string_to_int });
 
         try self.registerArrayBuiltins();
+        try self.registerMapBuiltins();
 
         // String.from : a -> String — what `${e}` desugars to. It accepts any
         // type here so inference never fails on it; validateInterpolations()
@@ -1626,6 +1747,44 @@ pub const Inferer = struct {
 
         self.finalizeElemTags();
         self.validateInterpolations();
+        self.validateMapKeys();
+    }
+
+    /// Reject `Map k v` where `k` has no structural hash and equality.
+    ///
+    /// `ko_hash` handles the scalars and hashes String by content; everything
+    /// else would fall back to the payload bits, which for a tuple or a
+    /// constructor is its address. Two structurally equal keys would then land
+    /// in different buckets and lookups would quietly miss, so the accepted set
+    /// here must match what ko_hash and ko_key_eq actually implement.
+    fn validateMapKeys(self: *Inferer) void {
+        const diags = self.diagnostics orelse return;
+        var reported = std.AutoHashMap(*const parser.Expr, void).init(self.allocator);
+        defer reported.deinit();
+
+        var it = self.expr_types.iterator();
+        while (it.next()) |entry| {
+            const r = self.resolve(entry.value_ptr.*);
+            if (r.* != .con or !std.mem.eql(u8, r.con.name, "Map") or r.con.args.len != 2) continue;
+            switch (self.resolve(r.con.args[0]).*) {
+                .int, .float, .bool, .char, .string, .unit, .variable => continue,
+                else => {},
+            }
+            if (reported.contains(entry.key_ptr.*)) continue;
+            reported.put(entry.key_ptr.*, {}) catch {};
+            const name = typeToString(self.allocator, self.resolve(r.con.args[0]).*) catch null;
+            const msg = std.fmt.allocPrint(
+                self.allocator,
+                "{s} cannot be a Map key",
+                .{name orelse "this type"},
+            ) catch "this type cannot be a Map key";
+            diags.addErrorCtx(
+                msg,
+                entry.key_ptr.*.getLoc(),
+                "keys are hashed and compared structurally, and only Int, Float, Bool, Char, String and Unit are",
+                "key by one of those instead — for a compound key, derive a String",
+            ) catch {};
+        }
     }
 
     /// Reject `${e}` where `e` has no text form. This runs after inference
@@ -2082,6 +2241,10 @@ pub const Inferer = struct {
                 break :blk try self.instantiate(scheme);
             },
             .tuple => |t| blk: {
+                // `()` parses as a zero-element tuple but *is* the unit value.
+                // Leaving it as `tuple []` gives a type that prints as "()" yet
+                // never unifies with `unit` — "expected (), got ()".
+                if (t.items.len == 0) break :blk try self.newType(.unit);
                 const tys = try self.allocator.alloc(*Type, t.items.len);
                 for (t.items, 0..) |item, i| tys[i] = try self.inferExpr(env, item);
                 break :blk try self.newType(.{ .tuple = tys });
@@ -2128,6 +2291,26 @@ pub const Inferer = struct {
         return last;
     }
 
+    /// ML's value restriction: only a syntactic value may be generalized.
+    ///
+    /// `let m = Map.new ()` is an application, and generalizing it hands every
+    /// use a fresh copy of the key and value variables while the *binding's*
+    /// own copy stays unbound. Codegen then has no key type to pick a hash
+    /// from, and the map silently keys on tag 100. The same reasoning covers
+    /// `Array.new` and any other allocator whose element type comes from later
+    /// unification.
+    fn isSyntacticValue(expr: *const parser.Expr) bool {
+        return switch (expr.*) {
+            .int_literal, .float_literal, .string_literal, .char_literal, .bool_literal => true,
+            .identifier, .constructor, .lambda => true,
+            .tuple => |t| blk: {
+                for (t.items) |item| if (!isSyntacticValue(item)) break :blk false;
+                break :blk true;
+            },
+            else => false,
+        };
+    }
+
     fn inferLetExpr(self: *Inferer, env: *Env, name: []const u8, value: *parser.Expr, body: *parser.Expr, type_ann: ?parser.TypeExpr, pattern: ?parser.Pattern) Error!*Type {
         // Bidirectional: if annotation present, check value against it
         const val_ty = if (type_ann) |ann| blk: {
@@ -2155,7 +2338,10 @@ pub const Inferer = struct {
         if (pattern) |pat| {
             try self.inferPattern(&local, pat, val_ty);
         } else {
-            const scheme = try self.generalize(env, val_ty);
+            const scheme = if (isSyntacticValue(value))
+                try self.generalize(env, val_ty)
+            else
+                Scheme{ .quantified = &.{}, .body = val_ty };
             try local.set(name, scheme);
             self.bindName(name, value.getLoc());
         }
@@ -2406,7 +2592,10 @@ pub const Inferer = struct {
         if (pattern) |pat| {
             try self.inferPattern(&local, pat, val_ty);
         } else {
-            const scheme = try self.generalize(env, val_ty);
+            const scheme = if (isSyntacticValue(value))
+                try self.generalize(env, val_ty)
+            else
+                Scheme{ .quantified = &.{}, .body = val_ty };
             try local.set(name, scheme);
             self.bindName(name, value.getLoc());
         }

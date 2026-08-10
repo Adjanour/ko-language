@@ -575,6 +575,23 @@ register is defined. Runtime code that reads the result as an i64 and tests it
 against zero will see the undefined high bits — a predicate written that way
 accepts everything. Mask bit 0.
 
+### Generalization and the value restriction
+
+Let-bindings generalize **only syntactic values** — literals, identifiers,
+constructors, lambdas, and tuples of those. A function application is not
+generalized.
+
+This is ML's value restriction, and it is load-bearing here for a concrete
+reason: `let m = Map.new ()` used to be generalized, so every *use* instantiated
+a fresh copy of the key and value variables while the binding's own copy stayed
+unbound. Codegen then had no key type to pick a hash from, stamped the map with
+tag 100, and every lookup missed — with no error anywhere. The same applies to
+`Array.new` and any allocator whose element type arrives by later unification.
+
+If you add a container builtin, check that a `let`-bound call to it still has a
+resolved element type at lowering. `isSyntacticValue` in `typecheck.zig` is the
+gate.
+
 ### Type expressions
 
 `typeExprToType` and `ctorParamType` both walk `parser.TypeExpr`, and both need
