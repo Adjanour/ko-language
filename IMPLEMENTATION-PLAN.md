@@ -6,9 +6,7 @@
 
 > **Covers:** DESIGN-data-structures.md, DESIGN-strings-characters.md, DESIGN-io-model.md, DESIGN-syntax.md
 
-Every status claim below was checked by compiling and running the feature, not
-by reading a doc's own checkboxes. Where a design doc disagrees with the
-compiler, the compiler wins and the discrepancy is called out.
+Every status claim below was checked by compiling and running the feature, not by reading a doc's own checkboxes. Where a design doc disagrees with the compiler, the compiler wins and the discrepancy is called out.
 
 ---
 
@@ -21,9 +19,7 @@ compiler, the compiler wins and the discrepancy is called out.
 | IO | Console output only. No file I/O of any kind. `panic` emits invalid LLVM. |
 | Data structures | Nothing. No Array, Map, Set, or `hash`. List/tuple/record work. |
 
-Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined
-`type Result e a = Ok a | Err e`, records with annotations, pattern matching,
-`ref`/`:=`/`!`, `|>` on one line, `::`, `comptime`.
+Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined `type Result e a = Ok a | Err e`, records with annotations, pattern matching, `ref`/`:=`/`!`, `|>` on one line, `::`, `comptime`.
 
 ---
 
@@ -31,14 +27,9 @@ Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined
 
 Four things block disproportionately much, so they come first:
 
-- **`Ok`/`Err`/`Just`/`Nothing` are undefined.** Not a machinery gap — user-defined
-  ADTs with the same shape compile and run. Only the prelude declarations are
-  missing. But `Array.pop : Maybe a`, `Map.get : Maybe v`, `String.toInt : Maybe Int`
-  and every `Result`-returning I/O signature are unspellable until they exist.
-- **Tuple access `.0` does not parse.** `Map.toList : List (k, v)` and
-  `Map.fromList` are unusable without it.
-- **`panic` emits a terminator mid-block** and fails LLVM verification. Every
-  bounds-checked accessor in the Array and Map designs is specified to panic.
+- **`Ok`/`Err`/`Just`/`Nothing` are undefined.** Not a machinery gap — user-defined ADTs with the same shape compile and run. Only the prelude declarations are missing. But `Array.pop : Maybe a`, `Map.get : Maybe v`, `String.toInt : Maybe Int` and every `Result`-returning I/O signature are unspellable until they exist.
+- **Tuple access `.0` does not parse.** `Map.toList : List (k, v)` and `Map.fromList` are unusable without it.
+- **`panic` emits a terminator mid-block** and fails LLVM verification. Every bounds-checked accessor in the Array and Map designs is specified to panic.
 - **`hash` gates Map, and Map gates Set** (Set is specified as `Map a ()`).
 
 Stage 0 clears all four. Everything after it is then largely parallelisable.
@@ -59,15 +50,11 @@ Stage 7  Deferred to v0.4+  (std.text, Deque, PriorityQueue, Rope)
 
 ### How to add a builtin in this codebase
 
-The LIR pipeline is the default as of `adc205d`. A new runtime function touches
-four places:
+The LIR pipeline is the default as of `adc205d`. A new runtime function touches four places:
 
-1. `src/typecheck.zig` — register the signature in `global` (see the `Float.*`
-   block around line 1050)
-2. `src/stdlib_codegen.zig` — emit the LLVM IR body, and call your `codegenX`
-   from the generate-all routine
-3. `src/lir_lower.zig` — add the Kō-name → runtime-symbol pair in the table at
-   ~line 505, and the param/return types at ~line 985
+1. `src/typecheck.zig` — register the signature in `global` (see the `Float.*` block around line 1050)
+2. `src/stdlib_codegen.zig` — emit the LLVM IR body, and call your `codegenX` from the generate-all routine
+3. `src/lir_lower.zig` — add the Kō-name → runtime-symbol pair in the table at ~line 505, and the param/return types at ~line 985
 4. `src/codegen.zig` — legacy path, only still used by the REPL
 
 Miss step 3 and the function type-checks but fails to link.
@@ -95,12 +82,9 @@ fn main =
     | Just v => println v
     | Nothing => println 0
 ```
-prints `1` then `5`, and a program calling `panic "x"` aborts with the message
-instead of failing LLVM verification.
+prints `1` then `5`, and a program calling `panic "x"` aborts with the message instead of failing LLVM verification.
 
-**Note:** `Result` already occupies type_id 1 and `Bool` type_id 0. Adding
-constructors must not renumber those — `next_type_id` starting at 2 is load-bearing
-and must match codegen.
+**Note:** `Result` already occupies type_id 1 and `Bool` type_id 0. Adding constructors must not renumber those — `next_type_id` starting at 2 is load-bearing and must match codegen.
 
 ---
 
@@ -118,9 +102,7 @@ and must match codegen.
 | 1.5 | Escape sequences `\x41`, `\u{00E9}` in char and string literals | `lexer.zig` |
 | 1.6 | Char predicates: `Char.isAlpha`, `isDigit`, `isUpper`, `isLower`, `toUpper`, `toLower` | Thin wrappers over libc |
 
-Already working, no action: `String.length` (O(1) bytes), `split`, `trim`,
-`contains`, `substring`, `indexOf`, `startsWith`, `endsWith`, `toUpperCase`,
-`toLowerCase`, `append`, `replace`.
+Already working, no action: `String.length` (O(1) bytes), `split`, `trim`, `contains`, `substring`, `indexOf`, `startsWith`, `endsWith`, `toUpperCase`, `toLowerCase`, `append`, `replace`.
 
 **Done when:**
 ```ko
@@ -147,11 +129,7 @@ prints `Hello, World! (42)`.
 | 2.6 | Higher-order: `map`, `filter`, `foldl`, `foldr`, `reverse` |
 | 2.7 | `Array.sort`, `sortWith` |
 
-**Design note:** the doc's `KoArray` sketch puts `refcount/length/capacity` at the
-front and returns a pointer to the struct. KoString instead returns a pointer to
-the *data* with the header at negative offsets, which is what makes `ko_decref`
-uniform. Follow the KoString convention and update §3 of the doc, or the two
-allocators will drift the way the string header did.
+**Design note:** the doc's `KoArray` sketch puts `refcount/length/capacity` at the front and returns a pointer to the struct. KoString instead returns a pointer to the *data* with the header at negative offsets, which is what makes `ko_decref` uniform. Follow the KoString convention and update §3 of the doc, or the two allocators will drift the way the string header did.
 
 **Done when:** the §9 Array example runs and prints the documented values.
 
@@ -171,10 +149,7 @@ allocators will drift the way the string header did.
 | 3.5 | `Map.keys`, `values`, `toList`, `fromList`, `foldl`, `forEach` |
 | 3.6 | `Map.union`, `intersection`, `difference` |
 
-**Open question to settle first:** `{ ... }` is already record syntax. The doc
-proposes `{"name": "Alice"}` for maps and `{ name = "Alice" }` for records,
-distinguished by `:` vs `=`. That is decidable in the parser but subtle. Confirm
-the decision before 3.4 rather than during.
+**Open question to settle first:** `{ ... }` is already record syntax. The doc proposes `{"name": "Alice"}` for maps and `{ name = "Alice" }` for records, distinguished by `:` vs `=`. That is decidable in the parser but subtle. Confirm the decision before 3.4 rather than during.
 
 ---
 
@@ -183,9 +158,7 @@ the decision before 3.4 rather than during.
 **Goal:** DESIGN-data-structures §5. Small once Map lands.
 **Depends on:** Stage 3.
 
-`Set a` is `Map a ()`. Implement as a thin `std/Set.ko` wrapper: `empty`,
-`singleton`, `fromList`, `contains`, `add`, `remove`, `size`, `union`,
-`intersection`, `difference`, `isSubset`, `toList`.
+`Set a` is `Map a ()`. Implement as a thin `std/Set.ko` wrapper: `empty`, `singleton`, `fromList`, `contains`, `add`, `remove`, `size`, `union`, `intersection`, `difference`, `isSubset`, `toList`.
 
 ---
 
@@ -194,8 +167,7 @@ the decision before 3.4 rather than during.
 **Goal:** DESIGN-io-model §7.
 **Depends on:** Stage 0 (`Result`, `panic`).
 
-This stage is **larger than the doc's Phase 1 implies** — §1 has been corrected,
-but re-read it: there is no existing file I/O to wrap. It must be written.
+This stage is **larger than the doc's Phase 1 implies** — §1 has been corrected, but re-read it: there is no existing file I/O to wrap. It must be written.
 
 | # | Task |
 |---|------|
@@ -212,8 +184,7 @@ but re-read it: there is no existing file I/O to wrap. It must be written.
 
 ## Stage 6 — Syntax leftovers
 
-**Goal:** close DESIGN-syntax gaps. Independent of the other stages; pick up
-opportunistically.
+**Goal:** close DESIGN-syntax gaps. Independent of the other stages; pick up opportunistically.
 
 | # | Task | Issue |
 |---|------|-------|
@@ -225,50 +196,36 @@ opportunistically.
 | 6.6 | Anonymous record literals `{ name = "Alice" }` without a type name | #19 |
 | 6.7 | Pattern guards `pat when expr` — §7.3 defers these deliberately; only do it if demand appears | — |
 
-6.4 and 6.5 are the same underlying gap: `is_expr_start` does not admit prefix
-operators, so an unparenthesised prefix expression cannot be an argument. Fixing
-the set once addresses both.
+6.4 and 6.5 are the same underlying gap: `is_expr_start` does not admit prefix operators, so an unparenthesised prefix expression cannot be an argument. Fixing the set once addresses both.
 
 ---
 
 ## Stage 7 — Deferred (v0.4+)
 
-- `std.text`: codepoint length, `codepoints`, `codepointAt`, `fromCodepoints`;
-  graphemes later (DESIGN-strings §4 Phase 3)
-- `Deque`, `PriorityQueue`, `Rope` (DESIGN-data-structures §7) — library
-  concerns, implement in `std.collections`
+- `std.text`: codepoint length, `codepoints`, `codepointAt`, `fromCodepoints`; graphemes later (DESIGN-strings §4 Phase 3)
+- `Deque`, `PriorityQueue`, `Rope` (DESIGN-data-structures §7) — library concerns, implement in `std.collections`
 - Concurrency (DESIGN-io-model §6)
 
 ---
 
 ## 3. Sequencing Advice
 
-Stage 0 is the only strictly-blocking stage and it is small — do it as one
-change set. After that, Stage 1 (strings) and Stage 2 (Array) are independent
-and can proceed in parallel.
+Stage 0 is the only strictly-blocking stage and it is small — do it as one change set. After that, Stage 1 (strings) and Stage 2 (Array) are independent and can proceed in parallel.
 
-Prefer Stage 1 first if the goal is demo-ability: string interpolation is the
-most visible missing feature, appears throughout every design doc's examples,
-and needs no runtime work beyond parser desugaring.
+Prefer Stage 1 first if the goal is demo-ability: string interpolation is the most visible missing feature, appears throughout every design doc's examples, and needs no runtime work beyond parser desugaring.
 
-Prefer Stage 2 first if the goal is capability: Array unblocks Map, Set, and the
-whole §7 family.
+Prefer Stage 2 first if the goal is capability: Array unblocks Map, Set, and the whole §7 family.
 
-Leave 5.7 (`println` returning `Unit`) until the end of Stage 5. It breaks every
-existing example and test in the repo, and there is no reason to absorb that
-churn while other stages are still landing.
+Leave 5.7 (`println` returning `Unit`) until the end of Stage 5. It breaks every existing example and test in the repo, and there is no reason to absorb that churn while other stages are still landing.
 
 ---
 
 ## 4. Test Discipline
 
-Each stage lands with runtime output tests, not just parse tests. Use
-`testRuntimeOutputLir` in `src/tests.zig`, and iterate with:
+Each stage lands with runtime output tests, not just parse tests. Use `testRuntimeOutputLir` in `src/tests.zig`, and iterate with:
 
 ```bash
 zig build test -Dtest-filter="<substring>"
 ```
 
-The full suite relinks all of LLVM; filtering keeps the loop at ~125ms against
-~3s. See `ko-zig/docs/HANDBOOK.md` for the stdout-capture rules — output tests
-have sharp edges around fd 1.
+The full suite relinks all of LLVM; filtering keeps the loop at ~125ms against ~3s. See `ko-zig/docs/HANDBOOK.md` for the stdout-capture rules — output tests have sharp edges around fd 1.
