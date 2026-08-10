@@ -10,42 +10,42 @@
 
 ### What Exists
 
+Verified against the compiler, not assumed. Console output is all that is
+implemented:
+
 ```ko
-# Console (builtins)
+# Console (builtins) — implemented
 println : forall a. a -> a     # prints value + newline, returns value
 print : forall a. a -> a       # prints value, returns value
 inspect : forall a. a -> a     # debug print, returns value
-
-# Panic (builtin)
-panic : String -> a            # abort with error message
-
-# File I/O (in stdlib_codegen.zig, some only JIT)
-read_file : String -> String
-write_file : String -> String -> Unit
-append_file : String -> String -> Unit
-read_line : String -> String
-run : String -> String          # shell command, return stdout
-get_env : String -> String
-file_exists : String -> Bool
-file_size : String -> Int
-file_modified : String -> Int
-sleep : Int -> Unit
-mkdir : String -> Bool
-rm : String -> Bool
-cp : String -> String -> Bool
-mv : String -> String -> Bool
-readdir : String -> List
 ```
+
+**There is no file I/O.** An earlier draft of this section listed `read_file`,
+`write_file`, `append_file`, `read_line`, `run`, `get_env`, `file_exists`,
+`file_size`, `file_modified`, `sleep`, `mkdir`, `rm`, `cp`, `mv` and `readdir`
+as existing builtins. None of them exist: `grep -rn read_file src/` returns no
+hits, and each name fails with `undefined name` at the call site. Nothing in
+`stdlib_codegen.zig` emits them.
+
+`panic : String -> a` is declared but **generates invalid LLVM** — a program
+calling it dies in module verification with `Terminator found in the middle of
+a basic block!`, so it cannot be used.
+
+The `Result` type occupies type_id 1, but the `Ok` and `Err` constructors are
+not registered: `match Ok 1 ...` fails with `undefined constructor 'Ok'`.
 
 ### What's Wrong
 
 1. **`println` returns its argument.** The type `forall a. a -> a` is polymorphic in a way that doesn't reflect the side effect. `let x = println "hello"` makes `x = "hello"`, which is confusing.
 
-2. **File I/O doesn't return `Result`.** `read_file` panics on error instead of letting the caller handle it. `write_file` returns `Unit` — you can't tell if it succeeded.
+2. **There is no file I/O to fix.** This is the significant one. Phase 1 below is
+   written as though the work is to *wrap* existing builtins so they return
+   `Result` — but the builtins have to be written first. Budget for implementing
+   the I/O surface, not adapting it.
 
-3. **No error type.** There's no `Error` type to distinguish "file not found" from "permission denied" from "I/O error".
+3. **No error type.** There's no `Error` type to distinguish "file not found" from "permission denied" from "I/O error". `Ok`/`Err` are also missing, so `Result`-returning signatures cannot be expressed yet.
 
-4. **Inconsistent naming.** `read_file` (snake_case), `file_exists` (snake_case), but `String.append` (dot notation). The I/O builtins don't follow the module convention.
+4. **Naming convention undecided.** The names proposed below (`read_file`, `file_exists`) are snake_case while the rest of the stdlib uses dot notation (`String.append`). Since nothing is implemented, this is a free choice rather than a migration — prefer `IO.readFile` and settle it before writing the builtins.
 
 5. **`run` is dangerous.** Shell command execution with no sandboxing or escaping.
 
@@ -477,12 +477,15 @@ For now, keep it simple. Single-threaded with `IO.sleep` for basic timing. Add c
 
 ### Phase 1: IO Module (v0.3.0)
 
-- [ ] Create `std/io.ko` module with all I/O functions
-- [ ] Change `println`/`print` to return `Unit`
+- [ ] Register `Ok`/`Err` constructors so `Result` can be spelled at all
 - [ ] Add `Error` type to stdlib
-- [ ] Wrap existing file I/O builtins to return `Result Error`
+- [ ] Fix `panic` — it currently emits a terminator mid-block and fails LLVM verification
+- [ ] Implement the file I/O builtins in `stdlib_codegen.zig` (they do not exist yet)
+- [ ] Create `std/io.ko` module wrapping them to return `Result Error`
 - [ ] Add `IO.getEnv` returning `Maybe String`
-- [ ] Deprecate old I/O builtins
+- [ ] Change `println`/`print` to return `Unit`
+
+There are no "old I/O builtins" to deprecate — see §1.
 
 ### Phase 2: Console I/O (v0.3.0)
 
