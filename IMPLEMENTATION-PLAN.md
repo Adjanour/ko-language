@@ -14,9 +14,9 @@ Every status claim below was checked by compiling and running the feature, not b
 
 | Area | State |
 |------|-------|
-| Syntax | Function syntax (§4) complete: typed params, return types, `pub fn`. Three *frozen* forms missing: tuple access `.0`, record spread `..`, named args `~name:`. |
+| Syntax | Function syntax (§4) complete: typed params, return types, `pub fn`. Tuple access `.0` landed in Stage 0. Two *frozen* forms still missing: record spread `..`, named args `~name:`. |
 | Strings | Phase 1 (KoString) done. Phase 2 partial. Phase 3 (`std.text`) not started. Interpolation not implemented. |
-| IO | Console output only. No file I/O of any kind. `panic` emits invalid LLVM. |
+| IO | Console output only. No file I/O of any kind. |
 | Data structures | Nothing. No Array, Map, Set, or `hash`. List/tuple/record work. |
 
 Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined `type Result e a = Ok a | Err e`, records with annotations, pattern matching, `ref`/`:=`/`!`, `|>` on one line, `::`, `comptime`.
@@ -27,17 +27,17 @@ Working today: generics (`fn apply f x = f x`), recursive ADTs, user-defined `ty
 
 Four things block disproportionately much, so they come first:
 
-- **`Ok`/`Err`/`Just`/`Nothing` are undefined.** Not a machinery gap — user-defined ADTs with the same shape compile and run. Only the prelude declarations are missing. But `Array.pop : Maybe a`, `Map.get : Maybe v`, `String.toInt : Maybe Int` and every `Result`-returning I/O signature are unspellable until they exist.
-- **Tuple access `.0` does not parse.** `Map.toList : List (k, v)` and `Map.fromList` are unusable without it.
-- **`panic` emits a terminator mid-block** and fails LLVM verification. Every bounds-checked accessor in the Array and Map designs is specified to panic.
+- ~~**`Ok`/`Err`/`Just`/`Nothing` are undefined.**~~ Declared in the prelude in Stage 0, so `Array.pop : Maybe a`, `Map.get : Maybe v`, `String.toInt : Maybe Int` and the `Result`-returning I/O signatures are now spellable.
+- ~~**Tuple access `.0` does not parse.**~~ Landed in Stage 0. `Map.toList : List (k, v)` and `Map.fromList` are now spellable.
+- ~~**`panic` emits a terminator mid-block.**~~ It did not — see Stage 0. `panic` was already usable for the bounds checks the Array and Map designs specify.
 - **`hash` gates Map, and Map gates Set** (Set is specified as `Map a ()`).
 
-Stage 0 clears all four. Everything after it is then largely parallelisable.
+Stage 0 cleared the first three; only `hash` remains. Everything after it is largely parallelisable.
 
 ### Dependency graph
 
 ```
-Stage 0 (prelude types, tuple access, panic)
+Stage 0 (prelude types, tuple access)  — DONE
    ├── Stage 1  Strings Phase 2      (toInt/ord/chr/interpolation)
    ├── Stage 2  Array                 ──┐
    │                                     ├── Stage 4  Set
@@ -61,30 +61,31 @@ Miss step 3 and the function type-checks but fails to link.
 
 ---
 
-## Stage 0 — Unblockers
+## Stage 0 — Unblockers — DONE
 
 **Goal:** make the vocabulary the other stages are written in expressible.
 **Depends on:** nothing.
 
-| # | Task | Files |
-|---|------|-------|
-| 0.1 | Declare `Maybe a = Just a \| Nothing` and `Result e a = Ok a \| Err e` in the prelude, registering constructors the way `True`/`False` are (`typecheck.zig` ~line 191) | `typecheck.zig` |
-| 0.2 | Fix `panic` codegen — the terminator is emitted mid-block; the call must end the block and start a fresh unreachable one | `stdlib_codegen.zig`, `lir_lower.zig` |
-| 0.3 | Parse tuple access `t.0` / `t.1` — `parse_postfix` rejects a numeric field after `.` | `parser.zig` |
-| 0.4 | Lower tuple access to the existing tuple GEP path | `hir_lower.zig`, `lir_lower.zig` |
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 0.1 | Declare `Maybe a = Just a \| Nothing` and `Result e a = Ok a \| Err e` in the prelude | `typecheck.zig`, `lir_lower.zig`, `codegen.zig` | done |
+| 0.2 | ~~Fix `panic` codegen — terminator emitted mid-block~~ — **the claim was wrong**; `panic` already aborted with the right message and exit 134. The real defect was that `abort()` skips the atexit handlers that drain stdout, so buffered `println` output vanished through a pipe. Fixed with `fflush(NULL)` in `ko_panic` | `stdlib_codegen.zig` | done |
+| 0.3 | Parse tuple access `t.0` / `t.1` | `parser.zig` | done |
+| 0.4 | Lower tuple access to the tuple GEP path | `lir_lower.zig`, `codegen.zig` | done |
 
-**Done when:**
-```ko
-fn main =
-  let t = (1, "two")
-  println t.0
-  match Just 5
-    | Just v => println v
-    | Nothing => println 0
-```
-prints `1` then `5`, and a program calling `panic "x"` aborts with the message instead of failing LLVM verification.
+**Done when:** satisfied — the acceptance program prints `1` then `5`, and `panic "x"` aborts with its message.
 
-**Note:** `Result` already occupies type_id 1 and `Bool` type_id 0. Adding constructors must not renumber those — `next_type_id` starting at 2 is load-bearing and must match codegen.
+### What Stage 0 actually cost
+
+Three bugs surfaced that the plan did not predict, each blocking the one above it:
+
+- **`instantiate` freshened non-quantified type variables.** In Hindley-Milner only *quantified* variables are renamed per instantiation; free ones are shared, and that sharing is how a call site's argument type reaches the function body. Freshening them silently undid the monomorphic pinning `generalize` does for field accesses, so `fn fst p = p.0` — and equally `fn area r = r.w`, which predates this work — left the object type unbound at codegen and failed with `LIR lowering error: TypeError`. Field access through an unannotated parameter now works for tuples and records alike.
+- **`generalize` pinned stale variable ids.** `field_access_vars` stored the id current at field-access time, but `unify` links a variable by setting `instance`, so by generalize time the representative had moved and the skip missed. It now stores type pointers and re-resolves.
+- **The parser corrupted nested type applications.** `func = .{ .application = .{ .func = try self.newTypeExpr(func), ... } }` builds the union directly into `func`'s own storage, so the new tag lands before the operand is read and the saved pointer captures a half-overwritten value. `Cons a (List a)` came out as garbage. Nothing had ever dereferenced a nested type application — `ctorParamType` returned a fresh variable for `.application` — so it went unnoticed until 0.1 made that branch real.
+
+**Note:** `type_ids` turned out to be write-only outside typecheck — no codegen reads it — so the "load-bearing `next_type_id`" warning was overstated. `Maybe` took id 2 and user types now start at 3.
+
+**Known gap, not a regression:** the legacy pipeline fails LLVM verification (`PHI node operands are not the same type`) on any match returning `String` over an ADT, including plain user-defined ones. It predates this work and is unrelated to Stage 0; legacy is frozen and REPL-only.
 
 ---
 

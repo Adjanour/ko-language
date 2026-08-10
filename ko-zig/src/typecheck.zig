@@ -157,8 +157,12 @@ pub const Inferer = struct {
     expr_elem_tags: std.AutoHashMap(*const parser.Expr, i64),
     expr_types: std.AutoHashMap(*const parser.Expr, *Type),
     concrete_elem_tags: std.StringHashMap(i64),
-    /// Type variables that appear as the object of a field access. See generalize().
-    field_access_vars: std.AutoHashMap(usize, void),
+    /// Types that appeared as the object of a field access. See generalize().
+    /// Stored as pointers, not ids: `unify` links a variable by setting
+    /// `instance`, so the id that was current at field-access time may have
+    /// been re-pointed by the time generalize runs. Resolving the pointer then
+    /// gives the representative that collectFree actually reports.
+    field_access_vars: std.AutoHashMap(*Type, void),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
     diagnostics: ?*DiagnosticList = null,
@@ -188,7 +192,7 @@ pub const Inferer = struct {
             .expr_elem_tags = std.AutoHashMap(*const parser.Expr, i64).init(allocator),
             .expr_types = std.AutoHashMap(*const parser.Expr, *Type).init(allocator),
             .concrete_elem_tags = std.StringHashMap(i64).init(allocator),
-            .field_access_vars = std.AutoHashMap(usize, void).init(allocator),
+            .field_access_vars = std.AutoHashMap(*Type, void).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
             .enabled_warnings = .{},
@@ -211,7 +215,40 @@ pub const Inferer = struct {
         inferer.global.set("True", .{ .quantified = &.{}, .body = bool_ty }) catch {};
         inferer.global.set("False", .{ .quantified = &.{}, .body = bool_ty }) catch {};
 
+        inferer.registerPrelude() catch {};
+
         return inferer;
+    }
+
+    /// `Maybe` and `Result` are declared here rather than in a `.ko` prelude
+    /// because there is no prelude loader; every other built-in type is also
+    /// hand-registered. Constructor tags must match `lir_lower.zig`'s
+    /// `registerBuiltinCtors` and `codegen.zig`'s `constructor_tags`.
+    fn registerPrelude(self: *Inferer) Error!void {
+        const a = parser.TypeExpr{ .ident = "a" };
+        const e = parser.TypeExpr{ .ident = "e" };
+
+        try self.registerTypeDef(.{
+            .name = "Maybe",
+            .type_params = &.{"a"},
+            .body = .{ .sum = &.{
+                .{ .name = "Just", .params = &.{a} },
+                .{ .name = "Nothing", .params = &.{} },
+            } },
+            .is_pub = true,
+        });
+
+        // Result's type_id is pinned at 1 above, so registerTypeDef will not
+        // renumber it; this call only adds the Ok/Err constructors.
+        try self.registerTypeDef(.{
+            .name = "Result",
+            .type_params = &.{ "e", "a" },
+            .body = .{ .sum = &.{
+                .{ .name = "Ok", .params = &.{a} },
+                .{ .name = "Err", .params = &.{e} },
+            } },
+            .is_pub = true,
+        });
     }
 
     pub fn deinit(self: *Inferer) void {
@@ -516,6 +553,16 @@ pub const Inferer = struct {
         defer env_free.deinit();
         try self.collectEnvFree(env, &env_free);
 
+        // Re-resolve the pinned field-access objects: unify may have linked them
+        // to other variables since, and collectFree reports the representative.
+        var pinned = std.AutoHashMap(usize, void).init(self.allocator);
+        defer pinned.deinit();
+        var pin_it = self.field_access_vars.keyIterator();
+        while (pin_it.next()) |key| {
+            const r = self.resolve(key.*);
+            if (r.* == .variable) try pinned.put(r.variable.id, {});
+        }
+
         var quantified = std.ArrayList(usize).empty;
         defer quantified.deinit(self.allocator);
         var it = free_ty.iterator();
@@ -524,7 +571,7 @@ pub const Inferer = struct {
             // polymorphism, so the record's layout can only come from the call
             // site; quantifying here would hand the body a fresh variable and
             // leave codegen with no layout to emit a GEP against.
-            if (self.field_access_vars.contains(entry.key_ptr.*)) continue;
+            if (pinned.contains(entry.key_ptr.*)) continue;
             if (!env_free.contains(entry.key_ptr.*)) {
                 try quantified.append(self.allocator, entry.key_ptr.*);
             }
@@ -552,14 +599,14 @@ pub const Inferer = struct {
         const resolved = self.resolve(ty);
         return switch (resolved.*) {
             .variable => |v| blk: {
-                if (map.get(v.id)) |rep| {
-                    break :blk rep;
-                }
-                // Non-quantified variable: create a fresh clone on first encounter
-                // so that unification in one instantiation doesn't leak to the next
-                const fresh = try self.newVarType(try self.freshName(v.name));
-                try map.put(v.id, fresh);
-                break :blk fresh;
+                if (map.get(v.id)) |rep| break :blk rep;
+                // A variable that is not quantified is free in the scheme, and
+                // free variables are shared between instantiations rather than
+                // renamed — that sharing is how a call site's argument type
+                // reaches the function body. Freshening here would silently
+                // undo the monomorphic pinning generalize() does for field
+                // accesses, leaving the body's object type unbound at codegen.
+                break :blk resolved;
             },
             .int => try self.newType(.int),
             .float => try self.newType(.float),
@@ -1628,6 +1675,32 @@ pub const Inferer = struct {
                 return try self.newType(.{ .con = .{ .name = name, .args = &.{} } });
             },
             .arrow => |a| try self.newType(.{ .arrow = .{ .from = try self.ctorParamType(a.from.*, type_param_map), .to = try self.ctorParamType(a.to.*, type_param_map) } }),
+            .group => |inner| try self.ctorParamType(inner.*, type_param_map),
+            // `Cons a (List a)` — the recursive occurrence must come out as
+            // con("List", [a]) sharing the definition's type variable. Falling
+            // through to a fresh variable leaves the constructor's scheme with
+            // a free variable that no call site can bind independently.
+            .application => |app| blk: {
+                var spine: std.ArrayList(*const parser.TypeExpr) = .empty;
+                defer spine.deinit(self.allocator);
+                try spine.append(self.allocator, app.arg);
+                var head: *const parser.TypeExpr = app.func;
+                while (head.* == .application) {
+                    try spine.append(self.allocator, head.application.arg);
+                    head = head.application.func;
+                }
+                const name = switch (head.*) {
+                    .constructor, .ident => |n| n,
+                    else => break :blk try self.newVarType(try self.freshName("param")),
+                };
+                if (type_param_map.get(name) != null) break :blk try self.newVarType(try self.freshName("param"));
+                const args = try self.allocator.alloc(*Type, spine.items.len);
+                // The spine was collected outermost-first; arguments read left to right.
+                for (args, 0..) |*slot, i| {
+                    slot.* = try self.ctorParamType(spine.items[spine.items.len - 1 - i].*, type_param_map);
+                }
+                break :blk try self.newType(.{ .con = .{ .name = name, .args = args } });
+            },
             else => try self.newVarType(try self.freshName("param")),
         };
     }
@@ -2276,14 +2349,31 @@ pub const Inferer = struct {
                 };
                 return error.UnknownType;
             },
-            .variable => |v| {
+            .tuple => |elems| {
+                const idx = std.fmt.parseInt(usize, field, 10) catch {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "tuple has no field '{s}' — use a numeric index like '.0'", .{field}) catch null,
+                        .loc = self.current_loc,
+                    };
+                    return error.UnknownType;
+                };
+                if (idx >= elems.len) {
+                    self.last_error = .{
+                        .message = std.fmt.allocPrint(self.allocator, "tuple index {d} out of range for a {d}-element tuple", .{ idx, elems.len }) catch null,
+                        .loc = self.current_loc,
+                    };
+                    return error.UnknownType;
+                }
+                return elems[idx];
+            },
+            .variable => {
                 if (std.mem.eql(u8, field, "length")) {
                     try self.unify(obj_ty, try self.newType(.string));
                     return try self.newType(.int);
                 }
                 // Pin this variable monomorphically so the call site's record type
                 // reaches the body — see generalize().
-                self.field_access_vars.put(v.id, {}) catch {};
+                self.field_access_vars.put(resolved, {}) catch {};
                 return try self.newVarType(try self.freshName("field"));
             },
             else => {

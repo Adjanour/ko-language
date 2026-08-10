@@ -814,7 +814,13 @@ pub const Parser = struct {
         var func = try self.parse_type_primary();
         while (self.is_type_primary_start()) {
             const arg = try self.parse_type_primary();
-            func = .{ .application = .{ .func = try self.newTypeExpr(func), .arg = try self.newTypeExpr(arg) } };
+            // Copy `func` to the heap *before* the assignment. Writing the
+            // result directly into `func` lets the new tag land before the
+            // operand is read, so the saved pointer would capture a
+            // half-overwritten union.
+            const func_ptr = try self.newTypeExpr(func);
+            const arg_ptr = try self.newTypeExpr(arg);
+            func = .{ .application = .{ .func = func_ptr, .arg = arg_ptr } };
         }
         return func;
     }
@@ -1042,18 +1048,45 @@ pub const Parser = struct {
         return left;
     }
 
+    /// Consume the field part of a `.` access and wrap `expr` in a field_access.
+    /// Tuple indices (`t.0`) are field accesses whose field name is the digits;
+    /// typecheck and lowering key off the object being a tuple, not the spelling.
+    ///
+    /// The lexer folds `.` followed by a digit into a float when it directly
+    /// follows a number, so a chained access `t.0.1` arrives as one `0.1` token.
+    /// Splitting it here is what makes nested tuple access parse at all.
+    fn parse_field_access(self: *Parser, expr: *Expr) Error!*Expr {
+        const field_tok = self.current();
+        switch (field_tok.tag) {
+            .identifier, .constructor => {
+                _ = self.advance();
+                return self.newExpr(.{ .field_access = .{ .object = expr, .field = self.slice(field_tok) } }, self.tokenLoc(field_tok));
+            },
+            .number => {
+                const s = self.slice(field_tok);
+                for (s) |c| {
+                    if (!std.ascii.isDigit(c) and c != '.') return self.fail("expected field name or tuple index after '.'", .{});
+                }
+                _ = self.advance();
+                var out = expr;
+                var it = std.mem.splitScalar(u8, s, '.');
+                while (it.next()) |idx| {
+                    if (idx.len == 0) return self.fail("expected tuple index after '.'", .{});
+                    out = try self.newExpr(.{ .field_access = .{ .object = out, .field = idx } }, self.tokenLoc(field_tok));
+                }
+                return out;
+            },
+            else => return self.fail("expected field name after '.'", .{}),
+        }
+    }
+
     /// Parse field access chains and record literals, but NOT function application.
     /// Used for parsing function arguments so that `println pt.x` → `println(pt.x)`.
     fn parse_postfix_no_apply(self: *Parser) Error!*Expr {
         var expr = try self.parse_primary();
         while (true) {
             if (self.match(.dot)) {
-                const tag = self.current().tag;
-                if (tag != .identifier and tag != .constructor) return self.fail("expected field name after '.'", .{});
-                const field_tok = self.current();
-                const field = self.slice(field_tok);
-                _ = self.advance();
-                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } }, self.tokenLoc(field_tok));
+                expr = try self.parse_field_access(expr);
                 continue;
             }
 
@@ -1088,12 +1121,7 @@ pub const Parser = struct {
         if (primary_tag == .keyword_match or primary_tag == .keyword_if) return expr;
         while (true) {
             if (self.match(.dot)) {
-                const tag = self.current().tag;
-                if (tag != .identifier and tag != .constructor) return self.fail("expected field name after '.'", .{});
-                const field_tok = self.current();
-                const field = self.slice(field_tok);
-                _ = self.advance();
-                expr = try self.newExpr(.{ .field_access = .{ .object = expr, .field = field } }, self.tokenLoc(field_tok));
+                expr = try self.parse_field_access(expr);
                 continue;
             }
 

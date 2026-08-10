@@ -226,6 +226,32 @@ Add parsing at the correct precedence level. The expression parser chain (outerm
 11. `parse_postfix` (`.`, function application, `?`)
 12. `parse_primary` (literals, identifiers, etc.)
 
+**Left-folding a node into its own variable.** Expression parsers accumulate
+into a `*Expr`, so `left = try self.newExpr(.{ .binary_op = .{ .left = left, ... } })`
+only copies a pointer and is safe. Type parsers accumulate a `TypeExpr` *by
+value*, and there the same shape is not safe:
+
+```zig
+// WRONG: the union is built directly into `func`, so the new tag can land
+// before `newTypeExpr(func)` reads the operand, and the saved pointer
+// captures a half-overwritten value.
+func = .{ .application = .{ .func = try self.newTypeExpr(func), .arg = ... } };
+
+// RIGHT: copy to the heap first, then assign.
+const func_ptr = try self.newTypeExpr(func);
+const arg_ptr = try self.newTypeExpr(arg);
+func = .{ .application = .{ .func = func_ptr, .arg = arg_ptr } };
+```
+
+This corrupted every nested type application (`Cons a (List a)`) for as long as
+nothing dereferenced one — `ctorParamType` returned a fresh variable for
+`.application` — so it stayed invisible until the prelude types needed it.
+
+**Tuple indices arrive glued to a float.** The lexer folds `.` plus a digit into
+a float when it follows a number, so `t.0.1` lexes as `t` `.` `0.1`, one token.
+`parse_field_access` splits a numeric field on `.` and emits one access per
+component.
+
 ### Step 4: Typechecker (`src/typecheck.zig`)
 
 Add inference in `inferBinary()` (line ~1100). Find the switch on `.op`:
@@ -488,6 +514,27 @@ try self.unify(inferred_type, expected);
 | 8 | Function |
 | 9 | Tuple |
 | 100 | Variable/Ref (unknown) |
+
+### Type variable identity
+
+Two rules here are easy to get backwards, and both fail the same way — a type
+that is still `.variable` when the lowerer asks for a layout, surfacing as
+`LIR lowering error: TypeError` long after inference reported success.
+
+**Only quantified variables are freshened.** `instantiate` renames the variables
+in a scheme's `quantified` list and *shares* everything else. Free variables are
+shared on purpose: that sharing is the channel through which a call site's
+argument type reaches the function body. `cloneType` once freshened
+non-quantified variables too, which silently defeated the monomorphic pinning
+`generalize` performs for field accesses — `fn area r = r.w` type-checked and
+then failed in the lowerer with no layout for the GEP.
+
+**A variable's id is not stable.** `unify` links variables by setting
+`instance`, so the id that identified a variable earlier may resolve to a
+different representative later. Anything remembering a variable across inference
+steps must store the `*Type` and re-resolve at the point of use, the way
+`generalize` does with `field_access_vars`. Storing the bare id gives a set that
+silently stops matching.
 
 ---
 

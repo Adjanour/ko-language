@@ -460,15 +460,21 @@ pub const LirLower = struct {
     }
 
     fn registerBuiltins(self: *LirLower) LowerError!void {
-        // Bool and Result constructors, matching the legacy codegen's tags.
+        // Bool, Result and Maybe constructors. Tags must match the ones
+        // typecheck.zig's registerPrelude assigns, or a match arm dispatches
+        // on the wrong branch.
         try self.ctors.put("True", .{ .tag = 1, .arity = 0, .type_name = "Bool" });
         try self.ctors.put("False", .{ .tag = 0, .arity = 0, .type_name = "Bool" });
         try self.ctors.put("Ok", .{ .tag = 0, .arity = 1, .type_name = "Result" });
         try self.ctors.put("Err", .{ .tag = 1, .arity = 1, .type_name = "Result" });
+        try self.ctors.put("Just", .{ .tag = 0, .arity = 1, .type_name = "Maybe" });
+        try self.ctors.put("Nothing", .{ .tag = 1, .arity = 0, .type_name = "Maybe" });
         try self.globals.put("True", .{ .arity = 0, .kind = .ctor });
         try self.globals.put("False", .{ .arity = 0, .kind = .ctor });
         try self.globals.put("Ok", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Err", .{ .arity = 1, .kind = .ctor });
+        try self.globals.put("Just", .{ .arity = 1, .kind = .ctor });
+        try self.globals.put("Nothing", .{ .arity = 0, .kind = .ctor });
         // I/O builtins with the *_with_tag calling convention.
         try self.globals.put("println", .{ .arity = 1, .kind = .std_special });
         try self.globals.put("print", .{ .arity = 1, .kind = .std_special });
@@ -2062,6 +2068,7 @@ pub const LirLower = struct {
     fn lowerRecordAccess(self: *LirLower, ra: hir.RecordAccess, result_hir_ty: *const typecheck.Type) LowerError!lir.LocalId {
         const rec_local = try self.lowerExpr(ra.record);
         const rt = self.resolve(self.exprs[ra.record].ty);
+        if (rt.* == .tuple) return self.lowerTupleAccess(ra, rt.tuple, rec_local, result_hir_ty);
         if (rt.* != .record) return error.TypeError;
         const rec = rt.record;
         const field_tys = try self.allocator.alloc(lir.LirType, rec.fields.len);
@@ -2074,6 +2081,24 @@ pub const LirLower = struct {
         const struct_ty = lir.LirType{ .struct_ = field_tys };
         const slot = try self.gepStruct(struct_ty, rec_local, i, field_tys[i]);
         const v = try self.emit(.{ .load = slot }, field_tys[i]);
+        return self.coerce(v, try self.lowerType(result_hir_ty));
+    }
+
+    /// `t.0` — the same GEP-and-load as a record field, indexed positionally.
+    /// The index is already range-checked by inferFieldAccess.
+    fn lowerTupleAccess(
+        self: *LirLower,
+        ra: hir.RecordAccess,
+        elems: []const *typecheck.Type,
+        tup_local: lir.LocalId,
+        result_hir_ty: *const typecheck.Type,
+    ) LowerError!lir.LocalId {
+        const idx = std.fmt.parseInt(usize, ra.field, 10) catch return error.TypeError;
+        if (idx >= elems.len) return error.TypeError;
+        const field_tys = try self.allocator.alloc(lir.LirType, elems.len);
+        for (elems, 0..) |et, i| field_tys[i] = try self.lowerType(et);
+        const slot = try self.gepStruct(.{ .struct_ = field_tys }, tup_local, idx, field_tys[idx]);
+        const v = try self.emit(.{ .load = slot }, field_tys[idx]);
         return self.coerce(v, try self.lowerType(result_hir_ty));
     }
 

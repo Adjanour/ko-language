@@ -519,6 +519,14 @@ pub const Codegen = struct {
         const err_fn = core.LLVMAddFunction(self.module, "Err", ok_fn_type);
         _ = self.constructor_fns.put("Err", err_fn) catch {};
 
+        // Built-in Maybe constructors (Just/Nothing)
+        _ = self.constructor_tags.put("Just", .{ .type_name = "Maybe", .tag = 0, .arity = 1 }) catch {};
+        _ = self.constructor_tags.put("Nothing", .{ .type_name = "Maybe", .tag = 1, .arity = 0 }) catch {};
+        const just_fn = core.LLVMAddFunction(self.module, "Just", ok_fn_type);
+        _ = self.constructor_fns.put("Just", just_fn) catch {};
+        const nothing_fn = core.LLVMAddFunction(self.module, "Nothing", bool_fn_type);
+        _ = self.constructor_fns.put("Nothing", nothing_fn) catch {};
+
         // Result operations (built-in)
         {
             // Result.is_ok : Result a b -> Bool (i64 -> i64)
@@ -2145,6 +2153,17 @@ pub const Codegen = struct {
 
         // Get the object value (should be a record pointer as i64)
         const obj_val = try self.codegenExpr(object);
+
+        // Tuple index (`t.0`). Legacy tuples are a flat run of i64 slots, so the
+        // index alone determines the offset — no type lookup needed. The index
+        // was already range-checked by the typechecker.
+        if (field_name.len > 0 and std.ascii.isDigit(field_name[0])) {
+            const idx = std.fmt.parseInt(u64, field_name, 10) catch return error.NotYetImplemented;
+            const tuple_ptr = core.LLVMBuildIntToPtr(self.builder, obj_val, core.LLVMPointerTypeInContext(self.context, 0), "tuple_ptr");
+            var offs: [1]types.LLVMValueRef = .{core.LLVMConstInt(i64_type, idx * 8, 0)};
+            const elem_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), tuple_ptr, @ptrCast(&offs), 1, "elem_off");
+            return core.LLVMBuildLoad2(self.builder, i64_type, elem_ptr, "elem_val");
+        }
 
         // Determine the record type from variable tracking
         var record_name: ?[]const u8 = null;

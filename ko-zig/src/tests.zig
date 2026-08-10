@@ -3988,3 +3988,94 @@ test "runtime output: println at end of file" {
     try std.testing.expectEqual(@as(i64, 99), captured.result);
     try std.testing.expectEqualStrings("99\n", captured.output);
 }
+
+// ──── Stage 0: prelude types, tuple access, panic ────
+
+test "runtime output: Maybe constructors from the prelude" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  match Just 5
+        \\    | Just v => println v
+        \\    | Nothing => println 0
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("5\n", captured.output);
+}
+
+test "runtime output: Nothing takes the second arm" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe m =
+        \\  match m
+        \\    | Just _v => "got"
+        \\    | Nothing => "none"
+        \\fn main =
+        \\  println (describe Nothing)
+        \\  println (describe (Just 1))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("none\ngot\n", captured.output);
+}
+
+test "runtime output: Result constructors from the prelude" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  match Ok 7
+        \\    | Ok v => println v
+        \\    | Err _e => println 0
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("7\n", captured.output);
+}
+
+test "runtime output: tuple index access" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let t = (1, "two")
+        \\  println t.0
+        \\  println t.1
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("1\ntwo\n", captured.output);
+}
+
+test "runtime output: nested tuple index access" {
+    // `n.0.1` lexes as `n` `.` `0.1` because the lexer folds a dot-digit run
+    // after a number into a float; the parser has to split it back apart.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let n = ((1, 2), 3)
+        \\  println n.0.1
+        \\  println n.1
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("2\n3\n", captured.output);
+}
+
+test "runtime output: tuple access through a function parameter" {
+    var captured = try testRuntimeOutputLir(
+        \\fn fst p = p.0
+        \\fn snd p = p.1
+        \\fn main =
+        \\  println (fst (10, 20))
+        \\  println (snd (10, 20))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("10\n20\n", captured.output);
+}
+
+test "runtime output: record field access through a function parameter" {
+    // Regression: instantiate() used to freshen non-quantified variables, so the
+    // call site's record type never reached the body and codegen had no layout.
+    var captured = try testRuntimeOutputLir(
+        \\type R = { w : Int, h : Int }
+        \\fn area r = r.w * r.h
+        \\fn main = println (area (R { w = 3, h = 4 }))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("12\n", captured.output);
+}
+
+// `panic` has no runtime-output test: programs are JIT-executed in the test
+// runner's own process, so the abort() at the end of ko_panic takes the runner
+// down with it. The stdout-flush fix it needs is checked by running a panicking
+// program under a pipe by hand.

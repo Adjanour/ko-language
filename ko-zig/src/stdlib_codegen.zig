@@ -379,6 +379,11 @@ pub const StdlibCodegen = struct {
         const fprintf_type = core.LLVMFunctionType(self.i64Type(), &fprintf_params, 2, 1);
         _ = core.LLVMAddFunction(self.module, "fprintf", fprintf_type);
 
+        // fflush(ptr) -> i64 — NULL flushes every open stream.
+        var fflush_params: [1]types.LLVMTypeRef = .{self.ptrType()};
+        const fflush_type = core.LLVMFunctionType(self.i64Type(), &fflush_params, 1, 0);
+        _ = core.LLVMAddFunction(self.module, "fflush", fflush_type);
+
         // stderr (global variable)
         const stderr_global = core.LLVMAddGlobal(self.module, self.ptrType(), "stderr");
         core.LLVMSetLinkage(stderr_global, .LLVMExternalLinkage);
@@ -2567,6 +2572,15 @@ pub const StdlibCodegen = struct {
             core.LLVMSetLinkage(fmt_global, .LLVMPrivateLinkage);
             var gep_args: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
             const fmt_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMTypeOf(fmt_str), fmt_global, &gep_args, 1, "fmt_ptr");
+
+            // Flush stdout before writing to stderr. abort() does not run the
+            // atexit handlers that would normally drain it, so without this any
+            // buffered println output is lost whenever stdout is a pipe — which
+            // is exactly the case under the test harness.
+            if (core.LLVMGetNamedFunction(self.module, "fflush")) |fflush_fn| {
+                var flush_args: [1]types.LLVMValueRef = .{core.LLVMConstNull(self.ptrType())};
+                _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &flush_args, 1, "");
+            }
 
             // Get fprintf declaration
             const fprintf_fn = core.LLVMGetNamedFunction(self.module, "fprintf") orelse unreachable;
