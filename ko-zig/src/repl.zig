@@ -1,7 +1,10 @@
 const std = @import("std");
 const posix = std.posix;
-const linux = std.os.linux;
-const ln = @import("linenoise");
+const builtin = @import("builtin");
+const is_windows = builtin.os.tag == .windows;
+const fdio = @import("fdio.zig");
+// vendor/linenoise.c is POSIX-only; Windows uses a Zig fallback.
+const ln = if (is_windows) @import("linenoise_win.zig") else @import("linenoise");
 const llvm = @import("llvm");
 const llvm_engine = llvm.engine;
 const types = llvm.types;
@@ -23,16 +26,19 @@ const lir_lower = @import("lir_lower.zig");
 const stdlib = @import("stdlib.zig");
 
 extern "c" fn fflush(?*anyopaque) c_int;
-extern "c" fn setjmp([*]c_int) c_int;
-extern "c" fn longjmp([*]c_int, c_int) noreturn;
 
 fn flushStdout() void {
     _ = fflush(null);
 }
 
-var g_repl_jmp_buf: [256]c_int = undefined;
 var g_repl_allocator: std.mem.Allocator = undefined;
 var g_repl_accumulated: *std.ArrayList(u8) = undefined;
+
+// Signal-based interrupt handling is POSIX-only. Windows has no SIGINT/SIGSEGV
+// delivery to a console program here; Ctrl+C terminates the process by default.
+var g_repl_jmp_buf: [256]c_int = undefined;
+extern "c" fn setjmp([*]c_int) c_int;
+extern "c" fn longjmp([*]c_int, c_int) noreturn;
 
 fn sigHandler(sig: std.posix.SIG) callconv(.c) void {
     const msg = switch (sig) {
@@ -41,28 +47,30 @@ fn sigHandler(sig: std.posix.SIG) callconv(.c) void {
         .SEGV => "\nRuntime panic (segmentation fault).\n",
         else => "\nSignal received.\n",
     };
-    _ = linux.write(2, msg.ptr, msg.len);
+    _ = fdio.write(fdio.stderr, msg);
     flushStdout();
     longjmp(&g_repl_jmp_buf, 1);
 }
 
 fn installSignalHandlers() void {
-    const sa = std.posix.Sigaction{
-        .handler = .{ .handler = sigHandler },
-        .mask = std.posix.sigemptyset(),
-        .flags = 0,
-    };
-    std.posix.sigaction(.INT, &sa, null);
-    std.posix.sigaction(.ABRT, &sa, null);
-    std.posix.sigaction(.SEGV, &sa, null);
+    if (comptime !is_windows) {
+        const sa = std.posix.Sigaction{
+            .handler = .{ .handler = sigHandler },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        std.posix.sigaction(.INT, &sa, null);
+        std.posix.sigaction(.ABRT, &sa, null);
+        std.posix.sigaction(.SEGV, &sa, null);
+    }
 }
 
-fn writeAll(fd: posix.fd_t, data: []const u8) !void {
+fn writeAll(fd: fdio.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
-        const rc = linux.write(fd, data[pos..].ptr, data.len - pos);
+        const rc = fdio.write(fd, data[pos..]);
         if (rc < 0) {
-            const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
+            const e = std.c.errno(rc);
             switch (e) {
                 .INTR => continue,
                 else => return error.WriteFailed,
@@ -72,7 +80,7 @@ fn writeAll(fd: posix.fd_t, data: []const u8) !void {
     }
 }
 
-fn printTo(fd: posix.fd_t, comptime fmt: []const u8, args: anytype) !void {
+fn printTo(fd: fdio.fd_t, comptime fmt: []const u8, args: anytype) !void {
     const msg = try std.fmt.allocPrint(std.heap.page_allocator, fmt, args);
     defer std.heap.page_allocator.free(msg);
     try writeAll(fd, msg);
@@ -146,16 +154,18 @@ pub const Repl = struct {
         defer self.allocator.free(history_path);
         _ = ln.historyLoad(history_path.ptr);
 
-        const stdout_fd: posix.fd_t = posix.STDOUT_FILENO;
+        const stdout_fd: fdio.fd_t = fdio.stdout;
         try writeAll(stdout_fd, "Ko REPL v0.3.2 (LIR pipeline + Linenoise)\n");
         try writeAll(stdout_fd, "Type expressions to evaluate, definitions to bind.\n");
         try writeAll(stdout_fd, "Commands: :quit, :type <expr>, :env, :reset, :help\n");
         try writeAll(stdout_fd, "Line editing: Ctrl-A/E, Ctrl-K/U/W, Tab, Up/Down\n\n");
 
         while (true) {
-            const jmp_ret = setjmp(&g_repl_jmp_buf);
-            if (jmp_ret != 0) {
-                try writeAll(stdout_fd, "\n");
+            if (comptime !is_windows) {
+                const jmp_ret = setjmp(&g_repl_jmp_buf);
+                if (jmp_ret != 0) {
+                    try writeAll(stdout_fd, "\n");
+                }
             }
 
             const line_ptr = ln.linenoise("ko> ") orelse {
@@ -263,7 +273,7 @@ pub const Repl = struct {
         }
     }
 
-    fn evalInput(self: *Repl, input: []const u8, stdout_fd: posix.fd_t) !void {
+    fn evalInput(self: *Repl, input: []const u8, stdout_fd: fdio.fd_t) !void {
         if (isDefinition(input)) {
             try writeAll(stdout_fd, "Defined.\n");
             return;
@@ -471,7 +481,7 @@ pub const Repl = struct {
         }
     }
 
-    fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: posix.fd_t) !void {
+    fn handleCommand(self: *Repl, cmd: []const u8, stdout_fd: fdio.fd_t) !void {
         if (std.mem.eql(u8, cmd, ":quit") or std.mem.eql(u8, cmd, ":q") or std.mem.eql(u8, cmd, ":exit")) {
             try writeAll(stdout_fd, "Bye!\n");
             std.process.exit(0);

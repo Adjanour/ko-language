@@ -1,6 +1,6 @@
 const std = @import("std");
 const posix = std.posix;
-const linux = std.os.linux;
+const fdio = @import("fdio.zig");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 const typecheck_mod = @import("typecheck.zig");
@@ -167,30 +167,29 @@ fn jsonGetObj(obj: JsonValue, key: []const u8) ?JsonValue {
 }
 
 //
-// LSP I/O — cross-platform via std.posix.read + platform write
+// LSP I/O — cross-platform via fdio (integer CRT fds on every platform)
 //
 
-fn rawRead(fd: posix.fd_t, buf: []u8) !usize {
-    return posix.read(fd, buf) catch |err| switch (err) {
-        error.InputOutput => return error.ReadFailed,
-        error.SystemResources => return error.ReadFailed,
-        else => return error.ReadFailed,
-    };
+fn rawRead(fd: fdio.fd_t, buf: []u8) !usize {
+    const n = fdio.read(fd, buf);
+    if (n < 0) return error.ReadFailed;
+    return @intCast(n);
 }
 
-fn rawReadExact(fd: posix.fd_t, buf: []u8) !void {
+fn rawReadExact(fd: fdio.fd_t, buf: []u8) !void {
     var pos: usize = 0;
     while (pos < buf.len) {
         const n = try rawRead(fd, buf[pos..]);
+        if (n == 0) return error.ConnectionClosed;
         pos += n;
     }
 }
 
-fn readLine(fd: posix.fd_t, line_buf: []u8) ![]const u8 {
+fn readLine(fd: fdio.fd_t, line_buf: []u8) ![]const u8 {
     var line_len: usize = 0;
     while (line_len < line_buf.len) {
         const n = rawRead(fd, line_buf[line_len .. line_len + 1]) catch |err| {
-            if (err == error.EndOfStream) return error.ConnectionClosed;
+            if (err == error.ConnectionClosed) return error.ConnectionClosed;
             return err;
         };
         if (n == 0) return error.ConnectionClosed;
@@ -206,7 +205,7 @@ fn readContentLength() !usize {
     var line_buf: [256]u8 = undefined;
 
     while (true) {
-        const line = readLine(posix.STDIN_FILENO, &line_buf) catch {
+        const line = readLine(fdio.stdin, &line_buf) catch {
             if (content_length) |_| return error.MissingContentLength;
             return error.ConnectionClosed;
         };
@@ -219,29 +218,18 @@ fn readContentLength() !usize {
 }
 
 fn readExact(buf: []u8) !void {
-    try rawReadExact(posix.STDIN_FILENO, buf);
+    try rawReadExact(fdio.stdin, buf);
 }
 
-fn writeAll(fd: posix.fd_t, data: []const u8) !void {
+fn writeAll(fd: fdio.fd_t, data: []const u8) !void {
     var pos: usize = 0;
     while (pos < data.len) {
-        const rc = if (comptime @import("builtin").os.tag == .linux)
-            linux.write(fd, data[pos..].ptr, data.len - pos)
-        else
-            std.c.write(fd, data[pos..].ptr, data.len - pos);
+        const rc = fdio.write(fd, data[pos..]);
         if (rc < 0) {
-            if (comptime @import("builtin").os.tag == .linux) {
-                const e: linux.E = @enumFromInt(@as(u16, @intCast(-% @as(isize, @intCast(rc)))));
-                switch (e) {
-                    .INTR => continue,
-                    else => return error.WriteFailed,
-                }
-            } else {
-                const e = std.c.getErrno(-% @as(isize, @intCast(rc)));
-                switch (e) {
-                    .INTR => continue,
-                    else => return error.WriteFailed,
-                }
+            const e = std.c.errno(rc);
+            switch (e) {
+                .INTR => continue,
+                else => return error.WriteFailed,
             }
         }
         pos += @intCast(rc);
@@ -253,8 +241,8 @@ fn sendResponse(id: i64, json_body: []const u8, gpa: std.mem.Allocator) !void {
     defer gpa.free(msg);
     const header = try std.fmt.allocPrint(gpa, "Content-Length: {d}\r\n\r\n", .{msg.len});
     defer gpa.free(header);
-    try writeAll(posix.STDOUT_FILENO, header);
-    try writeAll(posix.STDOUT_FILENO, msg);
+    try writeAll(fdio.stdout, header);
+    try writeAll(fdio.stdout, msg);
 }
 
 fn sendNullResult(id: i64, gpa: std.mem.Allocator) !void {
@@ -266,8 +254,8 @@ fn sendNotification(method: []const u8, params_json: []const u8, gpa: std.mem.Al
     defer gpa.free(msg);
     const header = try std.fmt.allocPrint(gpa, "Content-Length: {d}\r\n\r\n", .{msg.len});
     defer gpa.free(header);
-    try writeAll(posix.STDOUT_FILENO, header);
-    try writeAll(posix.STDOUT_FILENO, msg);
+    try writeAll(fdio.stdout, header);
+    try writeAll(fdio.stdout, msg);
 }
 
 //

@@ -219,21 +219,21 @@ pub const ModuleLoader = struct {
     }
 };
 
-// Cross-platform file I/O helpers
-const posix = std.posix;
+// Cross-platform file I/O helpers (fdio uses integer CRT fds on all targets)
+const fdio = @import("fdio.zig");
 
-fn openFile(path: []const u8) !posix.fd_t {
-    return try posix.openat(posix.AT.FDCWD, path, .{}, 0);
+fn openFile(path: []const u8) !fdio.fd_t {
+    const fd = fdio.open(path);
+    if (fd < 0) return error.FileNotFound;
+    return @intCast(fd);
 }
 
-fn closeFd(fd: posix.fd_t) void {
-    if (comptime @import("builtin").os.tag == .linux) {
-        _ = std.os.linux.close(fd);
-    } else {
-        _ = std.c.close(fd);
-    }
+fn closeFd(fd: fdio.fd_t) void {
+    fdio.close(fd);
 }
 
-fn readFd(fd: posix.fd_t, buf: []u8) !usize {
-    return try posix.read(fd, buf);
+fn readFd(fd: fdio.fd_t, buf: []u8) !usize {
+    const n = fdio.read(fd, buf);
+    if (n < 0) return error.ReadFailed;
+    return @intCast(n);
 }

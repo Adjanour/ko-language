@@ -326,17 +326,11 @@ pub fn ko_result_unwrap_or(default: i64, result: i64) callconv(.c) i64 {
 
 // ko_panic: Panic with a message and abort
 pub fn ko_panic(msg_ptr: [*]const u8, msg_len: i64) callconv(.c) void {
-    const stderr_fd = 2;
+    const fdio = @import("fdio.zig");
     const prefix = "ko: panic: ";
-    if (comptime @import("builtin").os.tag == .linux) {
-        _ = std.os.linux.write(stderr_fd, prefix.ptr, prefix.len);
-        _ = std.os.linux.write(stderr_fd, msg_ptr, @intCast(msg_len));
-        _ = std.os.linux.write(stderr_fd, "\n", 1);
-    } else {
-        _ = std.c.write(stderr_fd, prefix.ptr, prefix.len);
-        _ = std.c.write(stderr_fd, msg_ptr, @intCast(msg_len));
-        _ = std.c.write(stderr_fd, "\n", 1);
-    }
+    _ = fdio.write(fdio.stderr, prefix);
+    _ = fdio.write(fdio.stderr, msg_ptr[0..@intCast(msg_len)]);
+    _ = fdio.write(fdio.stderr, "\n");
     std.c.abort();
 }
 

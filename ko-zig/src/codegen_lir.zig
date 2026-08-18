@@ -119,6 +119,20 @@ pub const CodegenLir = struct {
         core.LLVMContextDispose(self.context);
     }
 
+    /// Override the module target triple for cross-compilation. Must be
+    /// called after init and before codegenProgram. The module target triple
+    /// controls the object file format emitted for --emit-obj / --emit-exe.
+    pub fn setTargetTriple(self: *CodegenLir, target_triple: []const u8) void {
+        const triple_z = self.allocator.dupeZ(u8, target_triple) catch return;
+        core.LLVMSetTarget(self.module, triple_z);
+        self.allocator.free(triple_z);
+    }
+
+    pub fn getTargetTriple(self: *CodegenLir) []const u8 {
+        const triple = core.LLVMGetTarget(self.module) orelse return "";
+        return std.mem.span(triple);
+    }
+
     /// Emit the shared Kō runtime (ko_alloc / ko_incref / ko_decref, string
     /// functions, ...) into the module so LIR programs can call it.
     pub fn declareRuntime(self: *CodegenLir) void {
@@ -351,7 +365,7 @@ pub const CodegenLir = struct {
             },
             .local => |id| self.locals.get(id) orelse error.UndefinedLocal,
             .fn_ref => |name| core.LLVMGetNamedFunction(self.module, try self.dupeZ(name)) orelse error.UndefinedFunction,
-            .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag),
+            .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag, av.arity),
             .alloc_stack => |ty| core.LLVMBuildAlloca(self.builder, try self.lirType(ty), "stack"),
             .load => |id| try self.codegenLoad(id),
             .incref => |id| try self.codegenRcCall("ko_incref", id),
@@ -395,7 +409,10 @@ pub const CodegenLir = struct {
 
     /// `alloc(T)` → `call ko_alloc(sizeof(T), type_tag)` (returns an untyped ptr).
     /// type_tag: 0=raw, 1=constructor, 2=tuple, 3=record
-    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef, type_tag: i64) CodegenError!types.LLVMValueRef {
+    /// For constructor boxes (type_tag=1, arity>0) the payload slot count is
+    /// stored in the header at offset -16, mirroring the legacy codegen so the
+    /// runtime `inspect` can distinguish list cells from other constructor boxes.
+    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef, type_tag: i64, arity: u32) CodegenError!types.LLVMValueRef {
         const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse return error.UndefinedFunction;
         const dl = target.LLVMGetModuleDataLayout(self.module);
         const size = target.LLVMStoreSizeOfType(dl, llvm_ty);
@@ -403,7 +420,14 @@ pub const CodegenLir = struct {
             core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(size), 0),
             core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(type_tag), 0),
         };
-        return core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &args, 2, "");
+        const ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &args, 2, "alloc_ptr");
+        if (type_tag == 1 and arity > 0) {
+            const i64_type = core.LLVMInt64TypeInContext(self.context);
+            var arity_idx = [1]types.LLVMValueRef{core.LLVMConstInt(i64_type, @bitCast(@as(i64, -16)), 0)};
+            const arity_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), ptr, &arity_idx, 1, "arity_ptr");
+            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(i64_type, arity, 0), arity_ptr);
+        }
+        return ptr;
     }
 
     /// `load(p)` — the element type comes from the local's `ptr(T)` LIR type.
@@ -455,7 +479,7 @@ pub const CodegenLir = struct {
             field_types[i] = try self.lirType(self.local_types[cap]);
         }
         const closure_ty = core.LLVMStructTypeInContext(self.context, field_types.ptr, @intCast(field_types.len), 0);
-        const raw = try self.codegenAlloc(closure_ty, 10); // type_tag=10 for closures
+        const raw = try self.codegenAlloc(closure_ty, 10, 0); // type_tag=10 for closures
 
         // Store the function pointer and each captured value.
         const i32_type = core.LLVMInt32TypeInContext(self.context);
@@ -631,3 +655,71 @@ pub const CodegenLir = struct {
         self.pending_tramps.clearRetainingCapacity();
     }
 };
+
+/// Emit an object file for a compiled module. Uses the module's target triple
+/// (set via `CodegenLir.setTargetTriple` for cross-compilation). This lives in
+/// codegen_lir.zig so cross-compilation support stays in the active pipeline;
+/// the legacy Aot in codegen.zig is frozen.
+pub fn emitObjectFile(mod: types.LLVMModuleRef, allocator: std.mem.Allocator) ![]const u8 {
+    // Register every target LLVM was built with. The native-only initializers
+    // are hardcoded to X86 in the bindings, which would break both
+    // cross-compilation and native emission on non-x86 hosts.
+    target.LLVMInitializeAllTargetInfos();
+    target.LLVMInitializeAllTargets();
+    target.LLVMInitializeAllTargetMCs();
+    target.LLVMInitializeAllAsmParsers();
+    target.LLVMInitializeAllAsmPrinters();
+
+    const triple = core.LLVMGetTarget(mod);
+    if (triple[0] == 0) return error.NoTargetTriple;
+
+    // LLVM's short triple parser (e.g. "aarch64-macos") does not resolve the
+    // OS component, which makes the target machine fall back to the default
+    // ELF object format. Normalize to the canonical form (e.g.
+    // "aarch64-apple-macosx") so the correct object format is selected.
+    const normalized = target_machine.LLVMNormalizeTargetTriple(triple);
+    defer core.LLVMDisposeMessage(normalized);
+
+    var t: types.LLVMTargetRef = undefined;
+    var error_msg: [*c]u8 = null;
+    if (target_machine.LLVMGetTargetFromTriple(normalized, &t, &error_msg) != 0) {
+        if (error_msg) |msg| {
+            std.debug.print("Target error: {s}\n", .{std.mem.sliceTo(msg, 0)});
+            core.LLVMDisposeMessage(@ptrCast(msg));
+        }
+        return error.TargetError;
+    }
+
+    const tm = target_machine.LLVMCreateTargetMachine(
+        t,
+        normalized,
+        "generic",
+        "",
+        .LLVMCodeGenLevelNone,
+        .LLVMRelocPIC,
+        .LLVMCodeModelDefault,
+    );
+    defer target_machine.LLVMDisposeTargetMachine(tm);
+
+    const dl = target_machine.LLVMCreateTargetDataLayout(tm);
+    defer target.LLVMDisposeTargetData(dl);
+
+    target.LLVMSetModuleDataLayout(mod, dl);
+
+    var emit_error: [*c]u8 = null;
+    var mem_buf: types.LLVMMemoryBufferRef = null;
+    if (target_machine.LLVMTargetMachineEmitToMemoryBuffer(tm, mod, .LLVMObjectFile, &emit_error, &mem_buf) != 0) {
+        if (emit_error) |msg| {
+            std.debug.print("Emit error: {s}\n", .{std.mem.sliceTo(msg, 0)});
+            core.LLVMDisposeMessage(@ptrCast(msg));
+        }
+        return error.EmitError;
+    }
+    defer core.LLVMDisposeMemoryBuffer(mem_buf);
+
+    const buf_start = core.LLVMGetBufferStart(mem_buf);
+    const buf_size = core.LLVMGetBufferSize(mem_buf);
+    const owned = try allocator.alloc(u8, buf_size);
+    @memcpy(owned, buf_start[0..buf_size]);
+    return owned;
+}

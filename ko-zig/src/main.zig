@@ -64,6 +64,7 @@ fn printHelp(io: Io) void {
         \\Options:
         \\  -h, --help       Show this help
         \\  -v, --version    Show version
+        \\  --target <triple>  Cross-compile for target (e.g. aarch64-macos, x86_64-windows-gnu)
         \\  --use-legacy     Use legacy AST→LLVM pipeline (frozen, for unsupported features)
         \\  --warn <kind>    Enable warnings (unused, shadow, all)
         \\  -Werror          Treat warnings as errors
@@ -202,7 +203,7 @@ fn printSourceLine(io: Io, w: anytype, filename: []const u8, loc: parser.Loc) vo
 }
 
 pub fn main(init: std.process.Init) !void {
-    var threaded: Io.Threaded = .init(init.gpa, .{});
+    var threaded: Io.Threaded = .init(init.gpa, .{ .environ = init.minimal.environ });
     defer threaded.deinit();
     const io = threaded.io();
 
@@ -217,6 +218,7 @@ pub fn main(init: std.process.Init) !void {
     var skip_linearity = false;
     var enabled_warnings = diagnostics_mod.WarningSet{};
     var warnings_as_errors = false;
+    var target_triple: ?[]const u8 = null;
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             printHelp(io);
@@ -260,6 +262,8 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "-Werror")) {
             warnings_as_errors = true;
+        } else if (std.mem.eql(u8, arg, "--target")) {
+            target_triple = args.next();
         } else if (filename == null) {
             filename = arg;
         }
@@ -474,6 +478,7 @@ pub fn main(init: std.process.Init) !void {
 
         var lcg = codegen_lir.CodegenLir.init(init.arena.allocator(), "ko_module");
         defer lcg.deinit();
+        if (target_triple) |triple| lcg.setTargetTriple(triple);
         lcg.declareRuntime();
         lcg.codegenProgram(lir_fns) catch |err| {
             reportError(io, fname, null, "LIR codegen error: {s}", .{@errorName(err)});
@@ -503,14 +508,12 @@ pub fn main(init: std.process.Init) !void {
             },
             .obj => {
                 const out_name = output orelse "output.o";
-                var aot = try codegen_mod.Aot.init();
-                defer aot.deinit();
-                const emit_result = try aot.emitObjectFile(lcg.module, init.arena.allocator());
+                const obj_data = try codegen_lir.emitObjectFile(lcg.module, init.arena.allocator());
                 const out_file = try cwd.createFile(io, out_name, .{});
                 defer out_file.close(io);
                 var out_buf: [4096]u8 = undefined;
                 var out_writer = out_file.writer(io, &out_buf);
-                try out_writer.interface.writeAll(emit_result.data);
+                try out_writer.interface.writeAll(obj_data);
                 try out_writer.interface.flush();
                 try writer.interface.print("wrote {s}\n", .{out_name});
                 try writer.interface.flush();
@@ -520,35 +523,23 @@ pub fn main(init: std.process.Init) !void {
                 const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name_z});
                 const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
 
-                var aot = try codegen_mod.Aot.init();
-                defer aot.deinit();
-                const emit_result = try aot.emitObjectFile(lcg.module, init.arena.allocator());
+                const obj_data = try codegen_lir.emitObjectFile(lcg.module, init.arena.allocator());
                 {
                     const obj_file = try cwd.createFile(io, obj_name_slice, .{});
                     defer obj_file.close(io);
                     var obj_buf: [4096]u8 = undefined;
                     var obj_writer = obj_file.writer(io, &obj_buf);
-                    try obj_writer.interface.writeAll(emit_result.data);
+                    try obj_writer.interface.writeAll(obj_data);
                     try obj_writer.interface.flush();
                 }
 
-                const os_tag = @import("builtin").os.tag;
-                const ld_argv = if (os_tag == .macos) [_][]const u8{
-                    "ld", "-o", out_name_z,
-                    obj_name,
-                    "-lc", "-lm", "-L/usr/lib", "-L/opt/homebrew/lib",
-                    "-syslibroot", "`xcrun --show-sdk-path`",
-                } else if (os_tag == .linux) [_][]const u8{
-                    "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
-                    obj_name, "-o", out_name_z,
-                    "-lc", "-lm", "/usr/lib/crtn.o",
-                    "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
-                } else [_][]const u8{
-                    "cc", obj_name, "-o", out_name_z,
-                    "-lc", "-lm",
-                };
+                // Link with zig cc — handles cross-compilation via -target
+                const ld_argv: []const []const u8 = if (target_triple) |triple|
+                    &.{ "zig", "cc", "-target", triple, obj_name, "-o", out_name_z, "-lc", "-lm" }
+                else
+                    &.{ "zig", "cc", obj_name, "-o", out_name_z, "-lc", "-lm" };
                 const result = std.process.run(init.arena.allocator(), io, .{
-                    .argv = &ld_argv,
+                    .argv = ld_argv,
                     .stderr_limit = .unlimited,
                     .stdout_limit = .unlimited,
                 }) catch |err| {
@@ -651,6 +642,13 @@ pub fn main(init: std.process.Init) !void {
             const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name});
             const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
 
+            // The legacy Aot (codegen.zig) always emits for the host triple, so
+            // cross-compilation is unsupported on this path.
+            if (target_triple != null) {
+                reportError(io, fname, null, "--target requires the LIR pipeline (remove --use-legacy)", .{});
+                std.process.exit(1);
+            }
+
             // Emit object file to memory buffer, then write to disk
             cg.module_owned_by_jit = true; // prevent double-free
             var aot = try codegen_mod.Aot.init();
@@ -665,24 +663,13 @@ pub fn main(init: std.process.Init) !void {
                 try obj_writer.interface.flush();
             }
 
-            // Link with platform-appropriate linker
-            const os_tag = @import("builtin").os.tag;
-            const ld_argv = if (os_tag == .macos) [_][]const u8{
-                "ld", "-o", out_name,
-                obj_name,
-                "-lc", "-lm", "-L/usr/lib", "-L/opt/homebrew/lib",
-                "-syslibroot", "`xcrun --show-sdk-path`",
-            } else if (os_tag == .linux) [_][]const u8{
-                "ld", "/usr/lib/crt1.o", "/usr/lib/crti.o",
-                obj_name, "-o", out_name,
-                "-lc", "-lm", "/usr/lib/crtn.o",
-                "-dynamic-linker", "/lib64/ld-linux-x86-64.so.2",
-            } else [_][]const u8{
-                "cc", obj_name, "-o", out_name,
-                "-lc", "-lm",
-            };
+            // Link with zig cc — handles cross-compilation via -target
+            const ld_argv: []const []const u8 = if (target_triple) |triple|
+                &.{ "zig", "cc", "-target", triple, obj_name, "-o", out_name, "-lc", "-lm" }
+            else
+                &.{ "zig", "cc", obj_name, "-o", out_name, "-lc", "-lm" };
             const result = std.process.run(init.arena.allocator(), io, .{
-                .argv = &ld_argv,
+                .argv = ld_argv,
                 .stderr_limit = .unlimited,
                 .stdout_limit = .unlimited,
             }) catch |err| {
