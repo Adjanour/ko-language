@@ -110,6 +110,12 @@ pub const AllocValue = struct {
     ty: LirType,
     /// Type tag: 0=raw, 1=constructor, 2=tuple, 3=record
     type_tag: i64 = 0,
+    /// Payload slot count for constructor boxes (type_tag=1); stored in the
+    /// box header at offset -16, mirroring the legacy codegen contract. The
+    /// runtime `inspect` uses it to tell list cells (arity 2) apart from other
+    /// constructor boxes without reading past the box. 0 for non-constructor
+    /// allocs, which never write the header.
+    arity: u32 = 0,
 };
 
 pub const GetElementPtr = struct {

@@ -399,9 +399,12 @@ pub const StdlibCodegen = struct {
         const fflush_type = core.LLVMFunctionType(self.i64Type(), &fflush_params, 1, 0);
         _ = core.LLVMAddFunction(self.module, "fflush", fflush_type);
 
-        // stderr (global variable)
-        const stderr_global = core.LLVMAddGlobal(self.module, self.ptrType(), "stderr");
-        core.LLVMSetLinkage(stderr_global, .LLVMExternalLinkage);
+        // write(fd: i32, buf: ptr, count: i64) -> i64 — raw fd I/O, portable
+        // across libc implementations (glibc, macOS, mingw). Used instead of
+        // fprintf(stderr, ...), which needs a platform-specific stderr symbol.
+        var write_params: [3]types.LLVMTypeRef = .{ core.LLVMInt32TypeInContext(self.context), self.ptrType(), self.i64Type() };
+        const write_type = core.LLVMFunctionType(self.i64Type(), &write_params, 3, 0);
+        _ = core.LLVMAddFunction(self.module, "write", write_type);
 
         // strstr(ptr, ptr) -> ptr
         var strstr_params: [2]types.LLVMTypeRef = .{ self.ptrType(), self.ptrType() };
@@ -3053,6 +3056,14 @@ pub const StdlibCodegen = struct {
         return core.LLVMBuildLoad2(self.builder, self.i64Type(), ptr, "key_tag");
     }
 
+    /// The map's value tag, packed into the flags word (bits 2+) by lir_lower.
+    /// The low two bits stay the key/value heap flags that ko_decref checks,
+    /// so shifting them away yields the tag to dispatch a stored value on.
+    fn mapValueTag(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
+        const flags = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapFlagsPtr(ptr), "flags");
+        return core.LLVMBuildLShr(self.builder, flags, core.LLVMConstInt(self.i64Type(), 2, 0), "value_tag");
+    }
+
     fn mapFlagsPtr(self: *StdlibCodegen, ptr: types.LLVMValueRef) types.LLVMValueRef {
         var idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 8, 0)};
         const p = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&idx), 1, "flags_p");
@@ -4470,15 +4481,6 @@ pub const StdlibCodegen = struct {
             core.LLVMSetValueName(msg_ptr, "msg_ptr");
             core.LLVMSetValueName(msg_len, "msg_len");
 
-            // Format string for fprintf: "%.*s\n"
-            const fmt_str = core.LLVMConstStringInContext(self.context, "%.*s\n", 5, 0);
-            const fmt_global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(fmt_str), "panic_fmt");
-            core.LLVMSetInitializer(fmt_global, fmt_str);
-            core.LLVMSetGlobalConstant(fmt_global, 1);
-            core.LLVMSetLinkage(fmt_global, .LLVMPrivateLinkage);
-            var gep_args: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
-            const fmt_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMTypeOf(fmt_str), fmt_global, &gep_args, 1, "fmt_ptr");
-
             // Flush stdout before writing to stderr. abort() does not run the
             // atexit handlers that would normally drain it, so without this any
             // buffered println output is lost whenever stdout is a pipe — which
@@ -4488,15 +4490,38 @@ pub const StdlibCodegen = struct {
                 _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(fflush_fn), fflush_fn, &flush_args, 1, "");
             }
 
-            // Get fprintf declaration
-            const fprintf_fn = core.LLVMGetNamedFunction(self.module, "fprintf") orelse unreachable;
-            // Get stderr global and load it
-            const stderr_global = core.LLVMGetNamedGlobal(self.module, "stderr") orelse unreachable;
-            const stderr_val = core.LLVMBuildLoad2(self.builder, self.ptrType(), stderr_global, "stderr_val");
+            // Write "panic: " prefix, the message, then a newline, all to fd 2.
+            // Uses raw write(2, ...) instead of fprintf(stderr, ...) so the
+            // emitted code has no dependency on the platform's stderr symbol.
+            const write_fn = core.LLVMGetNamedFunction(self.module, "write") orelse unreachable;
+            const write_type = core.LLVMGlobalGetValueType(write_fn);
+            const fd_two = core.LLVMConstInt(core.LLVMInt32TypeInContext(self.context), 2, 0);
 
-            // Call fprintf(stderr, "%.*s\n", msg_len, msg_ptr)
-            var fprintf_args: [4]types.LLVMValueRef = .{ stderr_val, fmt_ptr, msg_len, msg_ptr };
-            _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(fprintf_fn), fprintf_fn, &fprintf_args, 4, "");
+            const prefix_str = core.LLVMConstStringInContext(self.context, "panic: ", 7, 0);
+            const prefix_global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(prefix_str), "panic_prefix");
+            core.LLVMSetInitializer(prefix_global, prefix_str);
+            core.LLVMSetGlobalConstant(prefix_global, 1);
+            core.LLVMSetLinkage(prefix_global, .LLVMPrivateLinkage);
+            var gep_args: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), 0, 0)};
+            const prefix_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMTypeOf(prefix_str), prefix_global, &gep_args, 1, "prefix_ptr");
+            {
+                var write_args: [3]types.LLVMValueRef = .{ fd_two, prefix_ptr, core.LLVMConstInt(self.i64Type(), 7, 0) };
+                _ = core.LLVMBuildCall2(self.builder, write_type, write_fn, &write_args, 3, "");
+            }
+            {
+                var write_args: [3]types.LLVMValueRef = .{ fd_two, msg_ptr, msg_len };
+                _ = core.LLVMBuildCall2(self.builder, write_type, write_fn, &write_args, 3, "");
+            }
+            const newline_str = core.LLVMConstStringInContext(self.context, "\n", 1, 0);
+            const newline_global = core.LLVMAddGlobal(self.module, core.LLVMTypeOf(newline_str), "panic_newline");
+            core.LLVMSetInitializer(newline_global, newline_str);
+            core.LLVMSetGlobalConstant(newline_global, 1);
+            core.LLVMSetLinkage(newline_global, .LLVMPrivateLinkage);
+            const newline_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMTypeOf(newline_str), newline_global, &gep_args, 1, "newline_ptr");
+            {
+                var write_args: [3]types.LLVMValueRef = .{ fd_two, newline_ptr, core.LLVMConstInt(self.i64Type(), 1, 0) };
+                _ = core.LLVMBuildCall2(self.builder, write_type, write_fn, &write_args, 3, "");
+            }
 
             // Call abort()
             const abort_fn = core.LLVMGetNamedFunction(self.module, "abort") orelse unreachable;
@@ -4576,12 +4601,23 @@ pub const StdlibCodegen = struct {
         for (0..10) |i| {
             case_bbs[i] = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "case");
         }
+        // Arrays carry their own runtime tags (11/12) so inspect can render
+        // `[1, 2, 3]`-style sugar straight from the header length, without
+        // touching the structural list fallback in case 6.
+        const array_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "case_array");
+        // Maps are stamped 13; the key tag is read from the map header (word 0)
+        // and the value tag from the flags word (bits 2+), both written when the
+        // map was created, so nested maps keep their own value tag at any depth.
+        const map_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "case_map");
 
         // Switch on type_tag
-        const sw = core.LLVMBuildSwitch(self.builder, type_tag, default_bb, 10);
+        const sw = core.LLVMBuildSwitch(self.builder, type_tag, default_bb, 13);
         for (0..10) |i| {
             core.LLVMAddCase(sw, core.LLVMConstInt(self.i64Type(), i, 0), case_bbs[i]);
         }
+        core.LLVMAddCase(sw, core.LLVMConstInt(self.i64Type(), 11, 0), array_bb);
+        core.LLVMAddCase(sw, core.LLVMConstInt(self.i64Type(), 12, 0), array_bb);
+        core.LLVMAddCase(sw, core.LLVMConstInt(self.i64Type(), 13, 0), map_bb);
 
         // ---- case 0: int — printf("%ld", val) ----
         core.LLVMPositionBuilderAtEnd(self.builder, case_bbs[0]);
@@ -4688,10 +4724,20 @@ pub const StdlibCodegen = struct {
         const tag_ptr_try = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&tag_idx_try), 1, "tag_ptr_try");
         const tag_val_try = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_try, "tag_val_try");
         const is_cons_try = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, tag_val_try, core.LLVMConstInt(self.i64Type(), 0, 0), "is_cons_try");
+        // A constructor box whose first slot is 0 is only a list cell when the
+        // header arity (offset -16) is exactly 2 (head + tail payloads). Requiring
+        // it prevents misreading a 2-slot box such as `Ok 42` ([0][42]) as a list,
+        // whose tail read at offset 16 would go out of bounds. Both the legacy
+        // codegen and the LIR pipeline store the constructor arity in the header.
+        var arity_hdr_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -16)), 0)};
+        const arity_hdr_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), deref_ptr_try, @ptrCast(&arity_hdr_idx), 1, "arity_hdr_ptr");
+        const arity_hdr_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), arity_hdr_ptr, "arity_hdr_val");
+        const is_arity_two = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, arity_hdr_val, core.LLVMConstInt(self.i64Type(), 2, 0), "is_arity_two");
+        const is_cons_cell = core.LLVMBuildAnd(self.builder, is_cons_try, is_arity_two, "is_cons_cell");
         const print_as_list = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_as_list");
         const print_raw_cons = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_raw_cons");
         const print_as_list_sugar = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "print_as_list_sugar");
-        self.buildCondBranch(is_cons_try, print_as_list, ctor_fallback_done);
+        self.buildCondBranch(is_cons_cell, print_as_list, ctor_fallback_done);
 
         // print_as_list: load head/tail, then check raw for sugar vs raw form
         core.LLVMPositionBuilderAtEnd(self.builder, print_as_list);
@@ -5104,6 +5150,129 @@ pub const StdlibCodegen = struct {
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &tuple_fb_args, 2, "");
         self.buildBranch(tuple_merge9);
         core.LLVMPositionBuilderAtEnd(self.builder, tuple_merge9);
+        self.buildBranch(merge_bb);
+
+        // ---- case 11/12: array — [e0, e1, ..., en] ----
+        core.LLVMPositionBuilderAtEnd(self.builder, array_bb);
+        const array_ptr = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "array_ptr");
+        const array_len = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayHeaderPtr(array_ptr, -16, "arr_len_ptr"), "arr_len");
+        const fmt_arr_lbracket = self.globalStringConstant("[");
+        var arr_lb_args: [2]types.LLVMValueRef = .{ fmt_arr_lbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &arr_lb_args, 2, "");
+        const arr_loop_entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_loop_entry");
+        const arr_loop_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_loop_body");
+        const arr_loop_exit = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_loop_exit");
+        const arr_idx = core.LLVMBuildAlloca(self.builder, self.i64Type(), "arr_idx");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), arr_idx);
+        self.buildBranch(arr_loop_entry);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_loop_entry);
+        const arr_idx_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), arr_idx, "arr_idx_val");
+        const arr_idx_lt = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, arr_idx_val, array_len, "arr_idx_lt");
+        self.buildCondBranch(arr_idx_lt, arr_loop_body, arr_loop_exit);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_loop_body);
+        const arr_first = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, arr_idx_val, core.LLVMConstInt(self.i64Type(), 0, 0), "arr_first");
+        const arr_sep = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_sep");
+        const arr_no_sep = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_no_sep");
+        self.buildCondBranch(arr_first, arr_no_sep, arr_sep);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_sep);
+        const fmt_arr_comma = self.globalStringConstant(", ");
+        var arr_comma_args: [2]types.LLVMValueRef = .{ fmt_arr_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &arr_comma_args, 2, "");
+        self.buildBranch(arr_no_sep);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_no_sep);
+        const arr_byte_off = core.LLVMBuildMul(self.builder, arr_idx_val, core.LLVMConstInt(self.i64Type(), 8, 0), "arr_byte_off");
+        var arr_elem_idx: [1]types.LLVMValueRef = .{arr_byte_off};
+        const arr_elem_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), array_ptr, @ptrCast(&arr_elem_idx), 1, "arr_elem_ptr");
+        const arr_elem_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), arr_elem_ptr, "arr_elem_val");
+        // A heap-element array (runtime tag 12) holds pointers, so each element
+        // carries its own type tag in the box header; dispatching on it prints
+        // nested arrays/maps/strings correctly at any depth. Scalar-element
+        // arrays (tag 11) dispatch on the static elem_tag instead.
+        const arr_is_heap = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 12, 0), "arr_is_heap");
+        const arr_elem_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_elem_dispatch");
+        const arr_elem_scalar_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_elem_scalar");
+        const arr_elem_merge = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "arr_elem_merge");
+        self.buildCondBranch(arr_is_heap, arr_elem_bb, arr_elem_scalar_bb);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_elem_bb);
+        const arr_elem_ptr_h = core.LLVMBuildIntToPtr(self.builder, arr_elem_val, self.ptrType(), "arr_elem_ptr_h");
+        const arr_elem_tag = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.arrayHeaderPtr(arr_elem_ptr_h, -24, "arr_elem_tag_ptr"), "arr_elem_tag");
+        var arr_elem_heap_args: [6]types.LLVMValueRef = .{ arr_elem_val, arr_elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &arr_elem_heap_args, 6, "");
+        self.buildBranch(arr_elem_merge);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_elem_scalar_bb);
+        var arr_elem_args: [6]types.LLVMValueRef = .{ arr_elem_val, elem_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &arr_elem_args, 6, "");
+        self.buildBranch(arr_elem_merge);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_elem_merge);
+        const arr_next_idx = core.LLVMBuildAdd(self.builder, arr_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "arr_next");
+        _ = core.LLVMBuildStore(self.builder, arr_next_idx, arr_idx);
+        self.buildBranch(arr_loop_entry);
+        core.LLVMPositionBuilderAtEnd(self.builder, arr_loop_exit);
+        const fmt_arr_rbracket = self.globalStringConstant("]");
+        var arr_rb_args: [2]types.LLVMValueRef = .{ fmt_arr_rbracket, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &arr_rb_args, 2, "");
+        self.buildBranch(merge_bb);
+
+        // ---- case 13: map — {key: value, ...} ----
+        core.LLVMPositionBuilderAtEnd(self.builder, map_bb);
+        const map_ptr = core.LLVMBuildIntToPtr(self.builder, val, self.ptrType(), "map_ptr");
+        const map_cap = self.mapLoadCap(map_ptr);
+        const map_key_tag = self.mapLoadKeyTag(map_ptr);
+        const map_value_tag = self.mapValueTag(map_ptr);
+        const fmt_map_lbrace = self.globalStringConstant("{");
+        var map_lb_args: [2]types.LLVMValueRef = .{ fmt_map_lbrace, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &map_lb_args, 2, "");
+        const map_idx = core.LLVMBuildAlloca(self.builder, self.i64Type(), "map_idx");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i64Type(), 0, 0), map_idx);
+        const map_any = core.LLVMBuildAlloca(self.builder, self.i1Type(), "map_any");
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i1Type(), 0, 0), map_any);
+        const map_loop = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_loop");
+        const map_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_body");
+        const map_exit = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_exit");
+        self.buildBranch(map_loop);
+        core.LLVMPositionBuilderAtEnd(self.builder, map_loop);
+        const map_idx_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), map_idx, "map_idx_val");
+        const map_idx_lt = core.LLVMBuildICmp(self.builder, .LLVMIntSLT, map_idx_val, map_cap, "map_idx_lt");
+        self.buildCondBranch(map_idx_lt, map_body, map_exit);
+        core.LLVMPositionBuilderAtEnd(self.builder, map_body);
+        const map_state = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(map_ptr, map_idx_val, 0), "map_state");
+        const map_occ = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, map_state, core.LLVMConstInt(self.i64Type(), 1, 0), "map_occ");
+        const map_entry = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_entry");
+        const map_skip = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_skip");
+        self.buildCondBranch(map_occ, map_entry, map_skip);
+        // map_entry: separator if not first, then key: value
+        core.LLVMPositionBuilderAtEnd(self.builder, map_entry);
+        const map_any_val = core.LLVMBuildLoad2(self.builder, self.i1Type(), map_any, "map_any_val");
+        const map_first = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_first");
+        const map_not_first = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "map_not_first");
+        self.buildCondBranch(map_any_val, map_not_first, map_first);
+        core.LLVMPositionBuilderAtEnd(self.builder, map_not_first);
+        const fmt_map_comma = self.globalStringConstant(", ");
+        var map_comma_args: [2]types.LLVMValueRef = .{ fmt_map_comma, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &map_comma_args, 2, "");
+        self.buildBranch(map_first);
+        core.LLVMPositionBuilderAtEnd(self.builder, map_first);
+        _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(self.i1Type(), 1, 0), map_any);
+        const map_key = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(map_ptr, map_idx_val, 1), "map_key");
+        var map_key_args: [6]types.LLVMValueRef = .{ map_key, map_key_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &map_key_args, 6, "");
+        const fmt_map_colon = self.globalStringConstant(": ");
+        var map_colon_args: [2]types.LLVMValueRef = .{ fmt_map_colon, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &map_colon_args, 2, "");
+        const map_value = core.LLVMBuildLoad2(self.builder, self.i64Type(), self.mapSlotPtr(map_ptr, map_idx_val, 2), "map_value");
+        var map_value_args: [6]types.LLVMValueRef = .{ map_value, map_value_tag, core.LLVMConstNull(self.ptrType()), raw, core.LLVMConstInt(self.i64Type(), 0, 0), unknown_tag };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(inspect_fn), inspect_fn, &map_value_args, 6, "");
+        self.buildBranch(map_skip);
+        // map_skip: bump idx and loop
+        core.LLVMPositionBuilderAtEnd(self.builder, map_skip);
+        const map_next = core.LLVMBuildAdd(self.builder, map_idx_val, core.LLVMConstInt(self.i64Type(), 1, 0), "map_next");
+        _ = core.LLVMBuildStore(self.builder, map_next, map_idx);
+        self.buildBranch(map_loop);
+        // map_exit: printf("}")
+        core.LLVMPositionBuilderAtEnd(self.builder, map_exit);
+        const fmt_map_rbrace = self.globalStringConstant("}");
+        var map_rb_args: [2]types.LLVMValueRef = .{ fmt_map_rbrace, core.LLVMConstInt(self.i64Type(), 0, 0) };
+        _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(printf_fn), printf_fn, &map_rb_args, 2, "");
         self.buildBranch(merge_bb);
 
         // ---- default: printf("%ld", val) — with structural list detection for unknown types ----

@@ -885,10 +885,17 @@ pub const LirLower = struct {
             .global => |name| return self.lowerGlobalCall(name, rev_args.items, self.exprs[id].ty, self.exprs[id].span),
             .constructor => |c| return self.lowerConstructorApply(c.ctor_name, rev_args.items),
             .record_access => |ra| {
-                // Module fn call (`String.length x`): resolve to a global.
-                if (self.exprs[ra.record].kind == .constructor) {
-                    const ns = self.exprs[ra.record].kind.constructor.ctor_name;
-                    const full = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns, ra.field });
+                // Module fn call (`String.length x` or `lib.unwrap b`): resolve
+                // to a global. A type namespace lowers to a constructor node;
+                // a bare module name is a plain global, and a record value is
+                // a local/other expression — neither registers `ns.field`.
+                const ns = switch (self.exprs[ra.record].kind) {
+                    .constructor => |c| c.ctor_name,
+                    .global => |gname| gname,
+                    else => null,
+                };
+                if (ns) |ns_name| {
+                    const full = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ ns_name, ra.field });
                     if (self.globals.contains(full)) return self.lowerGlobalCall(full, rev_args.items, self.exprs[id].ty, self.exprs[id].span);
                 }
                 return self.lowerClosureCall(head, rev_args.items);
@@ -1121,7 +1128,7 @@ pub const LirLower = struct {
         if (args.len != 1) return error.ArityMismatch;
         const arg_hir = args[0];
         const v = try self.lowerExpr(arg_hir);
-        const tag = typeTag(self.resolve(self.exprs[arg_hir].ty));
+        const tag = self.printTagFor(self.resolve(self.exprs[arg_hir].ty));
         const boxed = try self.coerce(v, .{ .int = {} });
         const tag_local = try self.emit(.{ .int = tag }, .{ .int = {} });
         var name_local: lir.LocalId = undefined;
@@ -1171,7 +1178,13 @@ pub const LirLower = struct {
         // Element type tag, so list sugar can render non-Int elements.
         const elem_val: i64 = blk: {
             const ty = self.resolve(self.exprs[arg_hir].ty);
-            if (ty.* == .con and ty.con.args.len > 0) break :blk typeTag(self.resolve(ty.con.args[0]));
+            if (ty.* == .con and ty.con.args.len > 0) {
+                // For a Map the elem_tag slot carries the VALUE tag; the key tag
+                // lives in the map header (word 0), where ko_map_new wrote it.
+                if (std.mem.eql(u8, ty.con.name, "Map") and ty.con.args.len == 2)
+                    break :blk self.printTagFor(ty.con.args[1]);
+                break :blk self.printTagFor(ty.con.args[0]);
+            }
             break :blk 100;
         };
         const elem_local = try self.emit(.{ .int = elem_val }, .{ .int = {} });
@@ -1205,6 +1218,28 @@ pub const LirLower = struct {
             .string, .record, .tuple, .arrow, .con => array_tag_heap,
             else => array_tag_scalar,
         };
+    }
+
+    /// The map's value tag rides in the flags word (bits 2+), alongside the
+    /// key and value heap bits (bits 0 and 1) that ko_decref checks. Resize
+    /// and merge copy the flags wholesale, so the tag survives growth and set
+    /// operations; `inspect` reads it back so map values that are themselves
+    /// containers print correctly at any nesting depth.
+    const map_value_tag_shift: u6 = 2;
+
+    /// The runtime type tag to pass to println/print/inspect for a value of
+    /// static type `ty`. Array and Map are `con` types, but ko_array_alloc
+    /// stamps the box 11/12 and ko_map_new 13, so the raw `con` tag (6) would
+    /// send them through the constructor structural fallback in `inspect` and
+    /// print a pointer.
+    fn printTagFor(self: *LirLower, ty: *const typecheck.Type) i64 {
+        const r = self.resolve(ty);
+        if (r.* == .con) {
+            if (std.mem.eql(u8, r.con.name, "Array") and r.con.args.len == 1)
+                return self.arrayTagFor(r.con.args[0]);
+            if (std.mem.eql(u8, r.con.name, "Map") and r.con.args.len == 2) return 13;
+        }
+        return typeTag(r);
     }
 
     /// The element type of the `Array a` this expression produces.
@@ -1275,6 +1310,7 @@ pub const LirLower = struct {
             key_tag = typeTag(k);
             if (self.arrayTagFor(k) == array_tag_heap) flags |= 1;
             if (self.arrayTagFor(r.con.args[1]) == array_tag_heap) flags |= 2;
+            flags |= self.printTagFor(r.con.args[1]) << map_value_tag_shift;
         }
         const cap = try self.emit(.{ .int = 8 }, .{ .int = {} });
         const kt = try self.emit(.{ .int = key_tag }, .{ .int = {} });
@@ -1304,6 +1340,7 @@ pub const LirLower = struct {
             key_tag = typeTag(k);
             if (self.arrayTagFor(k) == array_tag_heap) flags |= 1;
             if (self.arrayTagFor(r.con.args[1]) == array_tag_heap) flags |= 2;
+            flags |= self.printTagFor(r.con.args[1]) << map_value_tag_shift;
         }
         const kt = try self.emit(.{ .int = key_tag }, .{ .int = {} });
         const fl = try self.emit(.{ .int = flags }, .{ .int = {} });
@@ -1772,7 +1809,7 @@ pub const LirLower = struct {
         if (entry.arity == 0) return self.emit(.{ .int = entry.tag }, .{ .int = {} });
 
         const struct_ty = try self.ctorStructType(entry.arity);
-        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 1 } }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 1, .arity = @intCast(entry.arity) } }, .{ .opaque_type = {} });
         const tag = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
         const tag_slot = try self.gepStruct(struct_ty, raw, 0, .{ .int = {} });
         try self.emitStore(tag_slot, tag);

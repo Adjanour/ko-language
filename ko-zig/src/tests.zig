@@ -2,6 +2,7 @@ const std = @import("std");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
+const module_loader_mod = @import("module_loader.zig");
 const repl_mod = @import("repl.zig");
 const codegen_mod = @import("codegen.zig");
 const stdlib = @import("stdlib.zig");
@@ -3109,6 +3110,10 @@ fn testRuntimeLir(source: [:0]const u8) !i64 {
     const prog = try p.parse_program();
     var inferer = typecheck.Inferer.init(allocator);
     defer inferer.deinit();
+    const stdlib_dir = @import("build_options").stdlib_dir;
+    var loader = module_loader_mod.ModuleLoader.init(allocator, ".", stdlib_dir, null);
+    defer loader.deinit();
+    inferer.module_loader = &loader;
     try inferer.inferProgram(&prog);
     var hl = hir_lower.HirLower.init(allocator, &inferer);
     defer hl.deinit();
@@ -3304,6 +3309,12 @@ pub fn testRuntimeOutputLir(source: [:0]const u8) !CapturedOutput {
     const prog = try p.parse_program();
     var inferer = typecheck.Inferer.init(allocator);
     defer inferer.deinit();
+    // Resolve `import std.*` against the repo's std/ directory so inline
+    // tests can exercise stdlib modules (std.Set, std.List, ...).
+    const stdlib_dir = @import("build_options").stdlib_dir;
+    var loader = module_loader_mod.ModuleLoader.init(allocator, ".", stdlib_dir, null);
+    defer loader.deinit();
+    inferer.module_loader = &loader;
     try inferer.inferProgram(&prog);
     var hl = hir_lower.HirLower.init(allocator, &inferer);
     defer hl.deinit();
@@ -3931,6 +3942,8 @@ test "runtime: all .ko test files execute on LIR without crashing" {
         .{ .name = "type_record.ko", .source = @embedFile("tests_ko/type_record.ko") },
         .{ .name = "type_sum.ko", .source = @embedFile("tests_ko/type_sum.ko") },
         .{ .name = "type_sum_params.ko", .source = @embedFile("tests_ko/type_sum_params.ko") },
+        .{ .name = "map_ops.ko", .source = @embedFile("tests_ko/map_ops.ko") },
+        .{ .name = "set_ops.ko", .source = @embedFile("tests_ko/set_ops.ko") },
     };
 
     for (files) |f| {
@@ -4349,4 +4362,218 @@ test "runtime output: array map to a different element type" {
     );
     defer captured.deinit();
     try std.testing.expectEqualStrings("n1\nn3\n", captured.output);
+}
+
+// ──── Stage 3: Map ────
+
+test "runtime output: map literal and printing" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  println {}
+        \\  println {"a": 1}
+        \\  println {"a": 1, "b": 2}
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("{}\n{a: 1}\n{a: 1, b: 2}\n", captured.output);
+}
+
+test "runtime output: map set, get, delete with Int keys and String values" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe String) =
+        \\  match m
+        \\    | Just v => v
+        \\    | Nothing => "missing"
+        \\fn main =
+        \\  let m = Map.set (Map.set (Map.new ()) 1 "one") 2 "two"
+        \\  println (Map.length m)
+        \\  println (describe (Map.get m 1))
+        \\  println (Map.containsKey m 2)
+        \\  Map.delete m 1
+        \\  println (Map.length m)
+        \\  println (describe (Map.get m 1))
+        \\  println (Map.containsKey m 1)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("2\none\nTrue\n1\nmissing\nFalse\n", captured.output);
+}
+
+test "runtime output: map String keys hash and lookup" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe Int) =
+        \\  match m
+        \\    | Just v => "got ${v}"
+        \\    | Nothing => "missing"
+        \\fn main =
+        \\  let s = Map.set (Map.set (Map.new ()) "k1" 10) "k2" 20
+        \\  println (describe (Map.get s "k1"))
+        \\  println (describe (Map.get s "k2"))
+        \\  println (describe (Map.get s "absent"))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("got 10\ngot 20\nmissing\n", captured.output);
+}
+
+test "runtime output: map keys, values, entries and fromArray round-trip" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe String) =
+        \\  match m
+        \\    | Just v => v
+        \\    | Nothing => "missing"
+        \\fn main =
+        \\  let fa = Map.fromArray [(1, "x"), (2, "y")]
+        \\  println (Array.length (Map.keys fa))
+        \\  println (Array.length (Map.values fa))
+        \\  println (Array.length (Map.entries fa))
+        \\  let rt = Map.fromArray (Map.entries fa)
+        \\  println (describe (Map.get rt 2))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("2\n2\n2\ny\n", captured.output);
+}
+
+test "runtime output: map foldl folds keys and values" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let acc = Map.foldl (\a k v -> a + v) 0 {"p": 3, "q": 4}
+        \\  println acc
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("7\n", captured.output);
+}
+
+test "runtime output: map union, intersection and difference" {
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe Int) =
+        \\  match m
+        \\    | Just v => "got ${v}"
+        \\    | Nothing => "missing"
+        \\fn main =
+        \\  let u = Map.union {"a": 1, "b": 2} {"b": 20, "c": 3}
+        \\  println (Map.length u)
+        \\  println (describe (Map.get u "a"))
+        \\  println (describe (Map.get u "b"))
+        \\  let i = Map.intersection {"a": 1, "b": 2} {"b": 20, "c": 3}
+        \\  println (Map.length i)
+        \\  println (describe (Map.get i "b"))
+        \\  let d = Map.difference {"a": 1, "b": 2} {"b": 20, "c": 3}
+        \\  println (Map.length d)
+        \\  println (describe (Map.get d "b"))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\ngot 1\ngot 20\n1\ngot 2\n1\nmissing\n", captured.output);
+}
+
+test "runtime output: map grows across several resizes" {
+    // Capacity doubles at a 0.75 load factor, so 40 entries pass through
+    // several resizes and every key must still hash to its own bucket.
+    var captured = try testRuntimeOutputLir(
+        \\fn describe (m : Maybe Int) =
+        \\  match m
+        \\    | Just v => "got ${v}"
+        \\    | Nothing => "missing"
+        \\fn fill n m =
+        \\  if n == 0 then m
+        \\  else fill (n - 1) (Map.set m n (n * n))
+        \\fn main =
+        \\  let big = fill 40 (Map.new ())
+        \\  println (Map.length big)
+        \\  println (describe (Map.get big 7))
+        \\  println (describe (Map.get big 39))
+        \\  println (describe (Map.get big 100))
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("40\ngot 49\ngot 1521\nmissing\n", captured.output);
+}
+
+test "runtime output: nested map and array printing" {
+    // Map values dispatch on the tag stored in the map's flags word, and heap
+    // array elements on their own box header, so containers print correctly
+    // at any depth instead of leaking raw pointers.
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  println {"nested": {"x": [1, 2]}}
+        \\  println [{"a": 3.5}]
+        \\  println [["a", "b"], ["c"]]
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("{nested: {x: [1, 2]}}\n[{a: 3.500000}]\n[[a, b], [c]]\n", captured.output);
+}
+
+// ──── Stage 4: Set ────
+
+test "runtime output: set fromArray dedups and membership" {
+    var captured = try testRuntimeOutputLir(
+        \\import std.Set
+        \\fn main =
+        \\  let s = Set.fromArray [1, 2, 3, 2, 1]
+        \\  println (Set.size s)
+        \\  println (Set.contains 2 s)
+        \\  println (Set.contains 9 s)
+        \\  println (Set.size (Set.singleton 7))
+        \\  println (Set.isEmpty (Set.fromArray []))
+        \\  println (Set.isEmpty s)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\nTrue\nFalse\n1\nTrue\nFalse\n", captured.output);
+}
+
+test "runtime output: set add grows the set" {
+    var captured = try testRuntimeOutputLir(
+        \\import std.Set
+        \\fn main =
+        \\  let s = Set.fromArray [1, 2, 3]
+        \\  let s2 = Set.add 4 s
+        \\  println (Set.size s2)
+        \\  println (Set.contains 4 s2)
+        \\  println (Set.contains 1 s2)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("4\nTrue\nTrue\n", captured.output);
+}
+
+test "runtime output: set union, intersection and difference" {
+    var captured = try testRuntimeOutputLir(
+        \\import std.Set
+        \\fn main =
+        \\  let u = Set.union (Set.fromArray [1, 2]) (Set.fromArray [2, 3])
+        \\  println (Set.size u)
+        \\  let i = Set.intersection (Set.fromArray [1, 2, 3]) (Set.fromArray [2, 3, 4])
+        \\  println (Set.toArray i)
+        \\  println (Set.size (Set.intersection (Set.fromArray [1, 2]) (Set.fromArray [3, 4])))
+        \\  let d = Set.difference (Set.fromArray [1, 2, 3]) (Set.fromArray [2])
+        \\  println (Set.size d)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\n[2, 3]\n0\n2\n", captured.output);
+}
+
+test "runtime output: set subset and superset" {
+    var captured = try testRuntimeOutputLir(
+        \\import std.Set
+        \\fn main =
+        \\  let a = Set.fromArray [1, 2, 3]
+        \\  let b = Set.fromArray [2, 3]
+        \\  println (Set.isSubset b a)
+        \\  println (Set.isSuperset a b)
+        \\  println (Set.isSubset a b)
+        \\  println (Set.isSuperset b a)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("True\nTrue\nFalse\nFalse\n", captured.output);
+}
+
+test "runtime output: set remove mutates the set in place" {
+    // Mirrors the Map.delete contract: remove returns Unit and mutates the
+    // underlying map box, so the linearity checker warns if the set is used
+    // again — the runtime effect still takes place.
+    var captured = try testRuntimeOutputLir(
+        \\import std.Set
+        \\fn main =
+        \\  let s = Set.fromArray [1, 2, 3]
+        \\  Set.remove 3 s
+        \\  println (Set.contains 3 s)
+        \\  println (Set.contains 2 s)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("False\nTrue\n", captured.output);
 }

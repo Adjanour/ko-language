@@ -21,11 +21,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    linenoise_mod.addCSourceFile(.{
-        .file = b.path("vendor/linenoise.c"),
-        .flags = &.{"-D_GNU_SOURCE"},
-    });
     linenoise_mod.addIncludePath(b.path("vendor"));
+    // vendor/linenoise.c is POSIX-only (termios); Windows uses a Zig fallback
+    // (src/linenoise_win.zig) selected at comptime in repl.zig.
+    if (target.result.os.tag != .windows) {
+        linenoise_mod.addCSourceFile(.{
+            .file = b.path("vendor/linenoise.c"),
+            .flags = &.{"-D_GNU_SOURCE"},
+        });
+    }
     ko_exe.root_module.addImport("linenoise", linenoise_mod);
     ko_exe.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),
@@ -88,6 +92,11 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = if (test_filter) |f| &.{f} else &.{},
     });
+    // Absolute path to std/ so inline tests can `import std.Set` regardless of
+    // the working directory the test binary runs from.
+    const std_options = b.addOptions();
+    std_options.addOption([]const u8, "stdlib_dir", b.path("std").getPath(b));
+    unit_tests.root_module.addOptions("build_options", std_options);
     unit_tests.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),
         .target = target,

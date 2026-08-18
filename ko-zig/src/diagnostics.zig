@@ -84,9 +84,41 @@ pub const DiagnosticList = struct {
     }
 
     pub fn emitAll(self: *DiagnosticList, io: anytype, filename: []const u8, source: []const u8) void {
+        if (self.items.items.len == 0) return;
+        const stderr = @import("std").Io.File.stderr();
+        var buffer: [4096]u8 = undefined;
+        var w = stderr.writerStreaming(io, &buffer);
+        var prev: ?Diagnostic = null;
         for (self.items.items) |diag| {
-            emitDiagnostic(io, filename, source, diag);
+            if (prev) |p| {
+                if (sameDiagnostic(&p, &diag)) continue;
+            }
+            emitDiagnostic(&w, filename, source, diag);
+            prev = diag;
         }
+        w.interface.flush() catch {};
+    }
+
+    fn sameDiagnostic(a: *const Diagnostic, b: *const Diagnostic) bool {
+        return a.severity == b.severity and
+            std.mem.eql(u8, a.message, b.message) and
+            sameLoc(a.loc, b.loc) and
+            sameStr(a.note, b.note) and
+            sameStr(a.help, b.help) and
+            sameStr(a.context, b.context);
+    }
+
+    fn sameLoc(a: ?parser.Loc, b: ?parser.Loc) bool {
+        const ai = a orelse return b == null;
+        const bi = b orelse return false;
+        return ai.line == bi.line and ai.col == bi.col and
+            ai.end_line == bi.end_line and ai.end_col == bi.end_col;
+    }
+
+    fn sameStr(a: ?[]const u8, b: ?[]const u8) bool {
+        const as = a orelse return b == null;
+        const bs = b orelse return false;
+        return std.mem.eql(u8, as, bs);
     }
 
     pub fn hasFatalErrors(self: *const DiagnosticList) bool {
@@ -128,10 +160,7 @@ fn severityLabel(sev: Severity) struct { text: []const u8, color: []const u8 } {
     };
 }
 
-fn emitDiagnostic(io: anytype, filename: []const u8, source: []const u8, diag: Diagnostic) void {
-    const stderr = @import("std").Io.File.stderr();
-    var buffer: [4096]u8 = undefined;
-    var w = stderr.writer(io, &buffer);
+fn emitDiagnostic(w: anytype, filename: []const u8, source: []const u8, diag: Diagnostic) void {
     const color = shouldUseColor();
     const sev = severityLabel(diag.severity);
 
@@ -147,7 +176,7 @@ fn emitDiagnostic(io: anytype, filename: []const u8, source: []const u8, diag: D
 
     // Source line with caret
     if (diag.loc) |l| {
-        emitSourceLine(&w, filename, source, l, color);
+        emitSourceLine(w, filename, source, l, color);
     }
 
     // Context line (e.g., "while typechecking function foo")

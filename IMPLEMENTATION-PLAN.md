@@ -40,7 +40,7 @@ All four are now cleared — the first three in Stage 0, `hash` in Stage 3.
 Stage 0 (prelude types, tuple access)  — DONE
    ├── Stage 1  Strings Phase 2      — DONE
    ├── Stage 2  Array — DONE (2.5 deferred) ─┐
-   │                                     ├── Stage 4  Set
+   │                                     ├── Stage 4  Set — DONE
    ├── Stage 3  hash + Map — code complete ──┘
    └── Stage 5  IO                    (needs Result + panic)
 
@@ -197,7 +197,7 @@ So 2.5 is not a matter of writing two conversions: it first requires deciding wh
 
 ---
 
-## Stage 3 — `hash` + Map — CODE COMPLETE, TESTS NOT WRITTEN
+## Stage 3 — `hash` + Map — DONE
 
 **Goal:** DESIGN-data-structures §4.
 **Depends on:** Stage 0 (`Maybe`), Stage 2 (buckets), tuple access from 0.3.
@@ -211,7 +211,7 @@ So 2.5 is not a matter of writing two conversions: it first requires deciding wh
 | 3.5 | `keys`, `values`, `entries`, `fromArray`, `foldl` | done (`forEach` not done — `foldl` covers it) |
 | 3.6 | `union`, `intersection`, `difference` | done |
 
-**Remaining work: regression tests.** Every operation above was verified by hand against a scratch program, and the suite is green at 285/285, but no Stage 3 tests were added to `src/tests.zig`. That is the next thing to do. Follow the Stage 2 block at the end of that file; the scratch programs to turn into tests covered core get/set/delete, Int keys with String values, growth across several resizes (40 entries), `keys`/`values`/`entries`, `fromArray` round-tripping through `entries`, `foldl`, the three set operations, and map literals including `{}`.
+**Regression tests done.** The `Stage 3: Map` block at the end of `src/tests.zig` covers literals and `{}`, get/set/delete with Int keys and String values, String-key hashing, `keys`/`values`/`entries` and a `fromArray` round-trip, `foldl`, the three set operations, and growth across several resizes (40 entries). A `nested map and array printing` test locks in the container-printing fix, and `tests_ko/map_ops.ko` is registered with the parser test. Suite is 293/293.
 
 ### Representation
 
@@ -221,7 +221,7 @@ So 2.5 is not a matter of writing two conversions: it first requires deciding wh
 [-16] length (live entries)
 [ -8] capacity (bucket count, power of two)
 [  0] key_tag — selects the hash and equality
-[  8] flags: bit 0 = keys are heap, bit 1 = values are heap
+[  8] flags: bits 0-1 = keys/values are heap; bits 2+ = value tag for printing
 [ 16] buckets: capacity × { state, key, value }, 24 bytes each
 ```
 
@@ -229,7 +229,7 @@ State is 0 empty, 1 occupied, 2 tombstone; deletes tombstone so probe chains sta
 
 **Open addressing with linear probing, not the doc's separate chaining.** Buckets live in one allocation, so there are no per-entry nodes to allocate, walk or free, and the whole map is a single `ko_alloc`. Scalar hashes go through a splitmix64 finalizer — identity-hashed integer keys cluster badly under linear probing.
 
-**The key tag and heap flags live in the map, not at the call site.** `ko_decref` sees only a pointer; at teardown there is no call site left to read a static type from.
+**The key tag and heap flags live in the map, not at the call site.** `ko_decref` sees only a pointer; at teardown there is no call site left to read a static type from. The value tag is packed into the flags word (bits 2+) for the same reason — `inspect` has no static type to print a map value with, so it reads the tag back from the header, which lets nested maps and arrays print correctly at any depth.
 
 **`Map.set` returns the map, where the doc says `Unit`** — same reason as `Array.push`: a resize moves the table. `delete` returns `Unit`, since it only tombstones.
 
@@ -259,12 +259,29 @@ The accepted set there must stay in step with what `ko_hash` and `ko_key_eq` imp
 
 ---
 
-## Stage 4 — Set
+## Stage 4 — Set ✅ DONE
 
 **Goal:** DESIGN-data-structures §5. Small once Map lands.
 **Depends on:** Stage 3.
 
-`Set a` is `Map a ()`. Implement as a thin `std/Set.ko` wrapper: `empty`, `singleton`, `fromList`, `contains`, `add`, `remove`, `size`, `union`, `intersection`, `difference`, `isSubset`, `toList`.
+`Set a` is `Map a ()`. Implemented as a thin `std/Set.ko` wrapper: `empty`, `singleton`, `fromArray`, `contains`, `add`, `remove`, `size`, `isEmpty`, `union`, `intersection`, `difference`, `isSubset`, `isSuperset`, `toArray`.
+
+### Divergences from DESIGN-data-structures §5
+
+- **`fromList`/`toList` → `fromArray`/`toArray`.** There is no builtin List (only `std/List.ko`, which is unimportable from a stdlib module — transitive imports are not supported), and `Map.keys` returns an Array, so conversions mirror the Map module.
+- **`add : a -> Set a -> Set a`** (doc says `Unit`), matching `Map.set` returning the map — a resize moves the table, so the caller must receive the new set.
+- **`remove : a -> Set a -> Unit`** matches `Map.delete` (mutates in place, returns Unit). Like `Map.delete`, the linearity checker warns if the set is used afterwards; the runtime mutation still takes effect.
+- Added `isSuperset` (derived from `isSubset`).
+
+### Supporting fixes landed with this stage
+
+- **LIR module-qualified calls:** `lir_lower.lowerApplyChain` only treated a type namespace (`.constructor` object, e.g. `Map.union`) as a qualified global; a module name lowers to a `.global` object (e.g. `lib.unwrap`), which fell through to a closure call → `undefined global 'lib'`. Now both `.constructor` and `.global` objects resolve `ns.field` against the global table (`lir_lower.zig:887-899`).
+- **`Unit` type name:** `typeExprToType`/`ctorParamType` mapped `Int`/`Float`/`Bool`/`String`/`Char` but not `Unit` → `Map a Unit` in a type definition produced a fresh type variable. Added the `Unit` → unit mapping in both functions (`typecheck.zig:898, 2065`).
+- **Test harness module loading:** `testRuntimeLir`/`testRuntimeOutputLir` now attach a `ModuleLoader` with `stdlib_override` = the repo `std/` dir (passed via a build option from `build.zig`), so inline tests can `import std.*`.
+
+### Tests
+
+- 5 runtime tests (fromArray dedup/membership, add, union/intersection/difference, subset/superset, in-place remove) + `src/tests_ko/set_ops.ko` parser/execution test.
 
 ---
 

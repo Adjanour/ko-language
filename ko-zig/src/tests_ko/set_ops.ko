@@ -1,0 +1,20 @@
+import std.Set
+
+fn main =
+  let s = Set.fromArray [1, 2, 3, 2, 1]
+  println (Set.size s)
+  println (Set.contains 2 s)
+  println (Set.contains 9 s)
+  println (Set.size (Set.singleton 7))
+  println (Set.isEmpty (Set.fromArray []))
+  let s2 = Set.add 4 s
+  println (Set.size s2)
+  let u = Set.union (Set.fromArray [1, 2]) (Set.fromArray [2, 3])
+  println (Set.size u)
+  let i = Set.intersection (Set.fromArray [1, 2, 3]) (Set.fromArray [2, 3, 4])
+  println (Set.toArray i)
+  let d = Set.difference (Set.fromArray [1, 2, 3]) (Set.fromArray [2])
+  println (Set.size d)
+  println (Set.isSubset i (Set.fromArray [2, 3, 4]))
+  println (Set.isSuperset (Set.fromArray [2, 3, 4]) i)
+  0

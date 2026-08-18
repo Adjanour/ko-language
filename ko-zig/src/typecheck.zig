@@ -895,6 +895,7 @@ pub const Inferer = struct {
                 if (std.mem.eql(u8, name, "Bool")) return try self.newType(.bool);
                 if (std.mem.eql(u8, name, "String")) return try self.newType(.string);
                 if (std.mem.eql(u8, name, "Char")) return try self.newType(.char);
+                if (std.mem.eql(u8, name, "Unit")) return try self.newType(.unit);
                 if (self.type_names.get(name)) |num_params| {
                     const args = try self.allocator.alloc(*Type, num_params);
                     for (args) |*slot| {
@@ -2063,6 +2064,7 @@ pub const Inferer = struct {
                 if (std.mem.eql(u8, name, "Bool")) return try self.newType(.bool);
                 if (std.mem.eql(u8, name, "String")) return try self.newType(.string);
                 if (std.mem.eql(u8, name, "Char")) return try self.newType(.char);
+                if (std.mem.eql(u8, name, "Unit")) return try self.newType(.unit);
                 if (self.type_names.get(name)) |num_params| {
                     const args = try self.allocator.alloc(*Type, num_params);
                     for (args) |*slot| {

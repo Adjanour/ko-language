@@ -1,0 +1,68 @@
+# Set.ko — Set operations for Kō
+#
+# A Set is a thin wrapper over Map a (); the map machinery (hashing,
+# equality, open addressing) provides uniqueness and membership.
+#
+# Conversions go through Array rather than List: there is no builtin
+# List, and Map.keys returns an Array, so Set mirrors the Map module
+# (fromList/toList in the data-structures design become
+# fromArray/toArray here).
+#
+# Signatures follow the Map module's precedent, not the design doc:
+#   add    a -> Set a -> Set a   (Map.set returns the map)
+#   remove a -> Set a -> Unit    (Map.delete returns Unit, mutates in place)
+# Like Map.delete, remove consumes its set argument at the type level,
+# so the linearity checker warns if the set is used afterwards — the
+# runtime mutation still takes effect.
+
+type Set a = Set (Map a Unit)
+
+# === Creation ===
+
+pub fn empty = Set (Map.new ())
+
+pub fn singleton x = Set (Map.set (Map.new ()) x ())
+
+pub fn fromArray xs = Array.foldl (\s x -> add x s) (Set (Map.new ())) xs
+
+# === Operations ===
+
+pub fn contains x s = match s
+  | Set m => Map.containsKey m x
+
+pub fn add x s = match s
+  | Set m => Set (Map.set m x ())
+
+pub fn remove x s = match s
+  | Set m => Map.delete m x
+
+pub fn size s = match s
+  | Set m => Map.length m
+
+pub fn isEmpty s = match s
+  | Set m => Map.isEmpty m
+
+# === Set operations ===
+
+pub fn union a b = match a
+  | Set ma => match b
+    | Set mb => Set (Map.union ma mb)
+
+pub fn intersection a b = match a
+  | Set ma => match b
+    | Set mb => Set (Map.intersection ma mb)
+
+pub fn difference a b = match a
+  | Set ma => match b
+    | Set mb => Set (Map.difference ma mb)
+
+pub fn isSubset a b = match a
+  | Set ma => match b
+    | Set mb => Map.foldl (\acc k v -> acc and Map.containsKey mb k) true ma
+
+pub fn isSuperset a b = isSubset b a
+
+# === Conversion ===
+
+pub fn toArray s = match s
+  | Set m => Map.keys m

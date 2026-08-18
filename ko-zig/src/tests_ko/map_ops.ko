@@ -1,0 +1,34 @@
+fn describe (m : Maybe Int) =
+  match m
+    | Just v => "got ${v}"
+    | Nothing => "missing"
+
+fn fill n m =
+  if n == 0 then m
+  else fill (n - 1) (Map.set m n (n * n))
+
+fn main =
+  println {}
+  println {"a": 1}
+  println {"a": 1, "b": 2}
+  let m = Map.set (Map.set (Map.new ()) 1 "one") 2 "two"
+  println (Map.length m)
+  println (Map.containsKey m 2)
+  Map.delete m 1
+  println (Map.length m)
+  let s = Map.set (Map.set (Map.new ()) "k1" 10) "k2" 20
+  println (describe (Map.get s "k1"))
+  let fa = Map.fromArray [(1, "x"), (2, "y")]
+  println (Array.length (Map.keys fa))
+  println (Array.length (Map.entries fa))
+  let acc = Map.foldl (\a k v -> a + v) 0 {"p": 3, "q": 4}
+  println acc
+  let u = Map.union {"a": 1, "b": 2} {"b": 20, "c": 3}
+  println (Map.length u)
+  let i = Map.intersection {"a": 1, "b": 2} {"b": 20, "c": 3}
+  println (Map.length i)
+  let d = Map.difference {"a": 1, "b": 2} {"b": 20, "c": 3}
+  println (Map.length d)
+  let big = fill 40 (Map.new ())
+  println (Map.length big)
+  println (describe (Map.get big 39))
