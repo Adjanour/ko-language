@@ -320,12 +320,12 @@ Notes:
 | 6.1 | Record spread `{ ..other, name = "Bob" }` — listed as *frozen* in §8.2, does not parse | — |
 | 6.2 | Named arguments `~name:expr` — listed as *frozen* in §8.1, does not parse | #25 |
 | 6.3 | Multi-line pipe `\|>` | #18 |
-| 6.4 | Negative numbers as bare args: `f -3` | #17 |
-| 6.5 | `!` is absent from `is_expr_start`, so `println !c` silently prints nothing while `println (!c)` prints correctly | — |
+| 6.4 | Negative numbers as bare args: `f -3` | ✅ `-` (and `!`, `not`, `ref`) are now admitted as argument starts; a minus glued to its operand (`f -3`) applies f to -3, a spaced minus (`f - 3`) stays binary subtraction |
+| 6.5 | `!` is absent from `is_expr_start`, so `println !c` silently prints nothing while `println (!c)` prints correctly | ✅ `println !c` derefs and prints; `syntax_neg_arg.ko` + 3 output tests added |
 | 6.6 | Anonymous record literals `{ name = "Alice" }` without a type name | #19 |
 | 6.7 | Pattern guards `pat when expr` — §7.3 defers these deliberately; only do it if demand appears | — |
 
-6.4 and 6.5 are the same underlying gap: `is_expr_start` does not admit prefix operators, so an unparenthesised prefix expression cannot be an argument. Fixing the set once addresses both.
+6.4 and 6.5 are the same underlying gap: `is_expr_start` does not admit prefix operators, so an unparenthesised prefix expression cannot be an argument. Fixed by admitting `.minus`/`.not` and parsing args with `parse_unary_no_apply` (prefix binds to a postfix expression without application). A whitespace-adjacency gate on `.minus` keeps `f - 3` as subtraction. Also fixed en route: the constant folder dropped unary negation (a one-arg `sub` folded to the positive value), so `-3` silently became `3`.
 
 ---
 

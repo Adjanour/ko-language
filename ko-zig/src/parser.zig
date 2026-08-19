@@ -207,7 +207,8 @@ pub const Parser = struct {
     fn is_expr_start(tag: lexer.Token.Tag) bool {
         return switch (tag) {
             .number, .string, .char, .identifier, .constructor, .keyword_true, .keyword_false,
-            .lparen, .lbracket, .lbrace, .keyword_if, .keyword_match, .backslash, .keyword_not, .keyword_ref => true,
+            .lparen, .lbracket, .lbrace, .keyword_if, .keyword_match, .backslash, .keyword_not,
+            .keyword_ref, .minus, .not => true,
             else => false,
         };
     }
@@ -1322,6 +1323,18 @@ pub const Parser = struct {
         return self.parse_postfix();
     }
 
+    /// Prefix operators in argument position: `f -3`, `f !c`, `f ref x`, `f not x`.
+    /// Each prefix binds to a postfix expression without application, so the
+    /// whole thing stays a single argument to `f` (the application loop parses
+    /// the remaining arguments).
+    fn parse_unary_no_apply(self: *Parser) Error!*Expr {
+        if (self.match(.keyword_not)) return self.newExpr(.{ .unary_op = .{ .op = .not, .expr = try self.parse_unary_no_apply() } }, self.tokenLoc(self.current()));
+        if (self.match(.not)) return self.newExpr(.{ .unary_op = .{ .op = .deref, .expr = try self.parse_unary_no_apply() } }, self.tokenLoc(self.current()));
+        if (self.match(.keyword_ref)) return self.newExpr(.{ .ref_expr = try self.parse_unary_no_apply() }, self.tokenLoc(self.current()));
+        if (self.match(.minus)) return self.newExpr(.{ .unary_op = .{ .op = .neg, .expr = try self.parse_unary_no_apply() } }, self.tokenLoc(self.current()));
+        return self.parse_postfix_no_apply();
+    }
+
     fn parse_factor_no_prefix(self: *Parser) Error!*Expr {
         var left = try self.parse_unary_no_prefix();
         while (self.current().tag == .star or self.current().tag == .slash or self.current().tag == .percent or self.current().tag == .star_dot or self.current().tag == .slash_dot) {
@@ -1452,8 +1465,13 @@ pub const Parser = struct {
                     continue;
                 }
                 if (!is_expr_start(self.current().tag)) break;
-                // Use parse_postfix_no_apply so field access binds tighter than application
-                try args.append(self.allocator, try self.parse_postfix_no_apply());
+                // `-` doubles as binary subtraction, so a minus only starts an
+                // argument when glued to its operand: `f -3` applies f to -3,
+                // `f - 3` stays subtraction.
+                if (self.current().tag == .minus and self.current().loc.end != self.peek(1).loc.start) break;
+                // Prefix operators (`-3`, `!c`, `ref x`, `not x`) are valid args;
+                // field access still binds tighter than application.
+                try args.append(self.allocator, try self.parse_unary_no_apply());
             }
 
             if (args.items.len == 0 and named.items.len == 0) break;

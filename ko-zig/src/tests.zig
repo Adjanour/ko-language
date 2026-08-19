@@ -1110,6 +1110,7 @@ test "parser: all .ko test files parse successfully" {
         .{ .name = "syntax_comparison.ko", .source = @embedFile("tests_ko/syntax_comparison.ko") },
         .{ .name = "syntax_logical.ko", .source = @embedFile("tests_ko/syntax_logical.ko") },
         .{ .name = "syntax_unary.ko", .source = @embedFile("tests_ko/syntax_unary.ko") },
+        .{ .name = "syntax_neg_arg.ko", .source = @embedFile("tests_ko/syntax_neg_arg.ko") },
         .{ .name = "syntax_application.ko", .source = @embedFile("tests_ko/syntax_application.ko") },
         .{ .name = "syntax_let.ko", .source = @embedFile("tests_ko/syntax_let.ko") },
         .{ .name = "syntax_fn.ko", .source = @embedFile("tests_ko/syntax_fn.ko") },
@@ -3436,6 +3437,34 @@ test "runtime output: println returns unit" {
     try std.testing.expectEqualStrings("42\n", captured.output);
 }
 
+test "runtime output: negative literal as bare argument" {
+    var captured = try testRuntimeOutputLir(
+        \\fn g x y = x + y
+        \\fn main = println (g 5 -3)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("2\n", captured.output);
+}
+
+test "runtime output: spaced minus stays binary subtraction" {
+    var captured = try testRuntimeOutputLir(
+        \\fn f x = x + 1
+        \\fn main = println (f 5 - 3)
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("3\n", captured.output);
+}
+
+test "runtime output: deref as bare argument" {
+    var captured = try testRuntimeOutputLir(
+        \\fn main =
+        \\  let c = ref 42
+        \\  println !c
+    );
+    defer captured.deinit();
+    try std.testing.expectEqualStrings("42\n", captured.output);
+}
+
 test "runtime output: nested list printing" {
     var captured = try testRuntimeOutputLir(
         \\type List a = Cons a (List a) | Nil
@@ -3970,6 +3999,7 @@ test "runtime: all .ko test files execute on LIR without crashing" {
         .{ .name = "syntax_tuple.ko", .source = @embedFile("tests_ko/syntax_tuple.ko") },
         .{ .name = "syntax_tuple_let.ko", .source = @embedFile("tests_ko/syntax_tuple_let.ko") },
         .{ .name = "syntax_unary.ko", .source = @embedFile("tests_ko/syntax_unary.ko") },
+        .{ .name = "syntax_neg_arg.ko", .source = @embedFile("tests_ko/syntax_neg_arg.ko") },
         .{ .name = "type_record.ko", .source = @embedFile("tests_ko/type_record.ko") },
         .{ .name = "type_sum.ko", .source = @embedFile("tests_ko/type_sum.ko") },
         .{ .name = "type_sum_params.ko", .source = @embedFile("tests_ko/type_sum_params.ko") },

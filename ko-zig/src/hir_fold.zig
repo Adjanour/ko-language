@@ -173,9 +173,14 @@ fn tryFoldIntOp(fold: *HirFold, id: hir.HirId, op: hir.PrimOp, args: []const hir
         },
         .sub => {
             if (args.len >= 1) {
-                var result = intVal(exprs, args[0]);
-                for (args[1..]) |a| result -= intVal(exprs, a);
-                exprs.items[id].kind = .{ .int = result };
+                if (args.len == 1) {
+                    // Unary minus: `-x` lowers to `sub` with one argument.
+                    exprs.items[id].kind = .{ .int = -intVal(exprs, args[0]) };
+                } else {
+                    var result = intVal(exprs, args[0]);
+                    for (args[1..]) |a| result -= intVal(exprs, a);
+                    exprs.items[id].kind = .{ .int = result };
+                }
                 return true;
             }
             return false;

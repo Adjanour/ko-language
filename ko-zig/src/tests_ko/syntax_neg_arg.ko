@@ -1,0 +1,11 @@
+# Test: prefix operators in argument position (6.4 negative args, 6.5 deref args)
+fn g x y = x + y
+fn f x = x + 1
+fn main =
+  println (g 5 -3)
+  println (g -3 5)
+  println (f 5 - 3)
+  println -3
+  let c = ref 42
+  println !c
+  println (not False)
