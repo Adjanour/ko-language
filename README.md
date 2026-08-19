@@ -161,6 +161,8 @@ cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
 - [Crash Course](docs/ko-crash-course.md) — functional programming from scratch
 - [Ko by Example](docs/ko-by-example.md) — step-by-step guide
 - [Quick Reference](docs/quick-reference.md) — syntax cheat sheet
+- [Modules & Imports](docs/modules.md) — how `import`, resolution, and the two IO namespaces work
+- [Linearity & Ownership](docs/linearity-and-ownership.md) — the consume-once model, borrow vs. consume, and reading the checker's warnings
 
 ## Known Issues (v0.3.1-alpha)
 

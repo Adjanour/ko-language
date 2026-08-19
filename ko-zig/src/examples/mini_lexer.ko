@@ -1,0 +1,144 @@
+# A small lexer for identifiers, integers, and a few operators.
+
+type Token = Identifier String | Number String | Plus | Minus | Star | Slash | LParen | RParen | Equal | Unknown String
+
+type List a = Cons a (List a) | Nil
+
+fn is_space ch =
+  ch == ' ' or ch == '\t' or ch == '\n'
+
+fn is_digit ch = ch >= '0' and ch <= '9'
+
+fn is_letter ch =
+  (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or ch == '_'
+
+fn is_word_char ch = is_letter ch or is_digit ch
+
+fn read_word source i start =
+  if i < String.length source and is_word_char (String.charAt source i) then
+    read_word source (i + 1) start
+  else
+    Cons (String.substring source start (i - start)) (Nil)
+
+fn token_text token =
+  match token
+    | Identifier value => String.append "Identifier(" (String.append value ")")
+    | Number value => String.append "Number(" (String.append value ")")
+    | Plus => "Plus"
+    | Minus => "Minus"
+    | Star => "Star"
+    | Slash => "Slash"
+    | LParen => "LParen"
+    | RParen => "RParen"
+    | Equal => "Equal"
+    | Unknown value => String.append "Unknown(" (String.append value ")")
+
+fn show_tokens tokens =
+  match tokens
+    | Cons token rest =>
+      println (token_text token)
+      show_tokens rest
+    | Nil => 0
+
+fn lex_identifier source i tokens =
+  let word = read_word source i i
+  match word
+    | Cons value _ =>
+      lex source (i + String.length value) (Cons (Identifier value) tokens)
+    | Nil => lex source (i + 1) tokens
+
+fn lex_number source i tokens =
+  let number = read_word source i i
+  match number
+    | Cons value _ =>
+      lex source (i + String.length value) (Cons (Number value) tokens)
+    | Nil => lex source (i + 1) tokens
+
+fn lex source i tokens =
+  if i >= String.length source then
+    tokens
+  else
+    let ch = String.charAt source i
+    if is_space ch then lex source (i + 1) tokens
+    else if is_letter ch then lex_identifier source i tokens
+    else if is_digit ch then lex_number source i tokens
+    else if ch == '+' then lex source (i + 1) (Cons Plus tokens)
+    else if ch == '-' then lex source (i + 1) (Cons Minus tokens)
+    else if ch == '*' then lex source (i + 1) (Cons Star tokens)
+    else if ch == '/' then lex source (i + 1) (Cons Slash tokens)
+    else if ch == '(' then lex source (i + 1) (Cons LParen tokens)
+    else if ch == ')' then lex source (i + 1) (Cons RParen tokens)
+    else if ch == '=' then lex source (i + 1) (Cons Equal tokens)
+    else lex source (i + 1) (Cons (Unknown (String.substring source i 1)) tokens)
+
+fn reverse xs acc =
+  match xs
+    | Cons x rest => reverse rest (Cons x acc)
+    | Nil => acc
+
+type Expr = Name String | Integer String | Operation String Expr Expr
+
+fn peek cursor =
+  match !cursor
+    | Cons token _ => token
+    | Nil => Unknown ""
+
+fn take cursor =
+  match !cursor
+    | Cons token rest =>
+      cursor := rest
+      token
+    | Nil => Unknown ""
+
+fn parse_primary cursor =
+  match take cursor
+    | Number value => Integer value
+    | Identifier value => Name value
+    | _ => Name "<error>"
+
+fn parse_multiplication_tail cursor left =
+  match peek cursor
+    | Star =>
+      let operator = take cursor
+      let right = parse_primary cursor
+      parse_multiplication_tail cursor (Operation "*" left right)
+    | Slash =>
+      let operator = take cursor
+      let right = parse_primary cursor
+      parse_multiplication_tail cursor (Operation "/" left right)
+    | _ => left
+
+fn parse_multiplication cursor =
+  let left = parse_primary cursor
+  parse_multiplication_tail cursor left
+
+fn parse_addition_tail cursor left =
+  match peek cursor
+    | Plus =>
+      let operator = take cursor
+      let right = parse_multiplication cursor
+      parse_addition_tail cursor (Operation "+" left right)
+    | Minus =>
+      let operator = take cursor
+      let right = parse_multiplication cursor
+      parse_addition_tail cursor (Operation "-" left right)
+    | _ => left
+
+fn parse_expression cursor =
+  let left = parse_multiplication cursor
+  parse_addition_tail cursor left
+
+fn show_expression expression =
+  match expression
+    | Name value => println (String.append "Name " value)
+    | Integer value => println (String.append "Integer " value)
+    | Operation operator left right =>
+      println (String.append "Operation " operator)
+      show_expression left
+      show_expression right
+
+fn main =
+  let source = "total + 12 * value - 2"
+  let tokens = reverse (lex source 0 Nil) Nil
+  let cursor = ref tokens
+  show_expression (parse_expression cursor)
