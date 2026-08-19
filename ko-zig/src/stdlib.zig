@@ -512,3 +512,327 @@ pub fn ko_string_split(str: ?[*:0]const u8, delimiter: ?[*:0]const u8) callconv(
     }
     return reversed;
 }
+
+// ============================================================
+// IO builtins (Stage 5)
+//
+// File/console/environment builtins implemented as native host
+// functions and mapped into the JIT (see main.zig). String
+// arguments arrive as KoString data pointers (NUL-terminated); a
+// null pointer is treated as an empty string.
+//
+// Result/Maybe values are boxed with the ko_alloc layout: a
+// 32-byte header behind the data pointer (rc=1, type_tag=1,
+// arity=0, bitmap=0) and [tag, payload] in the data area.
+// Result tags: Ok=0, Err=1. Error tags (positional, must match
+// typecheck.zig registerPrelude and lir_lower.zig registerBuiltins):
+// FileNotFound=0, PermissionDenied=1, InvalidPath=2, IOError=3,
+// EncodingError=4. Zero-param Error constructors are small ints.
+//
+// The bitmap is left 0, so decref frees the box without recursing
+// into payloads; heap payloads may leak. This matches how the
+// runtime treats boxes built from `Ok`/`Err` applications. Boxes
+// and strings are allocated with libc malloc so ko_decref's free
+// (which frees data - 32) matches.
+//
+// POSIX libc only: building on Windows would need CRT shims.
+// ============================================================
+
+const ERR_FILENOTFOUND: i64 = 0;
+const ERR_PERMISSION: i64 = 1;
+const ERR_INVALIDPATH: i64 = 2;
+const ERR_IOERROR: i64 = 3;
+
+// Array type tags, matching stdlib_codegen.zig: 11 = scalar
+// elements, 12 = heap elements.
+const array_tag_heap: i64 = 12;
+
+extern "c" fn close(fd: c_int) c_int;
+extern "c" fn lseek(fd: c_int, offset: c_long, whence: c_int) c_long;
+extern "c" fn readdir(dir: *std.c.DIR) ?*std.c.dirent;
+
+const SEEK_SET: c_int = 0;
+const SEEK_END: c_int = 2;
+
+/// Convert a pointer to the i64 universal representation.
+fn ptr_i64(p: anytype) i64 {
+    return @bitCast(@as(usize, @intFromPtr(p)));
+}
+
+/// Wrap a byte slice in a KoString box. Returns the data pointer
+/// (the value passed around), or null on OOM.
+fn ko_string_box(data: []const u8) ?[*:0]const u8 {
+    const raw = std.c.malloc(32 + data.len + 1) orelse return null;
+    const base: [*]u8 = @ptrCast(raw);
+    const hdr: *[4]i64 = @ptrCast(@alignCast(base));
+    hdr[0] = 1; // refcount (managed)
+    hdr[1] = 4; // type_tag = string
+    hdr[2] = @intCast(data.len);
+    hdr[3] = 0; // bitmap
+    @memcpy(base[32 .. 32 + data.len], data);
+    base[32 + data.len] = 0;
+    return @ptrCast(base + 32);
+}
+
+/// Build a 2-slot constructor box ([tag, payload]) with the
+/// ko_alloc header layout. Returns the data pointer as an i64,
+/// or 0 on OOM.
+fn ko_box2(tag: i64, payload: i64) i64 {
+    const raw = std.c.malloc(32 + 16) orelse return 0;
+    const base: [*]u8 = @ptrCast(raw);
+    const hdr: *[4]i64 = @ptrCast(@alignCast(base));
+    hdr[0] = 1; // refcount
+    hdr[1] = 1; // type_tag = constructor
+    hdr[2] = 0; // arity
+    hdr[3] = 0; // bitmap
+    const user: *[2]i64 = @ptrCast(@alignCast(base + 32));
+    user[0] = tag;
+    user[1] = payload;
+    return @bitCast(@as(usize, @intFromPtr(user)));
+}
+
+fn ko_ok(v: i64) i64 {
+    return ko_box2(0, v);
+}
+
+/// Err with a zero-param Error constructor (small-int payload).
+fn ko_err(tag: i64) i64 {
+    return ko_box2(1, tag);
+}
+
+/// Err (IOError msg), where msg is boxed as a KoString.
+fn ko_err_ioerror(msg: []const u8) i64 {
+    const s = ko_string_box(msg) orelse return ko_err(ERR_IOERROR);
+    const inner = ko_box2(ERR_IOERROR, ptr_i64(s));
+    return ko_box2(1, inner);
+}
+
+fn ko_err_from(e: std.c.E) i64 {
+    return switch (e) {
+        .NOENT => ko_err(ERR_FILENOTFOUND),
+        .ACCES, .PERM => ko_err(ERR_PERMISSION),
+        .INVAL, .NAMETOOLONG, .LOOP => ko_err(ERR_INVALIDPATH),
+        else => blk: {
+            var buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "errno {d}", .{@intFromEnum(e)}) catch "errno";
+            break :blk ko_err_ioerror(msg);
+        },
+    };
+}
+
+/// IO.readFile : String -> Result Error String
+pub fn ko_io_read_file(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    const fd = std.c.open(p, .{ .ACCMODE = .RDONLY });
+    if (fd < 0) return ko_err_from(std.c.errno(fd));
+    defer _ = close(fd);
+
+    // Sizing via lseek avoids needing a portable `stat`; regular files only.
+    const size = lseek(fd, 0, SEEK_END);
+    if (size < 0) return ko_err_from(std.c.errno(-1));
+    _ = lseek(fd, 0, SEEK_SET);
+
+    const raw = std.c.malloc(32 + @as(usize, @intCast(size)) + 1) orelse return ko_err_ioerror("out of memory");
+    const base: [*]u8 = @ptrCast(raw);
+    const hdr: *[4]i64 = @ptrCast(@alignCast(base));
+    hdr[0] = 1;
+    hdr[1] = 4;
+    hdr[2] = size;
+    hdr[3] = 0;
+    const data = base[32 .. 32 + @as(usize, @intCast(size))];
+    var off: usize = 0;
+    while (off < data.len) {
+        const n = std.c.read(fd, data[off..].ptr, data.len - off);
+        if (n < 0) {
+            std.c.free(raw);
+            return ko_err_from(std.c.errno(n));
+        }
+        if (n == 0) break;
+        off += @intCast(n);
+    }
+    base[32 + off] = 0;
+    hdr[2] = @intCast(off);
+    return ko_ok(ptr_i64(base + 32));
+}
+
+/// Write a byte buffer to an already-open file descriptor, returning
+/// true on success.
+fn write_all(fd: c_int, data: []const u8) bool {
+    var off: usize = 0;
+    while (off < data.len) {
+        const n = std.c.write(fd, data[off..].ptr, data.len - off);
+        if (n < 0) return false;
+        if (n == 0) return false;
+        off += @intCast(n);
+    }
+    return true;
+}
+
+/// IO.writeFile : String -> String -> Result Error Unit
+pub fn ko_io_write_file(path: ?[*:0]const u8, contents: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    const c = contents orelse "";
+    const fd = std.c.open(p, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    if (fd < 0) return ko_err_from(std.c.errno(fd));
+    defer _ = close(fd);
+    if (!write_all(fd, std.mem.sliceTo(c, 0))) return ko_err_from(std.c.errno(-1));
+    return ko_ok(0);
+}
+
+/// IO.appendFile : String -> String -> Result Error Unit
+pub fn ko_io_append_file(path: ?[*:0]const u8, contents: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    const c = contents orelse "";
+    const fd = std.c.open(p, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(std.c.mode_t, 0o644));
+    if (fd < 0) return ko_err_from(std.c.errno(fd));
+    defer _ = close(fd);
+    if (!write_all(fd, std.mem.sliceTo(c, 0))) return ko_err_from(std.c.errno(-1));
+    return ko_ok(0);
+}
+
+/// IO.fileExists : String -> Bool
+pub fn ko_io_file_exists(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    // F_OK = 0. Returns 0 on success, -1 (with errno) when missing.
+    return @intFromBool(std.c.access(p, 0) == 0);
+}
+
+/// IO.fileSize : String -> Result Error Int
+pub fn ko_io_file_size(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    const fd = std.c.open(p, .{ .ACCMODE = .RDONLY });
+    if (fd < 0) return ko_err_from(std.c.errno(fd));
+    defer _ = close(fd);
+    const size = lseek(fd, 0, SEEK_END);
+    if (size < 0) return ko_err_from(std.c.errno(-1));
+    return ko_ok(size);
+}
+
+/// IO.mkdir : String -> Result Error Unit
+pub fn ko_io_mkdir(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    if (std.c.mkdir(p, 0o755) != 0) return ko_err_from(std.c.errno(-1));
+    return ko_ok(0);
+}
+
+/// IO.rm : String -> Result Error Unit. Removes a file or empty directory.
+pub fn ko_io_rm(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    if (std.c.unlink(p) != 0) {
+        if (std.c.rmdir(p) != 0) return ko_err_from(std.c.errno(-1));
+    }
+    return ko_ok(0);
+}
+
+/// IO.cp : String -> String -> Result Error Unit
+pub fn ko_io_cp(src: ?[*:0]const u8, dst: ?[*:0]const u8) callconv(.c) i64 {
+    const s = src orelse "";
+    const d = dst orelse "";
+    const in_fd = std.c.open(s, .{ .ACCMODE = .RDONLY });
+    if (in_fd < 0) return ko_err_from(std.c.errno(in_fd));
+    defer _ = close(in_fd);
+
+    const out_fd = std.c.open(d, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+    if (out_fd < 0) return ko_err_from(std.c.errno(out_fd));
+    defer _ = close(out_fd);
+
+    while (true) {
+        var chunk: [8192]u8 = undefined;
+        const n = std.c.read(in_fd, &chunk, chunk.len);
+        if (n < 0) return ko_err_from(std.c.errno(n));
+        if (n == 0) break;
+        if (!write_all(out_fd, chunk[0..@intCast(n)])) return ko_err_from(std.c.errno(-1));
+    }
+    return ko_ok(0);
+}
+
+/// IO.mv : String -> String -> Result Error Unit
+pub fn ko_io_mv(src: ?[*:0]const u8, dst: ?[*:0]const u8) callconv(.c) i64 {
+    const s = src orelse "";
+    const d = dst orelse "";
+    if (std.c.rename(s, d) != 0) return ko_err_from(std.c.errno(-1));
+    return ko_ok(0);
+}
+
+/// IO.readdir : String -> Result Error (Array String)
+pub fn ko_io_readdir(path: ?[*:0]const u8) callconv(.c) i64 {
+    const p = path orelse "";
+    const dir = std.c.opendir(p) orelse return ko_err_from(std.c.errno(-1));
+    defer _ = std.c.closedir(dir);
+
+    var items: std.ArrayList(?[*:0]const u8) = .empty;
+    while (readdir(dir)) |entry| {
+        const name = std.mem.sliceTo(&entry.name, 0);
+        if (name.len == 0) continue;
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+        const boxed = ko_string_box(name) orelse continue;
+        items.append(std.heap.page_allocator, @ptrCast(boxed)) catch continue;
+    }
+
+    const n = items.items.len;
+    const raw = std.c.malloc(32 + n * 8) orelse {
+        items.deinit(std.heap.page_allocator);
+        return ko_err_ioerror("out of memory");
+    };
+    const base: [*]u8 = @ptrCast(raw);
+    const hdr: *[4]i64 = @ptrCast(@alignCast(base));
+    hdr[0] = 1; // refcount
+    hdr[1] = array_tag_heap;
+    hdr[2] = @intCast(n); // length
+    hdr[3] = @intCast(n); // capacity
+    const elems: [*]i64 = @ptrCast(@alignCast(base + 32));
+    for (items.items, 0..) |it, i| {
+        elems[i] = ptr_i64(it);
+    }
+    items.deinit(std.heap.page_allocator);
+    return ko_ok(ptr_i64(base + 32));
+}
+
+/// IO.readLine : String -> String. Prints the prompt to stdout, then
+/// reads one line (without the trailing newline) from stdin.
+pub fn ko_io_read_line(prompt: ?[*:0]const u8) callconv(.c) ?[*:0]const u8 {
+    const fdio = @import("fdio.zig");
+    const pr = prompt orelse "";
+    _ = fdio.write(fdio.stdout, std.mem.sliceTo(pr, 0));
+
+    var buf: std.ArrayList(u8) = .empty;
+    var byte: [1]u8 = undefined;
+    while (true) {
+        const n = std.c.read(0, &byte, 1);
+        if (n <= 0) break;
+        if (byte[0] == '\n') break;
+        if (byte[0] == '\r') continue;
+        buf.append(std.heap.page_allocator, byte[0]) catch break;
+    }
+    const boxed = ko_string_box(buf.items) orelse {
+        buf.deinit(std.heap.page_allocator);
+        return null;
+    };
+    buf.deinit(std.heap.page_allocator);
+    return boxed;
+}
+
+/// IO.eprintln : String -> Unit
+pub fn ko_io_eprintln(msg: ?[*:0]const u8) callconv(.c) i64 {
+    const fdio = @import("fdio.zig");
+    const m = msg orelse "";
+    _ = fdio.write(fdio.stderr, std.mem.sliceTo(m, 0));
+    _ = fdio.write(fdio.stderr, "\n");
+    return 0;
+}
+
+/// IO.eprint : String -> Unit
+pub fn ko_io_eprint(msg: ?[*:0]const u8) callconv(.c) i64 {
+    const fdio = @import("fdio.zig");
+    const m = msg orelse "";
+    _ = fdio.write(fdio.stderr, std.mem.sliceTo(m, 0));
+    return 0;
+}
+
+/// IO.getEnv : String -> Maybe String
+pub fn ko_io_get_env(name: ?[*:0]const u8) callconv(.c) i64 {
+    const n = name orelse "";
+    const raw = std.c.getenv(n) orelse return 1; // Nothing
+    const boxed = ko_string_box(std.mem.sliceTo(raw, 0)) orelse return 1;
+    return ko_box2(0, ptr_i64(boxed)); // Just str
+}

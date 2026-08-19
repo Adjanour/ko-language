@@ -1149,6 +1149,9 @@ test "parser: all .ko test files parse successfully" {
         .{ .name = "50_string_builtins.ko", .source = @embedFile("tests_ko/50_string_builtins.ko") },
         .{ .name = "51_string_eq.ko", .source = @embedFile("tests_ko/51_string_eq.ko") },
         .{ .name = "52_checked_arithmetic.ko", .source = @embedFile("tests_ko/52_checked_arithmetic.ko") },
+        .{ .name = "53_io_file.ko", .source = @embedFile("tests_ko/53_io_file.ko") },
+        .{ .name = "54_io_dir.ko", .source = @embedFile("tests_ko/54_io_dir.ko") },
+        .{ .name = "55_io_env.ko", .source = @embedFile("tests_ko/55_io_env.ko") },
     };
 
     for (files) |f| {
@@ -3213,6 +3216,33 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
     if (core.LLVMGetNamedFunction(mod, "ko_assert_eq")) |fn_val| {
         engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_assert_eq)));
     }
+    const io_names = [_][*:0]const u8{
+        "ko_io_read_file", "ko_io_write_file", "ko_io_append_file",
+        "ko_io_file_exists", "ko_io_file_size", "ko_io_mkdir", "ko_io_rm",
+        "ko_io_cp", "ko_io_mv", "ko_io_readdir", "ko_io_read_line",
+        "ko_io_eprintln", "ko_io_eprint", "ko_io_get_env",
+    };
+    const io_ptrs = [_]*const anyopaque{
+        @ptrCast(&stdlib.ko_io_read_file),
+        @ptrCast(&stdlib.ko_io_write_file),
+        @ptrCast(&stdlib.ko_io_append_file),
+        @ptrCast(&stdlib.ko_io_file_exists),
+        @ptrCast(&stdlib.ko_io_file_size),
+        @ptrCast(&stdlib.ko_io_mkdir),
+        @ptrCast(&stdlib.ko_io_rm),
+        @ptrCast(&stdlib.ko_io_cp),
+        @ptrCast(&stdlib.ko_io_mv),
+        @ptrCast(&stdlib.ko_io_readdir),
+        @ptrCast(&stdlib.ko_io_read_line),
+        @ptrCast(&stdlib.ko_io_eprintln),
+        @ptrCast(&stdlib.ko_io_eprint),
+        @ptrCast(&stdlib.ko_io_get_env),
+    };
+    for (io_names, io_ptrs) |name, impl| {
+        if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(impl)));
+        }
+    }
 }
 
 // ──── Stdout capture for runtime correctness tests ────
@@ -3371,7 +3401,7 @@ test "runtime output: println captures stdout via LIR" {
         \\fn main = println 42
     );
     defer captured.deinit();
-    try std.testing.expectEqual(@as(i64, 42), captured.result);
+    try std.testing.expectEqual(@as(i64, 0), captured.result);
     try std.testing.expectEqualStrings("42\n", captured.output);
 }
 
@@ -3395,14 +3425,15 @@ test "runtime output: println string via LIR" {
 
 // ──── Phase 1.2: Targeted tests for recent fixes ────
 
-test "runtime output: println returns argument (not 0)" {
+test "runtime output: println returns unit" {
     var captured = try testRuntimeOutputLir(
         \\fn main =
         \\  let x = println 42
-        \\  println x
+        \\  x
     );
     defer captured.deinit();
-    try std.testing.expectEqualStrings("42\n42\n", captured.output);
+    try std.testing.expectEqual(@as(i64, 0), captured.result);
+    try std.testing.expectEqualStrings("42\n", captured.output);
 }
 
 test "runtime output: nested list printing" {
@@ -3718,7 +3749,7 @@ test "lir_lower: divide with ?" {
 }
 
 test "lir_lower: builtin_result.ko" {
-    try std.testing.expectEqual(@as(i64, 1), try testRuntimeLir(
+    try std.testing.expectEqual(@as(i64, 0), try testRuntimeLir(
         @embedFile("tests_ko/builtin_result.ko"),
     ));
 }
@@ -3944,6 +3975,9 @@ test "runtime: all .ko test files execute on LIR without crashing" {
         .{ .name = "type_sum_params.ko", .source = @embedFile("tests_ko/type_sum_params.ko") },
         .{ .name = "map_ops.ko", .source = @embedFile("tests_ko/map_ops.ko") },
         .{ .name = "set_ops.ko", .source = @embedFile("tests_ko/set_ops.ko") },
+        .{ .name = "53_io_file.ko", .source = @embedFile("tests_ko/53_io_file.ko") },
+        .{ .name = "54_io_dir.ko", .source = @embedFile("tests_ko/54_io_dir.ko") },
+        .{ .name = "55_io_env.ko", .source = @embedFile("tests_ko/55_io_env.ko") },
     };
 
     for (files) |f| {
@@ -4002,7 +4036,7 @@ test "runtime output: println at end of file" {
         \\fn main = println 99
     );
     defer captured.deinit();
-    try std.testing.expectEqual(@as(i64, 99), captured.result);
+    try std.testing.expectEqual(@as(i64, 0), captured.result);
     try std.testing.expectEqualStrings("99\n", captured.output);
 }
 

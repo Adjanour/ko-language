@@ -166,6 +166,33 @@ pub const CodegenLir = struct {
             const fn_ty3 = core.LLVMFunctionType(i64_ty, &params, 3, 0);
             _ = core.LLVMAddFunction(self.module, "ko_result_fold", fn_ty3);
         }
+
+        // IO builtins (Stage 5): native host functions mapped in via the JIT
+        // (see main.zig mapLirJitResultFns). String params are KoString data
+        // pointers (i8*); Unit, Result and Maybe boxes travel as i64.
+        {
+            const ptr_ty = core.LLVMPointerTypeInContext(self.context, 0);
+            var fn_ty1 = [_]types.LLVMTypeRef{ ptr_ty };
+            const fn_ty1_i64 = core.LLVMFunctionType(i64_ty, &fn_ty1, 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_io_read_file", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_file_exists", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_file_size", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_mkdir", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_rm", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_readdir", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_eprintln", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_eprint", fn_ty1_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_get_env", fn_ty1_i64);
+            const fn_ty1_str = core.LLVMFunctionType(ptr_ty, &fn_ty1, 1, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_io_read_line", fn_ty1_str);
+
+            var fn_ty2 = [_]types.LLVMTypeRef{ ptr_ty, ptr_ty };
+            const fn_ty2_i64 = core.LLVMFunctionType(i64_ty, &fn_ty2, 2, 0);
+            _ = core.LLVMAddFunction(self.module, "ko_io_write_file", fn_ty2_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_append_file", fn_ty2_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_cp", fn_ty2_i64);
+            _ = core.LLVMAddFunction(self.module, "ko_io_mv", fn_ty2_i64);
+        }
     }
 
     /// Verify the whole module; dumps the verifier message on failure.

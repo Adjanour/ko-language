@@ -157,6 +157,33 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
             engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(impl));
         }
     }
+    const io_names = [_][*:0]const u8{
+        "ko_io_read_file", "ko_io_write_file", "ko_io_append_file",
+        "ko_io_file_exists", "ko_io_file_size", "ko_io_mkdir", "ko_io_rm",
+        "ko_io_cp", "ko_io_mv", "ko_io_readdir", "ko_io_read_line",
+        "ko_io_eprintln", "ko_io_eprint", "ko_io_get_env",
+    };
+    const io_ptrs = [_]*const anyopaque{
+        @ptrCast(&stdlib.ko_io_read_file),
+        @ptrCast(&stdlib.ko_io_write_file),
+        @ptrCast(&stdlib.ko_io_append_file),
+        @ptrCast(&stdlib.ko_io_file_exists),
+        @ptrCast(&stdlib.ko_io_file_size),
+        @ptrCast(&stdlib.ko_io_mkdir),
+        @ptrCast(&stdlib.ko_io_rm),
+        @ptrCast(&stdlib.ko_io_cp),
+        @ptrCast(&stdlib.ko_io_mv),
+        @ptrCast(&stdlib.ko_io_readdir),
+        @ptrCast(&stdlib.ko_io_read_line),
+        @ptrCast(&stdlib.ko_io_eprintln),
+        @ptrCast(&stdlib.ko_io_eprint),
+        @ptrCast(&stdlib.ko_io_get_env),
+    };
+    for (io_names, io_ptrs) |name, impl| {
+        if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(impl));
+        }
+    }
 }
 
 fn printSourceLine(io: Io, w: anytype, filename: []const u8, loc: parser.Loc) void {

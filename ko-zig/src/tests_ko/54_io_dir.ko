@@ -1,0 +1,41 @@
+fn rmIfExists p =
+  match IO.rm p
+    Ok _ => ()
+    Err _ => ()
+
+fn runTest d a b c m =
+  match IO.writeFile a "x"
+    Ok _ =>
+      match IO.writeFile b "y"
+        Ok _ =>
+          match IO.readdir d
+            Ok arr =>
+              match IO.cp a c
+                Ok _ =>
+                  match IO.mv b m
+                    Ok _ =>
+                      match IO.rm c
+                        Ok _ =>
+                          assert ((Array.length arr) == 2 and IO.fileExists m and (IO.fileExists b) == False and (IO.fileExists c) == False)
+                        Err e => panic "rm failed"
+                    Err e => panic "mv failed"
+                Err e => panic "cp failed"
+            Err e => panic "readdir failed"
+        Err e => panic "write b failed"
+    Err e => panic "write a failed"
+
+fn main =
+  let d = "/tmp/ko_54_dir"
+  let a = "/tmp/ko_54_dir/a.txt"
+  let b = "/tmp/ko_54_dir/b.txt"
+  let c = "/tmp/ko_54_dir/c.txt"
+  let m = "/tmp/ko_54_dir/moved.txt"
+  rmIfExists a
+  rmIfExists b
+  rmIfExists c
+  rmIfExists m
+  if (IO.fileExists d) then runTest d a b c m
+  else
+    match IO.mkdir d
+      Ok _ => runTest d a b c m
+      Err e => panic "mkdir failed"

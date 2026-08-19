@@ -477,20 +477,25 @@ For now, keep it simple. Single-threaded with `IO.sleep` for basic timing. Add c
 
 ### Phase 1: IO Module (v0.3.0)
 
-- [ ] Register `Ok`/`Err` constructors so `Result` can be spelled at all
-- [ ] Add `Error` type to stdlib
-- [ ] Fix `panic` — it currently emits a terminator mid-block and fails LLVM verification
-- [ ] Implement the file I/O builtins in `stdlib_codegen.zig` (they do not exist yet)
-- [ ] Create `std/io.ko` module wrapping them to return `Result Error`
-- [ ] Add `IO.getEnv` returning `Maybe String`
-- [ ] Change `println`/`print` to return `Unit`
+- [x] Register `Ok`/`Err` constructors so `Result` can be spelled at all (Stage 0)
+- [x] Add `Error` type to stdlib (prelude: `FileNotFound | PermissionDenied | InvalidPath | IOError String | EncodingError String`)
+- [x] Fix `panic` — it currently emits a terminator mid-block and fails LLVM verification (fixed in the diagnostics change set)
+- [x] Implement the file I/O builtins in `stdlib.zig` (native Zig host functions, JIT-mapped; not `stdlib_codegen.zig` — see note)
+- [x] Create `std/io.ko` module wrapping them to return `Result Error` (`readOrEmpty`, `writeOrDie`, `eprintErr`, `exists`)
+- [x] Add `IO.getEnv` returning `Maybe String`
+- [x] Change `println`/`print` to return `Unit`
 
 There are no "old I/O builtins" to deprecate — see §1.
 
+> Note: the file I/O builtins live in `stdlib.zig` and are wired into the JIT via
+> `mapLirJitResultFns` in `main.zig`/`tests.zig` (with `codegen_lir.zig`
+> `declareRuntime` externs). AOT (`--emit-exe`) cannot resolve them yet; that
+> gap closes with the runtime-independence milestone.
+
 ### Phase 2: Console I/O (v0.3.0)
 
-- [ ] Implement `IO.readLine` with prompt
-- [ ] Implement `IO.eprintln`/`IO.eprint` for stderr
+- [x] Implement `IO.readLine` with prompt (reads stdin, arg is the prompt)
+- [x] Implement `IO.eprintln`/`IO.eprint` for stderr (via `fdio.zig`)
 - [ ] Update `inspect` for better debug output
 
 ### Phase 3: System I/O (v0.4.0)

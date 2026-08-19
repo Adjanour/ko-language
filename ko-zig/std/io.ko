@@ -1,0 +1,24 @@
+# io.ko - I/O helpers for Ko
+# Builtins: IO.readFile, IO.writeFile, IO.appendFile, IO.fileExists,
+#           IO.fileSize, IO.mkdir, IO.rm, IO.cp, IO.mv, IO.readdir,
+#           IO.readLine, IO.eprintln, IO.eprint, IO.getEnv
+# These are pre-registered and available without import.
+
+# Read a file's contents, or the empty string when the file does not exist.
+pub fn readOrEmpty path =
+  match IO.readFile path
+    Ok s   => s
+    Err _  => ""
+
+# Write a file, panicking on failure.
+pub fn writeOrDie path contents =
+  match IO.writeFile path contents
+    Ok _   => ()
+    Err e  => panic "write failed"
+
+# Print an error to stderr with a prefix.
+pub fn eprintErr msg =
+  IO.eprintln (String.append "error: " msg)
+
+# Does a path exist? (alias with a friendlier name)
+pub fn exists path = IO.fileExists path

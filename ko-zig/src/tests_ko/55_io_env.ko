@@ -1,0 +1,7 @@
+fn main =
+  match IO.getEnv "HOME"
+    Just v => assert ((String.length v) > 0)
+    Nothing => panic "HOME not set"
+  match IO.getEnv "KO_DEFINITELY_NOT_SET_xyz"
+    Just v => panic "bogus env var set"
+    Nothing => ()

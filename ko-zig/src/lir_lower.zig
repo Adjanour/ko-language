@@ -469,12 +469,22 @@ pub const LirLower = struct {
         try self.ctors.put("Err", .{ .tag = 1, .arity = 1, .type_name = "Result" });
         try self.ctors.put("Just", .{ .tag = 0, .arity = 1, .type_name = "Maybe" });
         try self.ctors.put("Nothing", .{ .tag = 1, .arity = 0, .type_name = "Maybe" });
+        try self.ctors.put("FileNotFound", .{ .tag = 0, .arity = 0, .type_name = "Error" });
+        try self.ctors.put("PermissionDenied", .{ .tag = 1, .arity = 0, .type_name = "Error" });
+        try self.ctors.put("InvalidPath", .{ .tag = 2, .arity = 0, .type_name = "Error" });
+        try self.ctors.put("IOError", .{ .tag = 3, .arity = 1, .type_name = "Error" });
+        try self.ctors.put("EncodingError", .{ .tag = 4, .arity = 1, .type_name = "Error" });
         try self.globals.put("True", .{ .arity = 0, .kind = .ctor });
         try self.globals.put("False", .{ .arity = 0, .kind = .ctor });
         try self.globals.put("Ok", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Err", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Just", .{ .arity = 1, .kind = .ctor });
         try self.globals.put("Nothing", .{ .arity = 0, .kind = .ctor });
+        try self.globals.put("FileNotFound", .{ .arity = 0, .kind = .ctor });
+        try self.globals.put("PermissionDenied", .{ .arity = 0, .kind = .ctor });
+        try self.globals.put("InvalidPath", .{ .arity = 0, .kind = .ctor });
+        try self.globals.put("IOError", .{ .arity = 1, .kind = .ctor });
+        try self.globals.put("EncodingError", .{ .arity = 1, .kind = .ctor });
         // Array creation needs the element kind, which only the static type
         // gives, so it is resolved during lowering rather than named directly.
         // Map.new needs the key tag and the heap flags, and the collectors need
@@ -587,6 +597,21 @@ pub const LirLower = struct {
             .{ "Float.isInfinite", "ko_float_is_infinite" },
             .{ "Float.isFinite", "ko_float_is_finite" },
             .{ "Float.sign", "ko_float_sign" },
+            // IO builtins (Stage 5) — native host functions in stdlib.zig
+            .{ "IO.readFile", "ko_io_read_file" },
+            .{ "IO.writeFile", "ko_io_write_file" },
+            .{ "IO.appendFile", "ko_io_append_file" },
+            .{ "IO.fileExists", "ko_io_file_exists" },
+            .{ "IO.fileSize", "ko_io_file_size" },
+            .{ "IO.mkdir", "ko_io_mkdir" },
+            .{ "IO.rm", "ko_io_rm" },
+            .{ "IO.cp", "ko_io_cp" },
+            .{ "IO.mv", "ko_io_mv" },
+            .{ "IO.readdir", "ko_io_readdir" },
+            .{ "IO.readLine", "ko_io_read_line" },
+            .{ "IO.eprintln", "ko_io_eprintln" },
+            .{ "IO.eprint", "ko_io_eprint" },
+            .{ "IO.getEnv", "ko_io_get_env" },
         };
         for (entries) |e| {
             try self.std_names.put(e[0], e[1]);
@@ -743,12 +768,18 @@ pub const LirLower = struct {
         const a = try self.lowerExpr(p.args[0]);
         const b = try self.lowerExpr(p.args[1]);
 
-        // String equality: call ko_string_eq instead of pointer comparison
+        // String equality: call ko_string_eq instead of pointer comparison.
+        // Check the HIR types, not the LIR locals: a String pulled out of a
+        // constructor/Result box is carried as an i64 local, so the raw
+        // local type would miss it.
         if (p.op == .eq or p.op == .neq) {
-            const ty_a = self.localType(a);
-            if (ty_a == .string) {
+            const ty_a = self.resolve(self.exprs[p.args[0]].ty);
+            const ty_b = self.resolve(self.exprs[p.args[1]].ty);
+            if (ty_a.* == .string or ty_b.* == .string) {
+                const sa = try self.coerce(a, .{ .string = {} });
+                const sb = try self.coerce(b, .{ .string = {} });
                 const eq_fn = try self.emit(.{ .fn_ref = "ko_string_eq" }, .{ .opaque_type = {} });
-                const eq_args = try self.dupeIds(&.{ a, b });
+                const eq_args = try self.dupeIds(&.{ sa, sb });
                 const eq_result = try self.emit(.{ .call = .{
                     .func = eq_fn,
                     .args = eq_args,
@@ -762,6 +793,19 @@ pub const LirLower = struct {
                 }
                 // eq = (result == 1)
                 return self.emit(.{ .primop = .{ .op = .eq, .args = try self.dupeIds(&.{ eq_result, one }) } }, .{ .bool = {} });
+            }
+        }
+
+        // Bool equality: True/False are ADT-encoded as i64 small ints, but
+        // values like `x < y` or a boxed Bool payload are i1, so coerce both
+        // sides to i64 before comparing. The primop result stays an i1.
+        if (p.op == .eq or p.op == .neq) {
+            const ty_a = self.resolve(self.exprs[p.args[0]].ty);
+            const ty_b = self.resolve(self.exprs[p.args[1]].ty);
+            if (ty_a.* == .bool or ty_b.* == .bool) {
+                const ba = try self.coerce(a, .{ .int = {} });
+                const bb = try self.coerce(b, .{ .int = {} });
+                return self.emitPrimop2(p.op, ba, bb);
             }
         }
 
@@ -1092,6 +1136,37 @@ pub const LirLower = struct {
             if (std.mem.eql(u8, runtime, "ko_float_is_infinite")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_float_is_finite")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
             if (std.mem.eql(u8, runtime, "ko_float_sign")) break :blk .{ .params = &.{.{ .float = {} }}, .ret = .{ .int = {} } };
+            // IO builtins (Stage 5) — native host functions in stdlib.zig.
+            // String params are KoString data pointers (NUL-terminated);
+            // Result/Maybe boxes and Unit travel as i64 at the ABI. Bool is
+            // coerced (truncated) by the caller from the i64 result.
+            {
+                const s: lir.LirType = .{ .string = {} };
+                const i: lir.LirType = .{ .int = {} };
+                const one_s = &.{s};
+                const two_s = &.{ s, s };
+                const Sig = struct { name: []const u8, params: []const lir.LirType, ret: lir.LirType };
+                const io_sigs = [_]Sig{
+                    .{ .name = "ko_io_read_file", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_write_file", .params = two_s, .ret = i },
+                    .{ .name = "ko_io_append_file", .params = two_s, .ret = i },
+                    .{ .name = "ko_io_file_exists", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_file_size", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_mkdir", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_rm", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_cp", .params = two_s, .ret = i },
+                    .{ .name = "ko_io_mv", .params = two_s, .ret = i },
+                    .{ .name = "ko_io_readdir", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_read_line", .params = one_s, .ret = s },
+                    .{ .name = "ko_io_eprintln", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_eprint", .params = one_s, .ret = i },
+                    .{ .name = "ko_io_get_env", .params = one_s, .ret = i },
+                };
+                for (io_sigs) |sg| {
+                    if (std.mem.eql(u8, runtime, sg.name)) break :blk .{ .params = sg.params, .ret = sg.ret };
+                }
+                return error.Unsupported;
+            }
             return error.Unsupported;
         };
         if (args.len != spec.params.len) return error.ArityMismatch;
@@ -1197,7 +1272,11 @@ pub const LirLower = struct {
             .args = call_args,
             .fn_type = .{ .params = param_tys, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        // println/print/inspect : a -> a — coerce the i64 return back to the argument type.
+        // println/print : a -> Unit — discard the printed value, return the
+        // Unit constant (i64 0). inspect : a -> a — coerce the i64 return back
+        // to the argument type.
+        if (std.mem.eql(u8, name, "println") or std.mem.eql(u8, name, "print"))
+            return self.emit(.{ .int = 0 }, .{ .int = {} });
         const arg_ty = self.resolve(self.exprs[arg_hir].ty);
         const result_ty = try self.lowerType(arg_ty);
         return self.coerce(call_result, result_ty);

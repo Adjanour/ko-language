@@ -1,0 +1,18 @@
+fn main =
+  let p = "/tmp/ko_53_file.txt"
+  match IO.writeFile p "hello 53"
+    Ok _ =>
+      match IO.readFile p
+        Ok s =>
+          match IO.appendFile p " more"
+            Ok _ =>
+              match IO.readFile p
+                Ok s2 =>
+                  match IO.fileSize p
+                    Ok sz =>
+                      assert (s == "hello 53" and s2 == "hello 53 more" and sz == 13 and IO.fileExists p)
+                    Err e => panic "fileSize failed"
+                Err e => panic "readFile 2 failed"
+            Err e => panic "appendFile failed"
+        Err e => panic "readFile failed"
+    Err e => panic "writeFile failed"

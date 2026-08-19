@@ -289,19 +289,25 @@ The accepted set there must stay in step with what `ko_hash` and `ko_key_eq` imp
 
 **Goal:** DESIGN-io-model §7.
 **Depends on:** Stage 0 (`Result`, `panic`).
+**Status:** ✅ **DONE** (committed as part of the Stage 5 change set; tests in `53_io_file.ko`, `54_io_dir.ko`, `55_io_env.ko`).
 
 This stage is **larger than the doc's Phase 1 implies** — §1 has been corrected, but re-read it: there is no existing file I/O to wrap. It must be written.
 
-| # | Task |
-|---|------|
-| 5.1 | Decide naming: `IO.readFile` (dot notation, matches stdlib) vs `read_file`. Nothing is implemented, so this is a free choice |
-| 5.2 | `Error` type in the prelude |
-| 5.3 | Implement the file I/O builtins: read, write, append, exists, size, mkdir, rm, cp, mv, readdir |
-| 5.4 | `std/io.ko` wrapping them to return `Result Error` |
-| 5.5 | `IO.readLine`, `IO.eprintln`, `IO.eprint` |
-| 5.6 | `IO.getEnv : String -> Maybe String` |
-| 5.7 | Change `println`/`print` to return `Unit` — **breaking**; do it last in the stage and update every example and test |
-| 5.8 | `IO.run` (shell) — deferred to v0.4; the doc flags it as dangerous and it needs an escaping story |
+| # | Task | Status |
+|---|------|--------|
+| 5.1 | Decide naming: `IO.readFile` (dot notation, matches stdlib) vs `read_file`. Nothing is implemented, so this is a free choice | ✅ `IO.*` dot notation |
+| 5.2 | `Error` type in the prelude | ✅ `FileNotFound=0 \| PermissionDenied=1 \| InvalidPath=2 \| IOError String=3 \| EncodingError String=4` |
+| 5.3 | Implement the file I/O builtins: read, write, append, exists, size, mkdir, rm, cp, mv, readdir | ✅ native Zig host fns in `stdlib.zig`, JIT-mapped in `main.zig`/`tests.zig`, externs declared in `codegen_lir.zig` `declareRuntime`. POSIX-only (Windows documented as unsupported) |
+| 5.4 | `std/io.ko` wrapping them to return `Result Error` | ✅ `io.readOrEmpty`, `io.writeOrDie`, `io.eprintErr`, `io.exists` |
+| 5.5 | `IO.readLine`, `IO.eprintln`, `IO.eprint` | ✅ `readLine : String -> String` reads stdin with the arg as prompt; `eprintln`/`eprint` go to fd 2 via `fdio.zig` |
+| 5.6 | `IO.getEnv : String -> Maybe String` | ✅ |
+| 5.7 | Change `println`/`print` to return `Unit` — **breaking**; do it last in the stage and update every example and test | ✅ `println/print : forall a. a -> Unit`; `inspect : forall a. a -> a` unchanged; 4 tests asserting the old return semantics updated |
+| 5.8 | `IO.run` (shell) — deferred to v0.4; the doc flags it as dangerous and it needs an escaping story | ⏸ deferred |
+
+Notes:
+- The IO builtins are JIT-only. AOT (`--emit-exe`) cannot see them; the doc's "runtime independence" milestone is where they become shared runtime exports. See the §4/§5 note in `DESIGN-io-model.md`.
+- Two latent LIR lowering bugs were fixed along the way: string `==`/`!=` is now keyed off the HIR type (a String pulled out of a `Result` box is an i64 local, not a `.string` local) and both operands are coerced before calling `ko_string_eq`; bool `==`/`!=` coerces both sides to i64 (values like `x < y` are i1 while `True`/`False` are i64 small ints).
+- Module match arms use `=>` (Set.ko style), not `->`; a `let x =\n  match ...` value must be pulled out into a top-level `fn`.
 
 ---
 

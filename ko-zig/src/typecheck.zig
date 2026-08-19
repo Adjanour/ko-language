@@ -220,6 +220,7 @@ pub const Inferer = struct {
         inferer.global.set("False", .{ .quantified = &.{}, .body = bool_ty }) catch {};
 
         inferer.registerPrelude() catch {};
+        inferer.registerIoBuiltins() catch {};
 
         return inferer;
     }
@@ -487,6 +488,77 @@ pub const Inferer = struct {
             } },
             .is_pub = true,
         });
+
+        // The Error type used by the IO builtins. Constructor tags are pinned
+        // positionally (0..4) and must match lir_lower.zig's registerBuiltins.
+        const str = parser.TypeExpr{ .ident = "String" };
+        try self.registerTypeDef(.{
+            .name = "Error",
+            .type_params = &.{},
+            .body = .{ .sum = &.{
+                .{ .name = "FileNotFound", .params = &.{} },
+                .{ .name = "PermissionDenied", .params = &.{} },
+                .{ .name = "InvalidPath", .params = &.{} },
+                .{ .name = "IOError", .params = &.{str} },
+                .{ .name = "EncodingError", .params = &.{str} },
+            } },
+            .is_pub = true,
+        });
+    }
+
+    /// Build `Result Error T` for a success value type `inner`.
+    fn resultError(self: *Inferer, inner: *Type) Error!*Type {
+        const args = try self.allocator.alloc(*Type, 2);
+        const err_args = try self.allocator.alloc(*Type, 0);
+        args[0] = try self.newType(.{ .con = .{ .name = "Error", .args = err_args } });
+        args[1] = inner;
+        return self.newType(.{ .con = .{ .name = "Result", .args = args } });
+    }
+
+    /// Build `Maybe T`.
+    fn maybeOf(self: *Inferer, inner: *Type) Error!*Type {
+        const args = try self.allocator.alloc(*Type, 1);
+        args[0] = inner;
+        return self.newType(.{ .con = .{ .name = "Maybe", .args = args } });
+    }
+
+    /// Signatures for the IO builtins (Stage 5). The backing functions are
+    /// native Zig host functions in stdlib.zig; these entries only give the
+    /// typechecker their types.
+    fn registerIoBuiltins(self: *Inferer) Error!void {
+        const str = try self.newType(.string);
+        const unit = try self.newType(.unit);
+        const bool_ty = try self.newType(.bool);
+
+        const arr_args = try self.allocator.alloc(*Type, 1);
+        arr_args[0] = str;
+        const arr_str = try self.newType(.{ .con = .{ .name = "Array", .args = arr_args } });
+
+        const res_str = try self.resultError(str);
+        const res_unit = try self.resultError(unit);
+        const res_int = try self.resultError(try self.newType(.int));
+        const res_arr_str = try self.resultError(arr_str);
+        const maybe_str = try self.maybeOf(str);
+
+        const Sig = struct { name: []const u8, params: []const *Type, ret: *Type };
+        for ([_]Sig{
+            .{ .name = "IO.readFile", .params = &.{str}, .ret = res_str },
+            .{ .name = "IO.writeFile", .params = &.{ str, str }, .ret = res_unit },
+            .{ .name = "IO.appendFile", .params = &.{ str, str }, .ret = res_unit },
+            .{ .name = "IO.fileExists", .params = &.{str}, .ret = bool_ty },
+            .{ .name = "IO.fileSize", .params = &.{str}, .ret = res_int },
+            .{ .name = "IO.mkdir", .params = &.{str}, .ret = res_unit },
+            .{ .name = "IO.rm", .params = &.{str}, .ret = res_unit },
+            .{ .name = "IO.cp", .params = &.{ str, str }, .ret = res_unit },
+            .{ .name = "IO.mv", .params = &.{ str, str }, .ret = res_unit },
+            .{ .name = "IO.readdir", .params = &.{str}, .ret = res_arr_str },
+            .{ .name = "IO.readLine", .params = &.{str}, .ret = str },
+            .{ .name = "IO.eprintln", .params = &.{str}, .ret = unit },
+            .{ .name = "IO.eprint", .params = &.{str}, .ret = unit },
+            .{ .name = "IO.getEnv", .params = &.{str}, .ret = maybe_str },
+        }) |sig| {
+            try self.global.set(sig.name, .{ .quantified = &.{}, .body = try self.arrowOf(sig.params, sig.ret) });
+        }
     }
 
     pub fn deinit(self: *Inferer) void {
@@ -1099,20 +1171,19 @@ pub const Inferer = struct {
             }
         }
 
-        // Predeclare built-in functions (polymorphic, prints and returns the value)
+        // Predeclare built-in functions. println/print print and return Unit;
+        // inspect prints and returns the value.
         const println_from = try self.newVarType("a");
-        const println_to = println_from;
         const println_ty = try self.allocator.create(Type);
-        println_ty.* = .{ .arrow = .{ .from = println_from, .to = println_to } };
+        println_ty.* = .{ .arrow = .{ .from = println_from, .to = try self.newType(.unit) } };
         const println_var_id = println_from.variable.id;
         const println_quantified = try self.allocator.alloc(usize, 1);
         println_quantified[0] = println_var_id;
         try self.global.set("println", .{ .quantified = println_quantified, .body = println_ty });
 
         const print_from = try self.newVarType("b");
-        const print_to = print_from;
         const print_ty = try self.allocator.create(Type);
-        print_ty.* = .{ .arrow = .{ .from = print_from, .to = print_to } };
+        print_ty.* = .{ .arrow = .{ .from = print_from, .to = try self.newType(.unit) } };
         const print_var_id = print_from.variable.id;
         const print_quantified = try self.allocator.alloc(usize, 1);
         print_quantified[0] = print_var_id;
