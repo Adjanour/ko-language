@@ -337,6 +337,29 @@ Notes:
 
 ---
 
+## Stage 8 — IO & module polish
+
+**Goal:** close the rough edges found while writing a first real IO program and poking the module system by hand. Mostly small, independent fixes.
+
+| # | Task | Notes |
+|---|------|-------|
+| 8.1 | Stdlib builtins usable as first-class values | `let name = IO.readLine` (no application) → `lir_lower: stdlib fn 'IO.readLine' used as value not yet supported`, falls back to legacy codegen, which dies with `UndefinedVariable` because `IO.*` are JIT-only. Either lower applied-builtin references (the common case), error clearly for the value case, or map `IO.*` into the legacy path too. |
+| 8.2 | Quoted imports don't resolve | `import "sub/lib"` reports `Module not found` — the token slice keeps the quote characters, so the loader looks for a file literally named `"sub/lib".ko`. Fix: strip quotes in `parse_import` (parser.zig:444) or dequote in the lexer. |
+| 8.3 | Missing module is not a compile error | `loadModule` returning `null` only logs `Module not found` and the typechecker `continue`s (typecheck.zig:1037-1047) — you find out later as a baffling `undefined name 'io'` with a `did you mean 'Ok'?` hint. Make a failed import a hard, located diagnostic at the `import` statement. |
+| 8.4 | `pub` is not enforced on imports | Every `fn_def`/type/constructor from an imported module is registered regardless of `pub` (typecheck.zig:1093-1149). Verified: a `fn secret` imports fine. Either enforce the flag (breaking) or document it as access-control-by-convention and maybe lint. |
+| 8.5 | `IO.writeFile` rejects empty content | `io.writeOrDie ""` panics ("write failed") because a zero-byte write is treated as an error. Decide: an empty string is a legitimate file write (`ftruncate`-style truncate), or document the panic. Affects `readOrEmpty → writeOrDie` round-trips. |
+| 8.6 | `let _ = expr` does not parse | Only `let name = ...` works; a bare `_` discard is a parse error (`expected identifier, got '_'`). Sequence-only side effects must use `_name`. Small parser gap: allow `_` (and treat `_*` as linearity-ignore, which `_name` already is). |
+| 8.7 | No `Array` stdlib module | `IO.readdir` returns `Array String` but there is no `std/Array.ko`; `Array.to_string`/`Array.*` are undefined and arrays print only via `println`. Decide whether `Array` should gain a stdlib module, aliases to `List`, or documented builtins (e.g. `Array.toString`). |
+| 8.8 | `io.` module surface too small / confusing | `std/io.ko` exports only `readOrEmpty`, `writeOrDie`, `eprintErr`, `exists` — no `readLine`, `println`, `eprintln` — so `io.readLine`, `io.eprintln` are undefined while `IO.*` builtins exist globally. Two options: add thin wrappers (`io.readLine`, `io.println`) to `std/io.ko`, or lean on docs (already written in `docs/modules.md`) and leave the split as-is. |
+| 8.9 | Linearity warnings misattributed | "linear variable never used" is reported at a comment line or the line before the real unused binding, making the actual culprit hard to find. Diagnostic span quality fix in linearity.zig. |
+
+Notes:
+- Root cause of 8.1 is shared with Stage 0/1 work: the LIR pipeline lowers stdlib calls only when fully applied; partial application / value use of a stdlib fn is an unhandled `lir_lower` case.
+- 8.2/8.3/8.4 all live in the module machinery and were discovered together while writing `docs/modules.md`; fixing 8.3 will surface missing-module errors earlier, which is the highest-value one for beginners.
+- 8.5/8.6/8.7/8.8 were found by running the exploratory IO program (`sample.ko`) — the first "real" program written against the JIT builtins.
+
+---
+
 ## 3. Sequencing Advice
 
 Stage 0 is the only strictly-blocking stage and it is small — do it as one change set. After that, Stage 1 (strings) and Stage 2 (Array) are independent and can proceed in parallel.
