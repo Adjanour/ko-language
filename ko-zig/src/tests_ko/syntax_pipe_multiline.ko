@@ -1,0 +1,18 @@
+# Test: multi-line pipe (6.3)
+# Leading, trailing, deeper-indent, and commented pipe continuations all
+# glue across newlines; a dedented line ends the pipe.
+fn main =
+  let a = 5
+    |> Int.toString
+    |> String.append "n="
+  let b = 6 |>
+    Int.toString
+  let c = 7
+      |> Int.toString
+  let d = 8
+    # grow it
+    |> Int.toString
+    |> String.append "x"
+  let ok = a == "5n=" and b == "6" and c == "7" and d == "8x"
+  assert ok
+  println a

@@ -1192,7 +1192,12 @@ pub const Parser = struct {
 
     fn parse_pipe(self: *Parser) Error!*Expr {
         var left = try self.parse_cons();
-        while (self.match(.pipe_gt)) {
+        while (self.try_match_pipe_gt()) {
+            // A pipe may continue on the next line: `x\n  |> f` (leading pipe)
+            // or `x |>\n  f` (trailing pipe). try_match_pipe_gt consumed the
+            // intervening newlines/indents/comments plus the `|>`; skip the
+            // layout before the right-hand side too.
+            self.skip_pipe_rhs_layout();
             const right = try self.parse_cons();
             switch (right.*) {
                 .fn_call => |call| {
@@ -1214,6 +1219,36 @@ pub const Parser = struct {
             }
         }
         return left;
+    }
+
+    /// Consume newlines/indents/comments only when a `|>` follows them, so
+    /// layout belonging to the next construct (e.g. a multiline `if`) is left
+    /// untouched. Returns true and consumes the pipe when a continuation pipe
+    /// is found; otherwise returns false without consuming anything.
+    fn try_match_pipe_gt(self: *Parser) bool {
+        var i: usize = 0;
+        while (true) {
+            const tag = self.peek(i).tag;
+            if (tag == .newline or tag == .indent or tag == .comment) {
+                i += 1;
+                continue;
+            }
+            if (tag == .pipe_gt) {
+                while (i > 0) {
+                    _ = self.advance();
+                    i -= 1;
+                }
+                _ = self.advance();
+                return true;
+            }
+            return false;
+        }
+    }
+
+    fn skip_pipe_rhs_layout(self: *Parser) void {
+        while (self.current().tag == .newline or self.current().tag == .indent or self.current().tag == .comment) {
+            _ = self.advance();
+        }
     }
 
     fn parse_cons(self: *Parser) Error!*Expr {
