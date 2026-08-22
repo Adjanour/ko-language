@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 001: Your First Ko Program</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<h1>Your First Ko Program</h1>
+<p style="color: var(--muted); font-size: 0.9em;">Lesson 001 &middot; <a href="../MISSION.md">Mission</a></p>
+
+<p>Ko is a functional language with linear types and an LLVM backend.
+This lesson gets you from zero to a running program in five minutes.</p>
+
+<h2>1. The smallest program</h2>
+
+<p>Every ko program needs a <code>fn main</code> entry point.
+Create a file called <code>hello.ko</code>:</p>
+
+<pre><code>fn main =
+  println "Hello, world!"</code></pre>
+
+<p>Run it:</p>
+
+<pre><code>$ ko hello.ko
+Hello, world!</code></pre>
+
+<p>That is it. No <code>ko --run</code> flag &mdash; just <code>ko file.ko</code>.
+The compiler compiles and runs in one shot.</p>
+
+<div class="tip">
+  <strong>Tip:</strong> <code>ko --check file.ko</code> parses and type-checks without running.
+  Useful when you just want to verify syntax.
+</div>
+
+<h2>2. Basic types</h2>
+
+<p>Ko has integers, floats, strings, booleans, and characters:</p>
+
+<pre><code>fn main =
+  inspect 42              # 42
+  inspect 3.14            # 3.14
+  inspect "hello"         # "hello"
+  inspect True            # True
+  inspect 'a'             # a</code></pre>
+
+<p><code>println</code> prints with a newline. <code>inspect</code> prints the
+debug representation. <code>print</code> prints without a newline.</p>
+
+<h2>3. Let bindings</h2>
+
+<p><code>let</code> binds a name to a value. Values are immutable:</p>
+
+<pre><code>fn main =
+  let x = 10
+  let y = x + 5
+  inspect y   # 15</code></pre>
+
+<div class="warn">
+  <strong>Gotcha:</strong> the value must be on the same line as <code>=</code>.
+  Multi-line values do not parse:
+  <pre><code># THIS DOES NOT WORK:
+let x =
+  if 1 > 0 then 1
+  else 2
+
+# WORKS:
+let x = if 1 > 0 then 1 else 2</code></pre>
+</div>
+
+<h2>4. Functions</h2>
+
+<p>Define functions with <code>fn name params = body</code>:</p>
+
+<pre><code>fn double x = x * 2
+fn add a b = a + b
+
+fn main =
+  inspect (double 5)    # 10
+  inspect (add 3 4)     # 7</code></pre>
+
+<p>No parentheses around function arguments when calling:
+<code>add 3 4</code>, not <code>add(3, 4)</code>.</p>
+
+<h2>5. If expressions</h2>
+
+<p><code>if</code> is an expression &mdash; it returns a value.
+<code>else</code> is optional:</p>
+
+<pre><code>fn main =
+  let x = 42
+  let msg = if x > 0 then "positive" else "non-positive"
+  println msg
+
+  # else is optional:
+  if x > 0 then println "yes"</code></pre>
+
+<h2>6. The pipe operator</h2>
+
+<p>Pipe <code>|&gt;</code> passes the left side as the <strong>first</strong> argument
+to the right side:</p>
+
+<pre><code>fn main =
+  # These are equivalent:
+  inspect (Int.toString 5)
+  5 |&gt; Int.toString
+
+  # Chained:
+  5 |&gt; Int.toString |&gt; String.append "n="
+  # = String.append (Int.toString 5) "n="
+  # = "5n="</code></pre>
+
+<div class="warn">
+  <strong>Common mistake:</strong> pipe passes as the FIRST argument, not the last.
+  <code>10 |&gt; sub 3</code> means <code>sub 10 3</code> = 7, not <code>sub 3 10</code> = -7.
+</div>
+
+<h2>7. Imports</h2>
+
+<p>The standard library lives in <code>std/</code>. Import with a <code>std.</code> prefix:</p>
+
+<pre><code>import std.List
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  inspect (List.length xs)   # 3</code></pre>
+
+<p>Selective imports bring names into scope:</p>
+
+<pre><code>import std.List.{map, filter}
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  inspect (map (\x -&gt; x * 2) xs)   # [2, 4, 6]</code></pre>
+
+<hr>
+
+<h2>Putting it together</h2>
+
+<p>A small program that reads a name and greets the user:</p>
+
+<pre><code>import std.io
+
+fn greet name = "Hello, " + name + "!"
+
+fn main =
+  let name = IO.readLine "What is your name? "
+  println (greet name)</code></pre>
+
+<pre><code>$ ko greet.ko
+What is your name? Alice
+Hello, Alice!</code></pre>
+
+<hr>
+
+<p class="mission-link">
+  <strong>Next:</strong> <a href="0002-types-and-patterns.html">Types and Pattern Matching</a><br>
+  <strong>Reference:</strong> <a href="../../docs/quick-reference.md">Quick Reference</a>,
+  <a href="../../docs/writing-ko-programs.md">Writing Ko Programs</a><br>
+  <strong>Questions?</strong> Ask your teacher &mdash; anything unclear is worth asking.
+</p>
+
+</body>
+</html>

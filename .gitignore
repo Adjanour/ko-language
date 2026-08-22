@@ -41,4 +41,8 @@ tree-sitter-ko/queries/
 tree-sitter-ko/tree-sitter.json
 ko-plan.html
 
-teaching/
+# Teaching workspace (personal files, not repo docs)
+teaching/MISSION.md
+teaching/RESOURCES.md
+teaching/NOTES.md
+teaching/learning-records/
