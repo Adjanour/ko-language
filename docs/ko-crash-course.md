@@ -162,10 +162,10 @@ import std.List
 
 # Map: transform every element
 let nums = Cons 1 (Cons 2 (Cons 3 Nil))
-map (\x -> x * 2) nums          # => Cons 2 (Cons 4 (Cons 6 Nil))
+map (\x -> x * 2) nums          # => [2, 4, 6]
 
 # Filter: keep elements matching a predicate
-filter (\x -> x > 2) nums      # => Cons 3 Nil
+filter (\x -> x > 2) nums      # => [3]
 
 # Fold: reduce a list to a single value
 foldl (\acc x -> acc + x) 0 nums  # => 6
@@ -218,7 +218,7 @@ fn area shape =
     | Triangle b h => 0.5 * b * h
 ```
 
-Pattern matching is **exhaustive** — the compiler ensures you handle every variant. If you miss one, you get a type error.
+Pattern matching is **not yet exhaustive** in v0.3.x — the compiler does not check that you handle every variant. A match missing a case compiles without error or warning:
 
 ### Enums (No Data)
 
@@ -550,19 +550,16 @@ fn show_contacts book =
   match book
     | Nil => ()
     | Cons c rest =>
-      println (c.name ++ ": " ++ c.phone)
+      println (c.name + ": " + c.phone)
       show_contacts rest
 
 fn main =
-  let book = Nil
-    |> add_contact { name = "Alice", phone = "555-0101", email = "alice@example.com" }
-    |> add_contact { name = "Bob", phone = "555-0102", email = "bob@example.com" }
-    |> add_contact { name = "Charlie", phone = "555-0103", email = "charlie@example.com" }
+  let book = add_contact (Contact { name = "Alice", phone = "555-0101", email = "alice@example.com" }) (add_contact (Contact { name = "Bob", phone = "555-0102", email = "bob@example.com" }) (add_contact (Contact { name = "Charlie", phone = "555-0103", email = "charlie@example.com" }) Nil))
 
   show_contacts book
 
   match find_by_name book "Bob"
-    | Just c => println ("Found: " ++ c.email)
+    | Just c => println ("Found: " + c.email)
     | Nothing => println "Not found"
 ```
 
@@ -619,7 +616,7 @@ fn square n = n * n
 fn negate n = 0 - n
 
 # Compose them for complex behavior
-let result = numbers |> filter is_even |> map square |> map negate
+let result = map negate (map square (filter is_even numbers))
 ```
 
 ---
@@ -698,7 +695,7 @@ fn safe_divide a b =
 | `a \|> f` | Pipe: `f a` |
 | `# comment` | Comment |
 | `::` | Cons operator (prepend to list) |
-| `++` | String concatenation |
+| `+` | String concatenation |
 
 ---
 
