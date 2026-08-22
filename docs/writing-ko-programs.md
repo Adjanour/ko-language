@@ -1,12 +1,18 @@
+---
+title: "Writing Kō Programs"
+---
+
 # Writing Kō Programs
 
-Practical constraints and patterns for writing ko programs that compile and run.
+How to write ko programs that compile and run. This covers the patterns
+you will use every day and the few things that work differently from
+other languages.
 
 ---
 
 ## Entry Point
 
-Every ko program needs `fn main`:
+Every ko program starts with `fn main`:
 
 ```ko
 fn main =
@@ -19,143 +25,108 @@ Run it:
 ko hello.ko
 ```
 
-## Top-Level Bindings
+Kō compiles and runs in one shot. There is no separate compile step.
 
-Top-level `let` bindings are not codegen'd. Put values inside `fn main`:
+## Functions
+
+Define functions with `fn`. No parentheses around arguments:
 
 ```ko
-# Values go inside fn main
-fn main =
-    let greeting = "Hello"
-    println greeting
-
-# Functions can live at top level
-fn greet name = "Hello, " + name
+fn add x y = x + y
+fn double x = x * 2
+fn greet name = "Hello, " + name + "!"
 
 fn main =
-    println (greet "Alice")
+    println (add 3 4)       # 7
+    println (double 5)      # 10
+    println (greet "Alice")  # Hello, Alice!
 ```
 
-## Inline Values
+Call functions by putting a space between the name and arguments. No commas, no parens for simple calls.
 
-Values must appear on the same line as `=`:
+## Let Bindings
+
+Use `let` to name values. Values are immutable:
+
+```ko
+fn main =
+    let x = 10
+    let y = x + 5
+    println (x + y)       # 15
+```
+
+The value must be on the same line as `=`:
 
 ```ko
 # Works
 let x = if 1 > 0 then 1 else 2
 
-# Does not parse
-# let x =
-#   if 1 > 0 then 1
-#   else 2
-```
-
-Break long expressions at function boundaries:
-
-```ko
-fn main =
-    let nums = Cons 1 (Cons 2 (Cons 3 Nil))
-    let doubled = map (\x -> x * 2) nums
-    inspect doubled   # [2, 4, 6]
-```
-
-## Imports
-
-Standard library imports use the `std.` prefix:
-
-```ko
-import std.List
-import std.String
-import std.Int
-```
-
-Selective imports bring names into scope:
-
-```ko
-import std.List.{map, filter}
-import std.String.{length, append}
-```
-
-Aliased imports give a short name:
-
-```ko
-import std.Int as I
-# I.abs, I.min, I.max, ...
-```
-
-Local modules resolve from the source directory:
-
-```ko
-import math   # looks for math.ko in the same directory
-```
-
-Module names are case-sensitive. `import List` without `std.` looks for a local `List.ko`.
-
-## Pipe Operator
-
-Pipe passes the left side as the first argument:
-
-```ko
-5 |> Int.toString         # Int.toString 5  =  "5"
-"hello" |> String.length  # String.length "hello"  =  5
-```
-
-Chained pipes:
-
-```ko
-5 |> Int.toString |> String.append "n="  # "5n="
-```
-
-Multi-line pipes:
-
-```ko
-fn main =
-    IO.readLine "> "
-    |> IO.eprintln
+# Does not work — keep it inline
 ```
 
 ## If Expressions
 
-`else` is optional:
+`if` returns a value. `else` is optional:
 
 ```ko
-if 1 > 0 then 1         # returns 1
-if 1 > 0 then 1 else 2  # returns 1
-```
+fn abs x =
+    if x >= 0 then x else -x
 
-Both branches must return the same type.
+fn classify n =
+    if n > 0 then "positive"
+    else if n < 0 then "negative"
+    else "zero"
+
+fn main =
+    println (abs (-5))     # 5
+    println (classify 42)  # positive
+```
 
 ## Pattern Matching
 
-Match arms use `|` prefix and `=>`:
+Use `match` to destructure data:
 
 ```ko
 type Maybe a = Just a | Nothing
 
-fn describe m =
-    match m
-        | Just x => "Got: " + Int.toString x
-        | Nothing => "Nothing"
+fn from-just default mx =
+    match mx
+        | Just x => x
+        | Nothing => default
+
+fn main =
+    println (from-just 0 (Just 42))    # 42
+    println (from-just 0 Nothing)      # 0
 ```
 
-Nested literal patterns inside constructors bind as pattern variables:
+Match arms use `|` prefix and `=>`:
 
 ```ko
-match Just 0
-    | Just 0 => "zero"      # 0 is a pattern variable, not a literal match
-    | Just _ => "has value"  # catches Just 0
-    | Nothing => "empty"
+fn describe b =
+    match b
+        | True => "yes"
+        | False => "no"
+```
+
+The wildcard `_` matches anything:
+
+```ko
+fn first xs =
+    match xs
+        | Cons h _ => h
+        | Nil => 0
 ```
 
 ## Types
 
-Sum types are defined inline:
+Sum types are compact one-liners:
 
 ```ko
-type Token = Identifier String | Number String | Plus | Minus | Star
+type Shape = Circle Float | Rect Float Float
+type Token = Id String | Num String | Plus | Minus
 ```
 
-Records use `RecordName { field = value }`:
+Records use braces:
 
 ```ko
 type Person = Person { name : String, age : Int }
@@ -165,65 +136,122 @@ fn main =
     println p.name    # Alice
 ```
 
-Type annotations go on parameters and return type:
+Type annotations go on parameters:
 
 ```ko
 fn add (a : Int) (b : Int) -> Int = a + b
 ```
 
-## Linearity
+## Lists
 
-Kō checks that linear variables are used exactly once. The checker is
-conservative — you'll see warnings in working programs:
-
-```ko
-fn sum xs =
-    match xs
-        | Cons h t => h + sum t   # warning: xs used twice
-        | Nil => 0
-```
-
-Prefix unused variables with `_` to silence warnings:
+Define the List type yourself:
 
 ```ko
-fn first xs =
-    match xs
-        | Cons h _ => h
-        | Nil => 0
+type List a = Cons a (List a) | Nil
+
+fn main =
+    let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+    let ys = 1 :: 2 :: 3 :: Nil
 ```
 
-Use `--skip-linearity` to disable the checker entirely.
+Import list operations from the stdlib:
 
-See [Linearity and Ownership](linearity-and-ownership) for details.
+```ko
+import std.List.{map, filter, foldl}
 
-## Try Operator
+fn main =
+    let xs = 1 :: 2 :: 3 :: 4 :: Nil
+    let doubled = map (\x -> x * 2) xs
+    let evens = filter (\x -> x % 2 == 0) xs
+    inspect doubled    # [2, 4, 6, 8]
+    inspect evens      # [2, 4]
+```
 
-The `?` operator unwraps `Result` values:
+## Pipe Operator
+
+Chain operations with `|>`. The left side becomes the first argument:
 
 ```ko
 fn main =
-    let input = "42"
-    let n = (String.toInt input)?
-    println n
+    # These are equivalent
+    println (Int.toString 5)
+    5 |> Int.toString
+
+    # Chained
+    5 |> Int.toString |> String.append "n="   # "5n="
 ```
 
-Parentheses around the expression are required. Use `match` for production code:
+Multi-line pipes work:
 
 ```ko
 fn main =
-    let input = "42"
-    match String.toInt input
-        | Just n => println n
-        | Nothing => println "not a number"
+    IO.readLine "> "
+    |> IO.eprintln
 ```
 
-## CLI Commands
+## Lambdas
+
+Anonymous functions with `\`:
+
+```ko
+fn main =
+    let double = \x -> x * 2
+    let add = \x y -> x + y
+    println (double 5)    # 10
+    println (add 3 4)     # 7
+```
+
+## Imports
+
+Standard library:
+
+```ko
+import std.List
+import std.String
+import std.Int
+```
+
+Selective imports:
+
+```ko
+import std.List.{map, filter}
+import std.String.{length, append}
+```
+
+Local modules (same directory):
+
+```ko
+import math   # looks for math.ko nearby
+```
+
+Module names are case-sensitive. `import List` looks for a local file,
+not the stdlib. Use `import std.List` for the standard library.
+
+## References
+
+Use `ref` for mutable state:
+
+```ko
+fn main =
+    let counter = ref 0
+    counter := !counter + 1
+    println (!counter)     # 1
+```
+
+`ref` creates a reference cell. `!` reads it. `:=` writes to it.
+
+## Running Your Program
 
 ```bash
 ko myfile.ko                     # compile and run
-ko --check myfile.ko             # parse and type-check only
-ko --dump-ir myfile.ko           # print LLVM IR to stdout
-ko --emit-ir out.ll myfile.ko    # write LLVM IR to file
-ko --emit-exe myfile.ko          # compile to native executable
+ko --check myfile.ko             # type-check only
+ko --dump-ir myfile.ko           # print LLVM IR
+ko --emit-ir out.ll myfile.ko    # write IR to file
+ko --emit-exe myfile.ko          # compile to executable
 ko --repl                        # interactive REPL
 ```
+
+---
+
+*See also: [Error Messages](error-messages) if something does not compile, and
+[Modules and Imports](modules) for details on the module system.*
