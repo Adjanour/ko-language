@@ -23,7 +23,7 @@ let result = if x > 0 then x else -x
 println (if x > 0 then "positive" else "non-positive")
 ```
 
-The same is true for `match`, blocks, and `let`:
+The same is true for `match` and `let`:
 
 ```kō
 # match is an expression
@@ -31,14 +31,10 @@ let description = match shape
   | Circle r => "circle"
   | Rect w h => "rectangle"
 
-# blocks are expressions
-let x = 
-  let a = 10
-  let b = 20
-  a + b
-
-# let is an expression
-let x = (let a = 10 in a + 5)
+# let bindings chain sequentially, and are expressions
+let a = 10
+let b = 20
+let x = a + b
 ```
 
 **Why this matters:** You can compose expressions freely. No need for temporary variables or return statements.
@@ -51,7 +47,7 @@ Once you create a value, it never changes.
 
 ```kō
 let x = 42
-x := 100  # Error! Can't reassign let bindings
+x := 100  # Not rejected at compile time — this crashes at runtime
 ```
 
 This is the default in Kō. If you want mutation, you must ask for it explicitly:
@@ -71,10 +67,8 @@ println !counter           # 1
 Functions can be passed around like any other value.
 
 ```kō
-fn add a b = a + b
 fn apply f x = f x
 
-apply add 5    # Returns 5 + ... wait, this is curried
 apply (\x -> x * 2) 5  # Returns 10
 ```
 
@@ -171,7 +165,6 @@ Tuples group values of different types. They use parentheses with commas.
 ```kō
 let t = (1, 2, 3)           # triple
 let pair = (1, "hello")     # pair
-let single = (42,)           # singleton tuple
 ```
 
 **Why this matters:** Tuples are lightweight data containers. Use them when you need to group a few values without defining a full record type.
@@ -191,16 +184,16 @@ fn from-just default mx =
     | Nothing => default
 ```
 
-The compiler checks that you handle every case:
+The compiler does not require you to handle every case. A non-exhaustive match compiles without error or warning:
 
 ```kō
 fn dangerous xs =
   match xs
     | Cons x _ => x
-    # Warning: Nil case not handled!
+    # Nil case not handled — this still compiles
 ```
 
-**Why this matters:** You never miss a case. The compiler catches it.
+**Why this matters:** You write only the cases you care about. Missed cases silently fall through rather than being caught at compile time.
 
 ---
 
@@ -219,15 +212,13 @@ add5 10    # Returns 15
 This is how you create "remembering" functions:
 
 ```kō
-fn make_counter =
+fn main =
   let count = ref 0
-  \() -> 
+  let next = \_ ->
     count := !count + 1
     !count
-
-let counter = make_counter
-counter ()  # 1
-counter ()  # 2
+  inspect (next 0)  # 1
+  inspect (next 0)  # 2
 ```
 
 **Why this matters:** Closures let you encapsulate state without classes.
@@ -268,7 +259,7 @@ let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
 let doubled = map (\x -> x * 2) nums
 
 # Keep only even numbers
-let evens = filter (\x -> mod x 2 == 0) nums
+let evens = filter (\x -> x % 2 == 0) nums
 
 # Sum all numbers
 let total = fold (\acc x -> acc + x) 0 nums
@@ -280,7 +271,7 @@ let total = fold (\acc x -> acc + x) 0 nums
 
 ## 11. Pipe Operator
 
-The pipe operator `|>` passes the result of one expression as the last argument to the next function:
+The pipe operator `|>` passes the result of one expression as the first argument to the next function:
 
 ```kō
 fn add x y = x + y
@@ -373,10 +364,11 @@ fn safe-divide a b =
 Kō uses reference counting for memory management. No garbage collector.
 
 ```kō
-let x = "hello"    # refcount = 1
-let y = x           # refcount = 2
-# When x goes out of scope, refcount = 1
-# When y goes out of scope, refcount = 0, memory freed
+fn main =
+  let x = "hello"    # refcount = 1
+  let y = x           # refcount = 2
+  # When x goes out of scope, refcount = 1
+  # When y goes out of scope, refcount = 0, memory freed
 ```
 
 This is automatic. You don't need to think about it.
@@ -424,7 +416,7 @@ fn map f list =
 You can add parameter annotations:
 
 ```kō
-fn add a b : Int = a + b
+fn add (a : Int) (b : Int) -> Int = a + b
 fn add a b = a + b
 ```
 
@@ -466,9 +458,9 @@ fn filter f list =
       else filter f rest
     | Nil => Nil
 
-fn fold f acc list =
+fn foldl f acc list =
   match list
-    | Cons x rest => fold f (f acc x) rest
+    | Cons x rest => foldl f (f acc x) rest
     | Nil => acc
 
 fn head xs =
@@ -480,9 +472,7 @@ fn main =
   let nums = Cons 1 (Cons 2 (Cons 3 (Cons 4 (Cons 5 Nil))))
   
   # Functional pipeline
-  let result = fold (\acc x -> acc + x) 0 
-    (filter (\x -> mod x 2 == 0) 
-      (map (\x -> x * 2) nums))
+  let result = foldl (\acc x -> acc + x) 0 (filter (\x -> x % 2 == 0) (map (\x -> x * 2) nums))
   
   println result  # 30 (2+4+6+8+10)
 ```

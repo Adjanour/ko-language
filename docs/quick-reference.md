@@ -29,7 +29,7 @@ fn factorial n =
   else n * factorial (n - 1)
 
 # Type annotation (param annotation)
-fn add a b : Int = a + b
+fn add (a : Int) (b : Int) -> Int = a + b
 fn add a b = a + b
 ```
 
@@ -110,7 +110,7 @@ pt.x + pt.y
 and or not        # keyword alternatives
 
 # Pipe
-|>                # pass left as last arg to right
+|>                # pass left as first arg to right
 
 # Assignment (ref cells only)
 :=                # assign to ref
@@ -234,6 +234,32 @@ average xs        # mean of list
 
 # String extras (std/String.ko)
 isEmpty s         # True if empty
+
+# Float operations (std/Float.ko)
+min a b           # minimum of two
+max a b           # maximum of two
+
+# Set operations (std/Set.ko)
+empty             # empty set
+singleton x       # set with one element
+fromArray xs      # set from array
+contains x s      # True if x is in s
+add x s           # insert into set
+remove x s        # remove from set
+size s            # number of elements
+isEmpty s         # True if empty
+union a b         # set union
+intersection a b  # set intersection
+difference a b    # set difference
+isSubset a b      # True if a is subset of b
+isSuperset a b    # True if a is superset of b
+toArray s         # array of elements
+
+# I/O helpers (std/io.ko)
+readOrEmpty path            # read file, or "" if it doesn't exist
+writeOrDie path contents    # write file, panic on failure
+eprintErr msg               # print "error: <msg>" to stderr
+exists path                 # True if path exists
 ```
 
 ### Local modules
@@ -243,7 +269,7 @@ A local module is any `.ko` file in the same directory as the file being compile
 ```kō
 import Math                     # import Math.ko from the same directory
 import Math.{add, double}        # selective import
-import Math as M                # with alias (not yet)
+import Math as M                # with alias
 ```
 
 ---
@@ -281,7 +307,7 @@ fn compute x y z =
 
 ```kō
 Result.map f r         # apply f to Ok value
-Result.unwrap default r # get Ok value or default
+Result.unwrapOr default r # get Ok value or default
 Result.fold ok_fn err_fn r # reduce to single value
 Result.and_then f r    # chain (flatmap)
 Result.is_ok r         # True if Ok
@@ -306,7 +332,6 @@ println !r           # 42
 ```kō
 let t = (1, 2, 3)          # triple
 let pair = (1, "hello")    # pair
-let a = (1,)               # singleton
 ```
 
 ---
@@ -343,7 +368,7 @@ import std.List                      # stdlib module (reserved std. namespace)
 import std.List.{map, filter, foldl} # selective import from stdlib
 import Math                          # local module (Math.ko in same directory)
 import Math.{add, double}            # selective import from local module
-import Math as M                     # with alias (not yet)
+import Math as M                     # with alias
 ```
 
 - `std.<Name>` imports from the Kō standard library (`std/` directory).

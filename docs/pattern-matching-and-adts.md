@@ -51,7 +51,7 @@ type Maybe a = Just a | Nothing
 
 fn describe mx =
   match mx
-    | Just x => "Got: " + to_string x
+    | Just x => "Got: " + Int.toString x
     | Nothing => "Nothing"
 ```
 
@@ -151,7 +151,7 @@ fn get_depth tree =
 
 ## Exhaustiveness Checking
 
-The compiler checks that you handle ALL cases:
+Kō currently does **not** check exhaustiveness — a match missing a case compiles without error or warning:
 
 ```kō
 type Color = Red | Green | Blue
@@ -159,10 +159,10 @@ type Color = Red | Green | Blue
 fn is_red c =
   match c
     | Red => True
-    # ERROR: What about Green and Blue?
+    # Compiles fine, but crashes at runtime if c is Green or Blue
 ```
 
-Fix it by adding all cases:
+Make the match total by adding all cases:
 
 ```kō
 fn is_red c =
@@ -200,7 +200,7 @@ let y_val = pt.y
 
 # Access record fields
 fn distance pt =
-  sqrt (pt.x * pt.x + pt.y * pt.y)
+  Float.sqrt (pt.x * pt.x + pt.y * pt.y)
 ```
 
 **Records vs ADTs:** Records are for "this has these fields." ADTs are for "this could be one of these variants." Use both together:
@@ -255,7 +255,7 @@ type Either a b = Left a | Right b
 fn process input =
   match input
     | Left err => "Error: " + err
-    | Right value => "Got: " + to_string value
+    | Right value => "Got: " + Int.toString value
 ```
 
 ---
@@ -263,11 +263,7 @@ fn process input =
 ## ADTs + Pattern Matching = Powerful
 
 ```kō
-type Expr = 
-  | Add Expr Expr
-  | Mul Expr Expr
-  | Lit Int
-  | Var String
+type Expr = Add Expr Expr | Mul Expr Expr | Lit Int | Var String
 
 fn eval env expr =
   match expr

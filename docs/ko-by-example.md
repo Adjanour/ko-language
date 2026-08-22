@@ -367,7 +367,9 @@ fn main =
 Output:
 
 ```
-"zero""has value""empty"
+"has value"
+"has value"
+"empty"
 ```
 
 ---
@@ -430,7 +432,7 @@ fn main =
 
 Output:
 
-``
+```
 6
 ```
 
@@ -654,16 +656,20 @@ Output:
 ```
 42
 True
-10247201.4142145
+1024
+720
+1.414214
 ```
 
 ### Available functions
 
-**Int operations:** `Int.pow`, `Int.factorial`, `Int.isqrt`, `Int.gcd`, `Int.lcm`, `Int.abs`, `Int.min`, `Int.max`, `Int.clamp`, `Int.sign`, `Int.even`, `Int.odd`, `Int.mod`
+**Int builtins:** `Int.pow`, `Int.factorial`, `Int.isqrt`, `Int.gcd`, `Int.lcm`, `Int.abs`, `Int.min`, `Int.max`
+
+**With `import std.Int`:** `even`, `odd`, `mod`, `clamp`, `sign`
 
 **Float operations:** `Float.sqrt`, `Float.sin`, `Float.cos`, `Float.tan`, `Float.exp`, `Float.log`, `Float.log2`, `Float.log10`, `Float.floor`, `Float.ceil`, `Float.abs`, `Float.ofInt`, `Float.toInt`, `Float.pow`
 
-**String operations:** `String.length`, `String.append`, `String.isEmpty`
+**String operations:** `String.length`, `String.append` (with `import std.String`: `isEmpty`, `contains`, `startsWith`, `endsWith`, `split`, `trim`, `repeat`, `replicate`, `indexOf`, `substring`, `charAt`, `toInt`, `toIntOr`, `toLowerCase`, `toUpperCase`, `contains`)
 
 **I/O:** `println`, `print`, `inspect`
 
@@ -679,7 +685,7 @@ fn main =
   inspect (List.length xs)
 ```
 
-Available in `std/`: `List` (25 operations), `Int`, `String`, `Bool`, `Math`
+Available in `std/`: `List` (31 functions), `Int`, `String`, `Bool`, `Math`, `Float`, `Set`, `io`
 
 ### Local modules
 
@@ -705,20 +711,17 @@ Combine records, lists, pattern matching, and higher-order functions:
 ```
 type Contact = { name: String, phone: String }
 
-fn main =
-  let contacts =
-    Contact { name = "Alice", phone = "555-1234" } ::
-    Contact { name = "Bob", phone = "555-5678" } ::
-    Contact { name = "Charlie", phone = "555-9012" } ::
-    Nil
-
-  let count = length contacts
-  inspect count
+type List a = Cons a (List a) | Nil
+type Contact = Contact { name : String, phone : String }
 
 fn length xs =
   match xs
     | Cons _ rest => 1 + length rest
     | Nil => 0
+
+fn main =
+  let contacts = Cons (Contact { name = "Alice", phone = "555-1234" }) (Cons (Contact { name = "Bob", phone = "555-5678" }) (Cons (Contact { name = "Charlie", phone = "555-9012" }) Nil))
+  inspect (length contacts)
 ```
 
 Output:

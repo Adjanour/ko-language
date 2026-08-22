@@ -12,15 +12,16 @@ cd ko-language
 ./build.sh
 ```
 
-Add `ko-dist/bin` to your `PATH`:
+Add `ko-zig/zig-out/bin` to your `PATH`:
 
 ```bash
-export PATH="$PATH:/path/to/ko-language/ko-dist/bin"
+export PATH="$PATH:/path/to/ko-language/ko-zig/zig-out/bin"
 ```
 
 Verify both binaries are available:
 
 ```bash
+# Binaries are built into ko-zig/zig-out/bin/
 which ko
 which ko-lsp
 ```
@@ -259,7 +260,7 @@ npx tree-sitter generate
 ### LSP not starting
 
 1. Verify `ko-lsp` is in your PATH: `which ko-lsp`
-2. Test it directly: `echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | ko-lsp`
+2. Test it directly — note that raw JSON over stdin never gets a response: `ko-lsp` speaks LSP over stdio and requires Content-Length framing, so use a real LSP client
 3. Check your editor's LSP logs for errors
 
 ### Syntax highlighting not working

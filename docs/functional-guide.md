@@ -74,6 +74,8 @@ println (apply_twice double 3)  # 12 — double(double(3))
 
 `apply_twice` takes a function `f` and applies it twice to `x`. That's the power of first-class functions.
 
+(Kō's linearity checker will warn that `f` is used twice — a warning, not an error.)
+
 ---
 
 ## 3. Lambdas — "anonymous functions"
@@ -109,13 +111,7 @@ When you write:
 fn add a b = a + b
 ```
 
-It's actually sugar for:
-
-```kō
-fn add = \a -> \b -> a + b
-```
-
-`add` takes `a`, returns a **new function** that takes `b`, then returns `a + b`.
+Conceptually, `add` takes `a`, returns a **new function** that takes `b`, then returns `a + b`. You don't write that chain of lambdas yourself — `fn add a b = a + b` is the syntax.
 
 So `add 3 4` is really two steps:
 
@@ -181,10 +177,11 @@ These are the building blocks. Once you have `map`, `filter`, and `fold`, you ca
 A closure is a function that **captures variables from outside its own scope**.
 
 ```kō
-let secret = 10
-let add_secret = \x -> x + secret  # "secret" is captured
+fn main =
+  let secret = 10
+  let add_secret = \x -> x + secret  # "secret" is captured
 
-println (add_secret 5)  # 15 — it remembers secret=10
+  println (add_secret 5)  # 15 — it remembers secret=10
 ```
 
 Without closures, `add_secret` wouldn't know what `secret` is because it's defined outside the function. But closures "grab" that variable and hold onto it.
@@ -192,15 +189,16 @@ Without closures, `add_secret` wouldn't know what `secret` is because it's defin
 **A practical example — counters:**
 
 ```kō
-let counter = ref 0
+fn main =
+  let counter = ref 0
 
-let increment = \_ ->
-  counter := (!counter + 1)
+  let increment = \_ ->
+    counter := (!counter + 1)
 
-increment 0
-increment 0
-increment 0
-println !counter  # 3
+  increment 0
+  increment 0
+  increment 0
+  println !counter  # 3
 ```
 
 The `increment` function captures the `counter` ref cell. Even though `counter` is defined outside, `increment` remembers it and can mutate it.
@@ -309,7 +307,7 @@ let pair = ("hello", 42)
 
 ## 11. Pipe Operator — "flow data through functions"
 
-The pipe operator `|>` passes the left side as the last argument to the right side:
+The pipe operator `|>` passes the left side as the first argument to the right side:
 
 ```kō
 fn add x y = x + y
@@ -325,14 +323,11 @@ double (add 1 5)    # 12
 **Why pipes?** They make pipelines read left-to-right:
 
 ```kō
-# Instead of this (inside-out):
-fold (\a x -> a + x) 0 (filter (\x -> x > 2) (map (\x -> x * 2) nums))
+# Chained calls (read from the inside out):
+List.foldl (\a x -> a + x) 0 (filter (\x -> x > 2) (map (\x -> x * 2) nums))
 
-# Write this (top-down):
-nums
-  |> map (\x -> x * 2)
-  |> filter (\x -> x > 2)
-  |> fold (\a x -> a + x) 0
+# The pipe reads left-to-right for simple unary chains:
+5 |> Int.toString |> String.append "n="  # 5n=
 ```
 
 ---
@@ -475,7 +470,7 @@ When you NEED mutation (like a game loop), use ref cells. But start with immutab
 | Ref cell | `let r = ref 0` | Mutable reference |
 | Dereference | `!r` | Read ref cell |
 | Set ref | `r := 42` | Write to ref cell |
-| Pipe | `x \|> f` | Pass x as last arg to f |
+ | Pipe | `x \|> f` | Pass x as first arg to f |
 | Comptime | `comptime (2 + 3)` | Compile-time evaluation |
 | Local module | `import Math` | Import a `.ko` file from the same directory |
 | Stdlib module | `import std.List` | Import from the `std/` standard library |

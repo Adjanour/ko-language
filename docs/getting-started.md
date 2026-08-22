@@ -24,7 +24,7 @@ The compiler binary is at `zig-out/bin/ko`.
 
 ```bash
 echo 'fn main = println "Hello, Kō!"' > hello.ko
-./zig-out/bin/ko --run hello.ko
+./zig-out/bin/ko hello.ko
 ```
 
 ---
@@ -57,7 +57,7 @@ fn main =
   println "Hello, World!"
 ```
 
-Save as `hello.ko` and run: `ko --run hello.ko`
+Save as `hello.ko` and run: `ko hello.ko`
 
 ### How it works
 - `fn main =` defines the entry point (every Ko program needs this)
@@ -80,7 +80,7 @@ Try expressions:
 ko> 1 + 2
 = 3
 
-ko> "hello" ++ " world"
+ko> "hello" + " world"
 = "hello world"
 
 ko> :type 42
@@ -180,17 +180,11 @@ This reads as: start with 5, add 1, then double.
 fn main =
   let x = 42
 
-  # if/then/else (must have else)
+  # if/then/else (else is optional)
   let desc = if x > 0 then "positive" else "non-positive"
   println desc
 
-  # Multi-line blocks (indent the body)
-  let big =
-    if x > 100 then
-      let doubled = x * 2
-      doubled
-    else
-      x
+  let big = if x > 100 then x * 2 else x  # single-line if expression
   println big
 ```
 
@@ -288,6 +282,8 @@ fn main =
 Lists are Ko's primary collection type.
 
 ```kō
+import std.List
+
 type List a = Cons a (List a) | Nil
 
 fn main =
@@ -296,25 +292,25 @@ fn main =
   let evens = filter (\x -> x % 2 == 0) nums
   let total = foldl (\acc x -> acc + x) 0 nums
 
-  println doubled  # Cons 2 (Cons 4 (Cons 6 Nil))
-  println evens    # Cons 2 Nil
+  println doubled  # [2, 4, 6]
+  println evens    # [2]
   println total    # 6
 ```
 
 ### Common list operations
 
 ```kō
-import List
+import std.List
 
 fn main =
   let xs = Cons 1 (Cons 2 (Cons 3 Nil))
 
   println (length xs)       # 3
-  println (map (\x -> x * 2) xs)  # Cons 2 (Cons 4 (Cons 6 Nil))
-  println (filter (\x -> x > 1) xs)  # Cons 2 (Cons 3 Nil)
+  println (map (\x -> x * 2) xs)  # [2, 4, 6]
+  println (filter (\x -> x > 1) xs)  # [2, 3]
   println (foldl (\a x -> a + x) 0 xs)  # 6
   println (head xs)         # 1
-  println (tail xs)         # Cons 2 (Cons 3 Nil)
+  println (tail xs)         # [2, 3]
   println (elem 2 xs)      # True
   println (is_empty xs)    # False
 ```
@@ -335,22 +331,24 @@ fn divide a b =
 fn main =
   match divide 10 2
     Ok result => println result
-    Err msg => eprintln msg
+    Err msg => IO.eprintln msg
 ```
 
-### The `?` try operator
+### Parsing strings safely
 
-Propagate errors up the call stack:
+`String.toInt` returns a `Maybe`, so unwrap it with `match`:
 
 ```kō
 fn parse_and_double s =
-  let n = to_int s?  # if Err, return Err immediately
-  Ok (n * 2)
+  match String.toInt s
+    Just n => Ok (n * 2)
+    Nothing => Err "not a number"
 
 fn main =
+  # "42" parses to Ok 84
   match parse_and_double "42"
-    Ok n => println n    # 84
-    Err msg => eprintln msg
+    Ok n => println n
+    Err msg => IO.eprintln msg
 ```
 
 ---
@@ -358,6 +356,8 @@ fn main =
 ## String Operations
 
 ```kō
+import std.String
+
 fn main =
   let s = "hello"
 
@@ -365,7 +365,10 @@ fn main =
   println (String.append s " world")  # hello world
   println (isEmpty s)              # False
   println (repeat s 3)             # hellohellohello
-  println (join ", " (Cons "a" (Cons "b" (Cons "c" Nil))))  # a, b, c
+  # String.toInt "42" returns Just 42
+  match String.toInt "42"
+    Just n => println n
+    Nothing => println 0
 ```
 
 ---
@@ -432,7 +435,7 @@ fn main =
 | Pipe | `x \|> f \|> g` | `g(f(x))` |
 | Ref (mutable) | `let r = ref 0; r := 1` | `r = 0; r = 1` |
 | Dereference | `!r` | `r` |
-| String concat | `a ++ b` | `a + b` |
+| String concat | `a + b` | `a + b` |
 | Comment | `# this` | `# this` |
 
 ---
@@ -456,7 +459,7 @@ fn main =
 
 # Do: use recursion or map
 fn count n =
-  if n <= 0 then ()
+  if n <= 0 then 0
   else
     println n
     count (n - 1)
@@ -515,7 +518,7 @@ fn risky_operation input =
 # Do: use records + functions
 type User = { name: String, age: Int }
 
-fn greet user = "Hello, " ++ user.name
+fn greet user = "Hello, " + user.name
 
 fn main =
   let user = User { name = "Alice", age = 30 }

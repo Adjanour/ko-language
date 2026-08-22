@@ -49,7 +49,7 @@ fn main =
   println "Hello, World!"
 ```
 
-Save this as `hello.ko` and run: `ko --run hello.ko`
+Save this as `hello.ko` and run: `ko hello.ko`
 
 ### The REPL
 
@@ -59,7 +59,7 @@ Start the REPL with `ko --repl`. Type expressions and see results:
 ko> 1 + 2
 = 3
 
-ko> "hello" ++ " world"
+ko> "hello" + " world"
 = "hello world"
 
 ko> :quit
@@ -158,6 +158,8 @@ add_three 10                  # => 13
 ### Common Higher-Order Functions
 
 ```
+import std.List
+
 # Map: transform every element
 let nums = Cons 1 (Cons 2 (Cons 3 Nil))
 map (\x -> x * 2) nums          # => Cons 2 (Cons 4 (Cons 6 Nil))
@@ -166,23 +168,20 @@ map (\x -> x * 2) nums          # => Cons 2 (Cons 4 (Cons 6 Nil))
 filter (\x -> x > 2) nums      # => Cons 3 Nil
 
 # Fold: reduce a list to a single value
-fold (\a x -> a + x) 0 nums     # => 6
+foldl (\acc x -> acc + x) 0 nums  # => 6
 ```
 
 ### The Pipe Operator
 
-The pipe operator `|>` passes the result of the left side as the last argument to the right side:
+The pipe operator `|>` passes the result of the left side as the first argument to the right side:
 
 ```
 # Without pipes (read inside-out):
 let nums = Cons 1 (Cons 2 (Cons 3 Nil))
-sort (filter (\x -> x > 2) (map (\x -> x * 2) nums))
+reverse (filter (\x -> x > 2) (map (\x -> x * 2) nums))
 
-# With pipes (read top-to-bottom):
-Cons 1 (Cons 2 (Cons 3 Nil))
-  |> map (\x -> x * 2)
-  |> filter (\x -> x > 2)
-  |> sort
+# With pipes (read left-to-right):
+nums |> reverse    # same as reverse nums
 ```
 
 Pipes make chains of transformations readable.
@@ -197,10 +196,7 @@ ADTs are how you model your domain in Kō. They come in two flavors: **sum types
 
 ```
 # Define a type with variants
-type Shape =
-  | Circle Float           # A circle with a radius
-  | Rectangle Float Float  # A rectangle with width and height
-  | Triangle Float Float   # A triangle with base and height
+type Shape = Circle Float | Rectangle Float Float | Triangle Float Float
 ```
 
 Each variant is a **constructor** — it wraps data in a named tag:
@@ -269,7 +265,7 @@ alice.age     # => 30
 ```
 # Use field access (record pattern matching not yet supported)
 fn greet person =
-  "Hello " ++ person.name ++ ", you are " ++ intToString person.age
+  "Hello " + person.name + ", you are " + Int.toString person.age
 ```
 
 ### Error Handling with Result
@@ -296,12 +292,12 @@ The `?` operator unwraps an `Ok` value, or returns early from the enclosing func
 
 ```
 fn safe_divides x y z =
-  let a = divide x y?    # if Err, return immediately
-  let b = divide a z?    # if Err, return immediately
+  let a = (divide x y)?  # if Err, return immediately
+  let b = (divide a z)?  # if Err, return immediately
   Ok (a + b)
 
-# safe_divides 10 2 5 => Ok 7
-# safe_divides 10 0 5 => Err "division by zero"
+# safe_divides 10 2 5 => Constructor(<address>)  # Result values print raw, not "Ok 7"
+# safe_divides 10 0 5 => Constructor(<address>)  # likewise, not 'Err "division by zero"'
 ```
 
 This eliminates nested match chains. Each `?` is an early return on error.
@@ -309,9 +305,9 @@ This eliminates nested match chains. Each `?` is an early return on error.
 #### Result Operations (built-in, no import needed)
 
 ```
-Result.map f r         # apply f to Ok value, pass through Err
-Result.unwrap default r # get Ok value, or use default on Err
-Result.fold ok_fn err_fn r # handle both cases with functions
+Result.map f r         # apply f to Ok value, pass through Err (BUGGY: segfaults at runtime)
+Result.unwrapOr default r # get Ok value, or use default on Err (Result.unwrap PANICS on Err)
+Result.fold ok_fn err_fn r # handle both cases with functions (BUGGY: prints raw Constructor for Ok)
 Result.and_then f r    # chain operations that return Result
 Result.is_ok r         # True if Ok
 Result.is_err r        # True if Err
@@ -321,7 +317,7 @@ Result.is_err r        # True if Err
 
 ```
 fn process_input input =
-  let parsed = parse_int input?
+  let parsed = (Int.fromString input)?  # Int.fromString has a codegen bug currently
   let doubled = parsed * 2
   Ok doubled
 
@@ -417,7 +413,7 @@ fn swap pair =
   match pair
     | (a, b) => (b, a)
 
-swap (1, "hello")  # => ("hello", 1)
+swap (1, 2)  # => (2, 1)
 ```
 
 ### Matching Nested Structures
@@ -447,14 +443,13 @@ fn classify x =
 
 ### Exhaustiveness
 
-The compiler **forces** you to handle every case:
+Kō currently does **not** check exhaustiveness — a match missing a case compiles without error or warning:
 
 ```
-# This WON'T compile (missing Nil case):
+# This compiles without error or warning (missing Nil case — will crash at runtime):
 fn length xs =
   match xs
     | Cons _ rest => 1 + length rest
-# Error: non-exhaustive pattern match
 ```
 
 ---
@@ -466,7 +461,7 @@ A **closure** is a function that "closes over" variables from its surrounding sc
 ```
 fn make_counter =
   let count = ref 0       # ref creates a mutable reference
-  let increment = \_ ->
+  let increment = \_ ->   # \() -> unit lambdas don't parse; use \_ ->
     count := !count + 1    # ! deref, := assign
     !count
   increment
@@ -476,6 +471,8 @@ counter ()    # => 1
 counter ()    # => 2
 counter ()    # => 3
 ```
+
+Note: returning a closure that captures state is currently buggy in the compiler — calling `counter ()` may fail with an arity mismatch at runtime.
 
 ### Why Closures Matter
 
@@ -593,7 +590,7 @@ for x in list:
     result.append(x * 2)
 
 # Functional mindset (do this):
-let result = list |> filter (\x -> x > 0) |> map (\x -> x * 2)
+let result = map (\x -> x * 2) (filter (\x -> x > 0) list)
 ```
 
 ### Think in Types

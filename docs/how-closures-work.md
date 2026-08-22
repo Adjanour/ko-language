@@ -47,13 +47,14 @@ When you call `add_secret 5`, LLVM calls the function pointer, passing `5` as th
 ## Example: Counter
 
 ```kō
-let counter = ref 0
+fn main =
+  let counter = ref 0
 
-let increment = \_ -> counter := (!counter + 1)
+  let increment = \_ -> counter := (!counter + 1)
 
-increment 0
-increment 0
-println !counter  # 2
+  increment 0
+  increment 0
+  println !counter  # 2
 ```
 
 Here's what the compiler does:
@@ -163,9 +164,10 @@ println (add10 3)   # 13
 
 ### 1. Stateful Closures
 ```kō
-let counter = ref 0
-let increment = \_ -> counter := (!counter + 1)
-let get_count = \_ -> !counter
+fn main =
+  let counter = ref 0
+  let increment = \_ -> counter := (!counter + 1)
+  let get_count = \_ -> !counter
 ```
 
 ### 2. Function Factories
@@ -177,10 +179,11 @@ let triple = make_multiplier 3
 
 ### 3. Closures in Callbacks
 ```kō
-let name = ref ""
-let on_click = \_ ->
-  name := "clicked"
-  println !name
+fn main =
+  let name = ref ""
+  let on_click = \_ ->
+    name := "clicked"
+    println !name
 ```
 
 ---
