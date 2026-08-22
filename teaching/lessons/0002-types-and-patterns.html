@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 002: Types and Pattern Matching</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<h1>Types and Pattern Matching</h1>
+<p style="color: var(--muted); font-size: 0.9em;">Lesson 002 &middot; <a href="../MISSION.md">Mission</a></p>
+
+<p>Ko types are algebraic data types (ADTs): sums of constructors.
+Pattern matching destructures them. This lesson covers both.</p>
+
+<h2>1. Sum types</h2>
+
+<p>Define a type as a choice of constructors:</p>
+
+<pre><code>type Direction = North | South | East | West
+type Maybe a = Just a | Nothing</code></pre>
+
+<p>Construct values by naming the constructor:</p>
+
+<pre><code>fn main =
+  let d = North
+  let x = Just 42
+  let y = Nothing
+  inspect d   # North
+  inspect x   # Just(42)</code></pre>
+
+<h2>2. Pattern matching</h2>
+
+<p><code>match</code> destructures values. Each arm uses <code>|</code> prefix and <code>=&gt;</code>:</p>
+
+<pre><code>fn turn_left dir =
+  match dir
+    | North =&gt; West
+    | West =&gt; South
+    | South =&gt; East
+    | East =&gt; North
+
+fn main =
+  inspect (turn_left North)   # West</code></pre>
+
+<p>The wildcard <code>_</code> matches anything:</p>
+
+<pre><code>fn is_just m =
+  match m
+    | Just _ =&gt; True
+    | Nothing =&gt; False</code></pre>
+
+<h2>3. Destructuring</h2>
+
+<p>Extract values from constructors:</p>
+
+<pre><code>fn describe m =
+  match m
+    | Just x =&gt; "Got: " + Int.toString x
+    | Nothing =&gt; "Nothing"
+
+fn main =
+  inspect (describe (Just 42))   # "Got: 42"
+  inspect (describe Nothing)     # "Nothing"</code></pre>
+
+<h2>4. Recursive types</h2>
+
+<p>Types can reference themselves:</p>
+
+<pre><code>type List a = Cons a (List a) | Nil
+
+fn length xs =
+  match xs
+    | Cons _ rest =&gt; 1 + length rest
+    | Nil =&gt; 0
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 Nil))
+  inspect (length xs)   # 3</code></pre>
+
+<h2>5. Records</h2>
+
+<p>Records are named fields. Use <code>RecordName { field = value }</code> syntax:</p>
+
+<pre><code>type Person = Person { name : String, age : Int }
+
+fn greet p =
+  "Hello, " + p.name + "!"
+
+fn main =
+  let alice = Person { name = "Alice", age = 30 }
+  println (greet alice)   # Hello, Alice!
+  inspect alice.age       # 30</code></pre>
+
+<h2>6. Tuples</h2>
+
+<p>Fixed-size anonymous collections:</p>
+
+<pre><code>fn main =
+  let pair = (1, "hello")
+  let triple = (1, 2, 3)
+  inspect pair.0    # 1
+  inspect triple.2  # 3</code></pre>
+
+<div class="warn">
+  <strong>Gotcha:</strong> singleton tuples <code>(42,)</code> do not parse.
+  Ko does not support them yet.
+</div>
+
+<h2>7. Built-in types</h2>
+
+<p>Primitives you get without defining:</p>
+
+<ul>
+  <li><code>Int</code> &mdash; 64-bit signed integer</li>
+  <li><code>Float</code> &mdash; 64-bit float</li>
+  <li><code>String</code> &mdash; UTF-8 string</li>
+  <li><code>Bool</code> &mdash; <code>True</code> or <code>False</code></li>
+  <li><code>Char</code> &mdash; single character (<code>'a'</code>)</li>
+</ul>
+
+<h2>8. Type annotations</h2>
+
+<p>Annotate function parameters and return types:</p>
+
+<pre><code>fn add (a : Int) (b : Int) -&gt; Int = a + b
+fn double (x : Int) -&gt; Int = x * 2</code></pre>
+
+<div class="warn">
+  <strong>Gotcha:</strong> <code>fn add a b : Int =</code> does not parse.
+  Use parentheses: <code>fn add (a : Int) (b : Int) -&gt; Int =</code>.
+</div>
+
+<hr>
+
+<p class="mission-link">
+  <strong>Previous:</strong> <a href="0001-your-first-ko-program.html">Your First Ko Program</a><br>
+  <strong>Next:</strong> <a href="0003-closures-and-hofs.html">Closures and Higher-Order Functions</a><br>
+  <strong>Reference:</strong> <a href="../../docs/pattern-matching-and-adts.md">Pattern Matching and ADTs</a>,
+  <a href="../../docs/quick-reference.md">Quick Reference</a><br>
+  <strong>Questions?</strong> Ask your teacher &mdash; anything unclear is worth asking.
+</p>
+
+</body>
+</html>

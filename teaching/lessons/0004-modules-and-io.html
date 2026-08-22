@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 004: Modules and IO</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<h1>Modules and IO</h1>
+<p style="color: var(--muted); font-size: 0.9em;">Lesson 004 &middot; <a href="../MISSION.md">Mission</a></p>
+
+<p>Ko has a module system for organizing code and a set of IO builtins for
+talking to the outside world.</p>
+
+<h2>1. Standard library modules</h2>
+
+<p>The stdlib lives in <code>std/</code>. Import with the <code>std.</code> prefix:</p>
+
+<pre><code>import std.List
+import std.String
+import std.Int</code></pre>
+
+<p>Selective imports bring specific names into scope:</p>
+
+<pre><code>import std.List.{map, filter, foldl}
+import std.String.{length, append}</code></pre>
+
+<p>Aliased imports give a short name:</p>
+
+<pre><code>import std.Int as I
+# now use I.abs, I.min, I.max, ...</code></pre>
+
+<h2>2. What each module provides</h2>
+
+<p><strong>List</strong> (31 functions):</p>
+<ul>
+  <li>Construct: <code>Cons</code>, <code>Nil</code></li>
+  <li>Access: <code>head</code>, <code>tail</code>, <code>length</code>, <code>elem</code>, <code>find</code></li>
+  <li>Transform: <code>map</code>, <code>filter</code>, <code>foldl</code>, <code>foldr</code>, <code>reverse</code>, <code>append</code></li>
+  <li>Query: <code>any</code>, <code>all</code>, <code>sum</code>, <code>product</code>, <code>maximum</code>, <code>minimum</code></li>
+  <li>Slice: <code>take</code>, <code>drop</code>, <code>zip</code>, <code>concat</code></li>
+</ul>
+
+<p><strong>String</strong>: <code>length</code>, <code>append</code>, <code>charAt</code>, <code>substring</code>,
+<code>toInt</code>, <code>toIntOr</code>, <code>contains</code>, <code>split</code>, <code>trim</code>,
+<code>repeat</code>, <code>toLowerCase</code>, <code>toUpperCase</code></p>
+
+<p><strong>Int</strong> (builtins): <code>Int.pow</code>, <code>Int.factorial</code>, <code>Int.abs</code>,
+<code>Int.min</code>, <code>Int.max</code>, <code>Int.gcd</code>, <code>Int.lcm</code>, <code>Int.isqrt</code></p>
+
+<p><strong>Int</strong> (with import): <code>even</code>, <code>odd</code>, <code>mod</code>, <code>clamp</code>, <code>sign</code></p>
+
+<p><strong>Float</strong>: <code>Float.sqrt</code>, <code>Float.sin</code>, <code>Float.cos</code>, <code>Float.floor</code>, <code>Float.ceil</code></p>
+
+<h2>3. IO builtins (global)</h2>
+
+<p>These are available everywhere without importing:</p>
+
+<pre><code>fn main =
+  println "Hello"        # print + newline
+  print "no newline"     # print without newline
+  inspect 42              # debug representation
+  eprintErr "warning"    # print to stderr</code></pre>
+
+<h2>4. The io. module</h2>
+
+<p>For file and system IO, import <code>std.io</code>:</p>
+
+<pre><code>import std.io
+
+fn main =
+  # Check if a file exists
+  let exists = IO.exists "myfile.ko"
+  inspect exists   # True or False
+
+  # Read a file
+  match IO.readOrEmpty "myfile.ko"
+    | Ok content =&gt; println content
+    | Err _ =&gt; println "file not found"</code></pre>
+
+<p><strong>IO functions:</strong></p>
+<ul>
+  <li><code>IO.readLine prompt</code> &mdash; read a line from stdin</li>
+  <li><code>IO.writeOrDie path content</code> &mdash; write string to file (panics on error)</li>
+  <li><code>IO.readOrEmpty path</code> &mdash; read file as Result</li>
+  <li><code>IO.exists path</code> &mdash; check if file exists</li>
+  <li><code>IO.eprintErr msg</code> &mdash; print to stderr</li>
+</ul>
+
+<h2>5. Two IO namespaces</h2>
+
+<div class="warn">
+  <strong>Gotcha:</strong> there are two different IO things:
+  <ul>
+    <li><code>IO.*</code> (uppercase) &mdash; global builtins, no import needed</li>
+    <li><code>io.*</code> (lowercase) &mdash; imported from <code>std.io</code></li>
+  </ul>
+  <code>println</code> is global. <code>IO.readLine</code> requires <code>import std.io</code>.
+</div>
+
+<h2>6. Local modules</h2>
+
+<p>Any <code>.ko</code> file in the same directory is a local module.
+Import by name without the <code>std.</code> prefix:</p>
+
+<pre><code># math.ko
+fn square x = x * x
+
+# main.ko
+import math
+
+fn main =
+  inspect (math.square 5)   # 25</code></pre>
+
+<hr>
+
+<p class="mission-link">
+  <strong>Previous:</strong> <a href="0003-closures-and-hofs.html">Closures and Higher-Order Functions</a><br>
+  <strong>Reference:</strong> <a href="../../docs/modules.md">Modules and Imports</a>,
+  <a href="../../docs/writing-ko-programs.md">Writing Ko Programs</a><br>
+  <strong>Questions?</strong> Ask your teacher &mdash; anything unclear is worth asking.
+</p>
+
+</body>
+</html>

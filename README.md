@@ -162,6 +162,8 @@ cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
 - [Ko by Example](docs/ko-by-example.md) — step-by-step guide
 - [Quick Reference](docs/quick-reference.md) — syntax cheat sheet
 - [Writing Kō Programs](docs/writing-ko-programs.md) — practical constraints and gotchas (fn main, imports, pipes)
+- [Error Messages](docs/error-messages.md) — what every compiler error and warning means
+- [Compiler Pipeline](docs/compiler-pipeline.md) — how source becomes binary (parser, HIR, LIR, LLVM)
 - [Modules & Imports](docs/modules.md) — how `import`, resolution, and the two IO namespaces work
 - [Linearity & Ownership](docs/linearity-and-ownership.md) — the consume-once model, borrow vs. consume, and reading the checker's warnings
 

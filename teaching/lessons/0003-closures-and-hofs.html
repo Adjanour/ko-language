@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 003: Closures and Higher-Order Functions</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<h1>Closures and Higher-Order Functions</h1>
+<p style="color: var(--muted); font-size: 0.9em;">Lesson 003 &middot; <a href="../MISSION.md">Mission</a></p>
+
+<p>Functions are values in ko. You can pass them around, return them from
+other functions, and build them with closures.</p>
+
+<h2>1. Lambdas</h2>
+
+<p>Anonymous functions with <code>\params -&gt; body</code>:</p>
+
+<pre><code>fn main =
+  let double = \x -&gt; x * 2
+  let add = \a b -&gt; a + b
+  inspect (double 5)    # 10
+  inspect (add 3 4)     # 7</code></pre>
+
+<h2>2. Higher-order functions</h2>
+
+<p>Functions that take or return other functions:</p>
+
+<pre><code>fn apply_to_five f = f 5
+
+fn main =
+  let double = \x -&gt; x * 2
+  inspect (apply_to_five double)   # 10</code></pre>
+
+<h2>3. Closures capture their environment</h2>
+
+<p>A closure remembers the variables where it was created:</p>
+
+<pre><code>fn make_adder n =
+  \x -&gt; x + n
+
+fn main =
+  let add5 = make_adder 5
+  let add10 = make_adder 10
+  inspect (add5 3)     # 8
+  inspect (add10 3)    # 13</code></pre>
+
+<p>The <code>\x -&gt; x + n</code> closure captures <code>n</code> from the
+surrounding scope. Each call to <code>make_adder</code> creates a new
+closure with its own <code>n</code>.</p>
+
+<h2>4. Stateful closures with ref</h2>
+
+<p><code>ref</code> creates a mutable reference cell. Closures can capture and
+modify it:</p>
+
+<pre><code>fn main =
+  let counter = ref 0
+  let increment = \_ -&gt;
+    counter := !counter + 1
+    !counter
+  inspect (increment 0)   # 1
+  inspect (increment 0)   # 2
+  inspect (increment 0)   # 3</code></pre>
+
+<p><code>!counter</code> reads the value. <code>counter :=</code> writes it.</p>
+
+<h2>5. Map, filter, fold</h2>
+
+<p>The classic functional trio. Import from <code>std/List</code>:</p>
+
+<pre><code>import std.List.{map, filter, foldl}
+
+fn main =
+  let xs = Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil)))
+  let doubled = map (\x -&gt; x * 2) xs
+  let evens = filter (\x -&gt; x % 2 == 0) xs
+  let sum = foldl (\acc x -&gt; acc + x) 0 xs
+  inspect doubled   # [2, 4, 6, 8]
+  inspect evens     # [2, 4]
+  inspect sum       # 10</code></pre>
+
+<h2>6. Currying</h2>
+
+<p>Every function in ko takes exactly one argument and returns one value.
+Multi-parameter functions are chains of one-argument functions:</p>
+
+<pre><code>fn add a b = a + b
+
+fn main =
+  # add 3 4 is actually (add 3) 4
+  # add 3 returns a closure that adds 3 to anything
+  let add3 = add 3
+  inspect (add3 4)     # 7
+  inspect (add3 10)    # 13</code></pre>
+
+<p>This is why <code>map (\x -&gt; x * 2) xs</code> works: <code>map</code>
+takes one argument (the function) and returns a new function that takes the list.</p>
+
+<hr>
+
+<p class="mission-link">
+  <strong>Previous:</strong> <a href="0002-types-and-patterns.html">Types and Pattern Matching</a><br>
+  <strong>Next:</strong> <a href="0004-modules-and-io.html">Modules and IO</a><br>
+  <strong>Reference:</strong> <a href="../../docs/how-closures-work.md">How Closures Work</a>,
+  <a href="../../docs/functional-guide.md">Functional Guide</a><br>
+  <strong>Questions?</strong> Ask your teacher &mdash; anything unclear is worth asking.
+</p>
+
+</body>
+</html>
