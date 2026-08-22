@@ -3,157 +3,132 @@ title: "Writing Kō Programs"
 ---
 # Writing Kō Programs
 
-A practical guide to writing ko programs that actually compile and run.
-This covers the constraints and gotchas that aren't obvious from the
-syntax guides.
+Practical constraints and patterns for writing ko programs that compile and run.
 
 ---
 
-## Every program needs `fn main`
+## Entry Point
 
-Kō compiles to native code via LLVM. The entry point is `fn main`:
+Every ko program needs `fn main`:
 
 ```ko
 fn main =
-  println "Hello, world!"
+    println "Hello, world!"
 ```
 
 Run it:
 
+```bash
+ko hello.ko
 ```
-$ ko hello.ko
-Hello, world!
-```
 
-There is no `ko --run` flag — just `ko file.ko`.
+## Top-Level Bindings
 
----
-
-## Top-level `let` bindings don't work (yet)
-
-In ko v0.3.x, top-level `let` bindings are not codegen'd. If you reference
-a top-level `let` from `fn main`, you'll get `UndefinedVariable` at runtime:
+Top-level `let` bindings are not codegen'd. Put values inside `fn main`:
 
 ```ko
-# THIS DOES NOT WORK:
-let greeting = "Hello"
-
+# Values go inside fn main
 fn main =
-  println greeting   # UndefinedVariable
-```
+    let greeting = "Hello"
+    println greeting
 
-**Workaround:** put everything inside `fn main`, or define only `fn`s at
-top level (functions are codegen'd correctly):
-
-```ko
-# THIS WORKS:
+# Functions can live at top level
 fn greet name = "Hello, " + name
 
 fn main =
-  println (greet "Alice")
+    println (greet "Alice")
 ```
 
----
+## Inline Values
 
-## Multi-line values don't parse
-
-Kō's parser requires values to be on the same line as the `=` sign.
-Indented blocks after `let` don't work:
+Values must appear on the same line as `=`:
 
 ```ko
-# THIS DOES NOT PARSE:
-let x =
-  if 1 > 0 then 1
-  else 2
-```
-
-**Workaround:** keep the value inline:
-
-```ko
+# Works
 let x = if 1 > 0 then 1 else 2
+
+# Does not parse
+# let x =
+#   if 1 > 0 then 1
+#   else 2
 ```
 
-For long expressions, break at function boundaries, not at the `let`:
+Break long expressions at function boundaries:
 
 ```ko
 fn main =
-  let nums = Cons 1 (Cons 2 (Cons 3 Nil))
-  let doubled = map (\x -> x * 2) nums
-  inspect doubled   # [2, 4, 6]
+    let nums = Cons 1 (Cons 2 (Cons 3 Nil))
+    let doubled = map (\x -> x * 2) nums
+    inspect doubled   # [2, 4, 6]
 ```
-
----
 
 ## Imports
 
-Kō resolves imports from two places:
-
-1. **Standard library** (`std/`): `import std.List`, `import std.String`
-2. **Local modules** (same directory): `import math`, `import utils`
-
-Import syntax:
+Standard library imports use the `std.` prefix:
 
 ```ko
-import std.List            # full import: List.length, List.map, ...
-import std.List.{map, filter}  # selective: map, filter in scope
-import std.Int as I        # aliased: I.abs, I.min, ...
+import std.List
+import std.String
+import std.Int
 ```
 
-**Note:** module names are case-sensitive. `import List` (without `std.`)
-looks for `List.ko` in the source directory — it won't find the stdlib.
+Selective imports bring names into scope:
 
----
+```ko
+import std.List.{map, filter}
+import std.String.{length, append}
+```
 
-## The pipe operator `|>`
+Aliased imports give a short name:
 
-Pipe passes the left side as the **first** argument:
+```ko
+import std.Int as I
+# I.abs, I.min, I.max, ...
+```
+
+Local modules resolve from the source directory:
+
+```ko
+import math   # looks for math.ko in the same directory
+```
+
+Module names are case-sensitive. `import List` without `std.` looks for a local `List.ko`.
+
+## Pipe Operator
+
+Pipe passes the left side as the first argument:
 
 ```ko
 5 |> Int.toString         # Int.toString 5  =  "5"
 "hello" |> String.length  # String.length "hello"  =  5
 ```
 
-A chained pipe:
+Chained pipes:
 
 ```ko
-5 |> Int.toString |> String.append "n="  # String.append (Int.toString 5) "n="  =  "5n="
+5 |> Int.toString |> String.append "n="  # "5n="
 ```
 
-**Common mistake:** assuming pipe passes as the last argument. It's the first:
-
-```ko
-10 |> sub 3  # sub 10 3  =  7  (NOT sub 3 10 = -7)
-```
-
-Multi-line pipes work (since Stage 6.3):
+Multi-line pipes:
 
 ```ko
 fn main =
-  IO.readLine "> "
-  |> IO.eprintln
+    IO.readLine "> "
+    |> IO.eprintln
 ```
 
----
-
-## If/then/else
+## If Expressions
 
 `else` is optional:
 
 ```ko
-if 1 > 0 then 1         # works: returns 1
-if 1 > 0 then 1 else 2  # works: returns 1
+if 1 > 0 then 1         # returns 1
+if 1 > 0 then 1 else 2  # returns 1
 ```
 
-Both branches must return the same type:
+Both branches must return the same type.
 
-```ko
-# THIS DOES NOT COMPILE (unit vs int):
-if 1 > 0 then 1 else println "no"
-```
-
----
-
-## Pattern matching
+## Pattern Matching
 
 Match arms use `|` prefix and `=>`:
 
@@ -161,113 +136,97 @@ Match arms use `|` prefix and `=>`:
 type Maybe a = Just a | Nothing
 
 fn describe m =
-  match m
-    | Just x => "Got: " + Int.toString x
-    | Nothing => "Nothing"
+    match m
+        | Just x => "Got: " + Int.toString x
+        | Nothing => "Nothing"
 ```
 
-**Gotcha:** nested literal patterns inside constructors don't match:
+Nested literal patterns inside constructors bind as pattern variables:
 
 ```ko
 match Just 0
-  | Just 0 => "zero"      # DOES NOT MATCH -- 0 binds as a pattern variable
-  | Just _ => "has value"  # this catches Just 0 too
-  | Nothing => "empty"
+    | Just 0 => "zero"      # 0 is a pattern variable, not a literal match
+    | Just _ => "has value"  # catches Just 0
+    | Nothing => "empty"
 ```
 
-This compiles but prints `"has value"`, not `"zero"`.
+## Types
 
----
-
-## ADTs and types
-
-Types are defined inline (multi-line with leading `|` doesn't parse):
+Sum types are defined inline:
 
 ```ko
-# CORRECT:
 type Token = Identifier String | Number String | Plus | Minus | Star
-
-# DOES NOT PARSE:
-# type Token =
-#   | Identifier String
-#   | Number String
 ```
 
-Records use `RecordName { field = value }` syntax:
+Records use `RecordName { field = value }`:
 
 ```ko
 type Person = Person { name : String, age : Int }
 
 fn main =
-  let p = Person { name = "Alice", age = 30 }
-  println p.name    # Alice
+    let p = Person { name = "Alice", age = 30 }
+    println p.name    # Alice
 ```
 
----
+Type annotations go on parameters and return type:
 
-## Linearity warnings
+```ko
+fn add (a : Int) (b : Int) -> Int = a + b
+```
+
+## Linearity
 
 Kō checks that linear variables are used exactly once. The checker is
-conservative — you'll see warnings in many working programs:
+conservative — you'll see warnings in working programs:
 
 ```ko
 fn sum xs =
-  match xs             # xs consumed here
-    | Cons h t => h + sum t   # AND here -> warning
-    | Nil => 0
+    match xs
+        | Cons h t => h + sum t   # warning: xs used twice
+        | Nil => 0
 ```
 
-This is a warning, not an error. The program runs correctly. Use
-`--skip-linearity` to silence warnings during experimentation, or
-prefix unused variable names with `_`:
+Prefix unused variables with `_` to silence warnings:
 
 ```ko
 fn first xs =
-  match xs
-    | Cons h _ => h    # _ suppresses warning for unused tail
-    | Nil => 0
+    match xs
+        | Cons h _ => h
+        | Nil => 0
 ```
 
-See [linearity-and-ownership.md](linearity-and-ownership.md) for details.
+Use `--skip-linearity` to disable the checker entirely.
 
----
+See [Linearity and Ownership](linearity-and-ownership) for details.
 
-## The `?` operator
+## Try Operator
 
-The `?` (try) operator unwraps `Result` values, returning early on `Err`.
-It requires parentheses around the expression:
+The `?` operator unwraps `Result` values:
 
 ```ko
 fn main =
-  let input = "42"
-  let n = (String.toInt input)?   # parens required
-  println n
+    let input = "42"
+    let n = (String.toInt input)?
+    println n
 ```
 
-**Caveat:** `?` is unreliable in v0.3.x — it sometimes falls back to
-legacy codegen and produces `UndefinedVariable`. Use `match` instead
-for production code:
+Parentheses around the expression are required. Use `match` for production code:
 
 ```ko
 fn main =
-  let input = "42"
-  match String.toInt input
-    | Just n => println n
-    | Nothing => println "not a number"
+    let input = "42"
+    match String.toInt input
+        | Just n => println n
+        | Nothing => println "not a number"
 ```
 
----
+## CLI Commands
 
-## Running your program
-
+```bash
+ko myfile.ko                     # compile and run
+ko --check myfile.ko             # parse and type-check only
+ko --dump-ir myfile.ko           # print LLVM IR to stdout
+ko --emit-ir out.ll myfile.ko    # write LLVM IR to file
+ko --emit-exe myfile.ko          # compile to native executable
+ko --repl                        # interactive REPL
 ```
-$ ko myfile.ko              # compile and run
-$ ko --dump-ir myfile.ko    # print LLVM IR to stdout
-$ ko --emit-ir out.ll myfile.ko   # write IR to file
-$ ko --emit-exe myfile.ko   # compile to native executable
-$ ko --check myfile.ko      # parse and check without running
-$ ko --repl                 # start interactive REPL
-```
-
-There is no separate compile step — `ko file.ko` compiles and runs in one shot.
-The `zig build` step is only needed when developing the compiler itself.

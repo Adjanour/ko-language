@@ -3,119 +3,101 @@ title: "Kō Error Messages"
 ---
 # Kō Error Messages
 
-A reference for every error and warning the ko compiler produces,
-what it means, and how to fix it.
+Every error and warning the ko compiler produces, with causes and fixes.
 
 ---
 
-## Parse errors
-
-These happen before type checking. The compiler found syntax it does not
-recognize.
+## Parse Errors
 
 ### `expected expression`
 
-The parser expected a value but found something else. Common causes:
+The parser expected a value. Common causes:
 
-- **Multi-line let value:** `let x =\n  expr` does not parse. Keep value inline.
-- **Trailing operator:** `let x = 1 +` (missing right side).
-- **Missing function body:** `fn f x =` (nothing after `=`).
+- Multi-line `let` value (`let x =\n  expr`). Keep the value on the same line as `=`.
+- Trailing operator (`let x = 1 +`).
+- Missing function body (`fn f x =`).
 
 ### `expected '=', got ':'`
 
-Wrong annotation syntax. Use:
+Wrong annotation syntax:
 
 ```ko
-# WRONG:
+# Wrong
 fn add a b : Int = a + b
 
-# CORRECT:
+# Correct
 fn add (a : Int) (b : Int) -> Int = a + b
 ```
 
 ### `expected constructor name`
 
-You used leading `|` in a multi-line type definition:
+Leading `|` in a type definition:
 
 ```ko
-# WRONG:
+# Wrong
 type Shape =
-  | Circle Float
-  | Rect Float Float
+    | Circle Float
+    | Rect Float Float
 
-# CORRECT (inline):
+# Correct
 type Shape = Circle Float | Rect Float Float
 ```
 
 ### `expected pattern`
 
-The pattern is not valid. Common cause: `\() ->` (unit lambda) does not
-parse. Use `\_ ->` instead.
+Invalid pattern. Common cause: `\() ->` does not parse. Use `\_ ->` instead.
 
 ### `Module not found`
 
-Import path does not resolve. Check:
+Import path does not resolve.
 
-- `import List` should be `import std.List` (stdlib needs `std.` prefix)
+- `import List` should be `import std.List`
 - Module names are case-sensitive
 - Local modules must be in the same directory as the source file
 
 ---
 
-## Type errors
+## Type Errors
 
 ### `type mismatch: expected X, got Y`
 
-The types do not match. Common causes:
+Common causes:
 
-- **if branches return different types:** `if cond then 1 else println "no"`
-  (Int vs Unit).
-- **Pipe argument order:** `list |> filter pred` passes list as first arg,
-  but `filter` expects `predicate list`. Use `filter pred list`.
-- **Using a Result where Int is expected:** `let n = (String.toInt s)?`
-  without parens around the `?` expression.
+- if branches return different types: `if cond then 1 else println "no"` (Int vs Unit).
+- Pipe argument order: `list |> filter pred` passes list as first arg, but `filter` expects `predicate list`.
+- Missing parens around `?` expression.
 
 ### `undefined name 'X'`
 
-The name is not in scope. Common causes:
+Name not in scope.
 
-- **Missing import:** `map`, `filter`, `foldl` need `import std.List`.
-- **Wrong name:** `to_string` should be `Int.toString`; `sqrt` should
-  be `Float.sqrt`; `mod` should be `%` operator; `eprintln` should be
-  `IO.eprintln`.
-- **Top-level let:** top-level `let` bindings are not codegen'd in v0.3.x.
-  Move into `fn main` or use `fn` definitions.
+- Missing import: `map`, `filter`, `foldl` need `import std.List`.
+- Wrong name: use `Int.toString` not `to_string`, `Float.sqrt` not `sqrt`, `%` not `mod`, `IO.eprintln` not `eprintln`.
+- Top-level `let` not codegen'd: move into `fn main` or use `fn` definitions.
 
 ---
 
-## Runtime errors
+## Runtime Errors
 
 ### `panic: assertion failed`
 
-An `assert` condition was false. The program was called with invalid input,
-or an internal invariant was violated.
+An `assert` condition was false. Check input values.
 
 ### `panic: unwrap: Err value`
 
-`Result.unwrap` was called on an `Err`. Use `Result.unwrapOr` instead:
+`Result.unwrap` called on an `Err`. Use `Result.unwrapOr`:
 
 ```ko
-# PANICS on Err:
-Result.unwrap result
-
-# Returns default on Err:
 Result.unwrapOr "default" result
 ```
 
-### `panic: write failed` or similar IO panic
+### `panic: write failed`
 
-`IO.writeOrDie` was called and the write failed (e.g. disk full, invalid path).
-Check the path and permissions.
+`IO.writeOrDie` failed. Check path and permissions.
 
 ### Segmentation fault
 
-Usually caused by a compiler bug, not a user error. Report it on GitHub
-with the source file that triggers it.
+Usually a compiler bug. Report on GitHub with the source file.
 
 ---
 
@@ -123,19 +105,13 @@ with the source file that triggers it.
 
 ### `linear variable used twice (warning)`
 
-A variable was consumed in two places. The checker is conservative -- this
-often happens with:
-
-- Recursive accumulator patterns (`reverse xs acc`)
-- Tree traversals (`show_expression left` then `show_expression right`)
-- Shared cursors (`parse_expression cursor`)
-
-The program runs correctly. See [linearity-and-ownership.md](linearity-and-ownership.md)
-for details. Use `--skip-linearity` to silence.
+Variable consumed in two places. The checker is conservative -- common with
+recursive accumulators, tree traversals, and shared cursors. The program
+runs correctly. Use `--skip-linearity` to silence.
 
 ### `linear variable never used (warning)`
 
-A binding was created but never touched. Prefix with `_` to silence:
+Binding never touched. Prefix with `_`:
 
 ```ko
 let _unused = expr
@@ -143,42 +119,37 @@ let _unused = expr
 
 ### `linear variable used after consumption (warning)`
 
-A borrow happened after the variable was consumed. Same family as "used twice"
--- often a false positive in recursive functions.
+Borrow after consume. Same family as "used twice" -- often a false positive.
 
 ---
 
-## Codegen errors
+## Codegen Errors
 
 ### `LIR lowering error: ArityMismatch`
 
-A function was called with the wrong number of arguments. This can happen
-with:
-
-- Passing a curried multi-arg function as a value
-- Using `Int.fromString` (known bug in v0.3.x)
-- Returned closures called with wrong arity
+Wrong number of arguments. Known causes: curried multi-arg functions as values,
+`Int.fromString` (bug), returned closures with wrong arity.
 
 ### `VerifierFailed`
 
-The generated LLVM IR failed verification. Usually a compiler bug. The
-function still runs in some cases via the legacy codegen fallback.
+LLVM IR verification failed. Usually a compiler bug. The function may still
+run via legacy codegen fallback.
 
 ### `std init fn 'X' used as value not yet supported`
 
-A stdlib builtin was used unapplied (as a value) instead of called:
+Stdlib builtin used unapplied:
 
 ```ko
-# FAILS:
+# Wrong
 let name = IO.readLine
 
-# WORKS:
+# Correct
 let name = IO.readLine "> "
 ```
 
 ---
 
-## CLI errors
+## CLI Errors
 
 ### `error: cannot open file '--run'`
 
@@ -186,4 +157,4 @@ The `--run` flag does not exist. Use `ko file.ko` instead.
 
 ### `error: file not found`
 
-The source file does not exist at the given path. Check for typos.
+Source file does not exist at the given path.
