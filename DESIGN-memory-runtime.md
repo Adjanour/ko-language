@@ -1,428 +1,185 @@
-# Kō Memory & Runtime Model
+# Kō Memory and Runtime Contract
 
-> **Status:** Design Draft
-> **Date:** 2026-08-01
-> **Research:** Koka Perceus RC, Zig allocator patterns, Boehm GC, Swift ARC
+> **Status:** Supporting design and implementation contract
+> **Date:** 2026-09-17
+> **Canonical ownership semantics:** [DESIGN-ownership.md](DESIGN-ownership.md)
 
----
-
-## 1. Current State
-
-### Value Representation
-
-Every Kō value is an `i64` in LLVM IR. Type discrimination is done at the codegen level via `expr_type_tags` (per-expression type annotations from the typechecker) and runtime heuristics (values < 4096 are raw tags, > 4096 are pointers).
-
-| Ko Type | LLVM Type | i64 Representation |
-|---------|-----------|-------------------|
-| Int | `i64` | Raw i64 value |
-| Float | `double` | Bitcast double to i64 |
-| Bool | `i1` | 0 = false, 1 = true |
-| String | `i8*` | Pointer to null-terminated C string |
-| Char | `i8` (stored as i64) | Byte value (ASCII) |
-| Unit | `void` | 0 |
-| Constructor (zero-arg) | `i64` | Raw tag number |
-| Constructor (multi-arg) | `i64` | Pointer to heap struct, bitcast to i64 |
-| Tuple | `i64` | Pointer to heap-allocated array of i64 |
-| Record | `i64` | Pointer to heap-allocated struct |
-| Function (no captures) | `i64` | Raw function pointer, bitcast to i64 |
-| Function (with captures) | `i64` | Pointer to closure struct with bit 0 set |
-| Reference | `i64` | Pointer to heap cell |
-
-### Reference Counting
-
-Heap-allocated values use reference counting via `ko_alloc`, `ko_incref`, `ko_decref`.
-
-Memory layout:
-```
-[ i64 rc ][ ... user data ... ]
-^         ^
-|         pointer returned by ko_alloc (what codegen sees)
-raw malloc ptr
-```
-
-- `ko_alloc(user_size)`: `malloc(user_size + 8)`, store RC=1 at offset 0, return ptr+8
-- `ko_incref(ptr)`: Read RC from ptr-8, increment, store back
-- `ko_decref(ptr)`: Read RC from ptr-8, decrement, if <= 0 then `free(ptr-8)`
-
-Ownership tracking in codegen:
-- `scope_heap_values`: Tracks all heap-allocated i64 values per function
-- `consumed_heap_values`: Values stored in parent structures (skipped at decref time)
-- `emitDecrefAll()`: At function exit, decrefs all unconsumed heap values
-
-### Constructor Representation
-
-Zero-argument constructors (e.g., `Nil`, `True`): The value IS the tag number directly.
-
-Multi-argument constructors (e.g., `Cons`, `Ok`): The value is a pointer to a heap struct:
-```
-[ i64 tag | i64 arg_0 | i64 arg_1 | ... ]
-```
-
-Pattern matching uses a heuristic: values < 4096 are raw tags; values > 4096 are dereferenced and their `ptr[0]` is read as the tag.
-
-### Closure Representation
-
-Function values use a bit 0 tag:
-- Bit 0 = 0: Raw function pointer (no captures)
-- Bit 0 = 1: Closure pointer (has captures)
-
-Closure struct layout:
-```
-offset 0: fn_ptr (pointer to wrapper function)
-offset 8+: captured_value_0, captured_value_1, ...
-```
-
-Partial application uses a different layout:
-```
-offset 0: fn_ptr
-offset 8: total_arity
-offset 16: applied_count
-offset 24+: applied_args[0], applied_args[1], ...
-```
+This document describes how canonical ownership decisions become runtime behaviour. If ownership terminology here conflicts with `DESIGN-ownership.md`, the canonical document wins.
 
 ---
 
-## 2. Known Bugs
+## 1. Boundary
 
-### Bug 1: Strings Are Not Reference Counted
+Typed HIR determines value types and ownership use patterns. Ownership-explicit LIR decides where values move, retain, release, or become eligible for reuse. The runtime implements the remaining dynamic operations.
 
-Heap-allocated strings (from `String.append`, `String.to_upper`, etc.) use raw `malloc` and are never freed. Every string operation leaks memory.
-
-**Root cause:** `stdlib_codegen.zig` calls `malloc` directly for string operations instead of `ko_alloc`.
-
-**Impact:** Any program that does string manipulation leaks memory proportional to the number of string operations. Long-running programs (REPL, servers) will grow unbounded.
-
-### Bug 2: Recursive Decref Is Missing
-
-`ko_decref` only frees the RC header. It does NOT recursively decrement child values stored in constructors, tuples, or records.
-
-**Root cause:** The runtime doesn't track the types of values inside containers. A constructor's fields are just `i64` values — the runtime doesn't know which ones are pointers.
-
-**Impact:** A `List String` (list of heap-allocated strings) will leak every string inside it when the list is freed. Only the outermost cons cells are freed.
-
-### Bug 3: No Cycle Detection
-
-Reference counting cannot collect cyclic data structures. If a node points to itself or forms a cycle, the RC never reaches 0 and the memory leaks.
-
-**Impact:** Programs that create cyclic data (e.g., doubly-linked lists, graph structures) will leak.
+The runtime must not infer language ownership from pointer magnitude, incidental AST form, or undocumented conventions.
 
 ---
 
-## 3. Proposed Fixes
+## 2. Current Implementation
 
-### Fix 1: KoString Wrapper
+Kō currently uses a largely uniform `i64`-or-pointer representation and reference-counted heap allocations. Important implementation details include:
 
-Wrap heap-allocated strings in a counted header:
+- primitive values are unboxed where the active lowering permits;
+- heap objects carry runtime headers;
+- constructors, tuples, records, strings, closures, arrays, maps, sets, and partial applications have representation-specific layouts;
+- zero-argument constructors may be immediate tags;
+- closure/function values use tagged representation conventions;
+- the active code-generation path is AST → HIR → LIR → LLVM IR;
+- legacy `codegen.zig` is frozen.
 
-```c
-typedef struct {
-  i64 refcount;
-  i64 byte_length;
-  char data[];       // flexible array, null-terminated
-} KoString;
-```
-
-**New runtime functions:**
-
-```c
-KoString* ko_string_alloc(i64 len) {
-  KoString* s = malloc(sizeof(KoString) + len + 1);
-  s->refcount = 1;
-  s->byte_length = len;
-  s->data[len] = '\0';
-  return s;
-}
-
-KoString* ko_string_from_cstr(const char* cstr) {
-  i64 len = strlen(cstr);
-  KoString* s = ko_string_alloc(len);
-  memcpy(s->data, cstr, len);
-  return s;
-}
-
-void ko_string_incref(KoString* s) {
-  if (s) s->refcount++;
-}
-
-void ko_string_decref(KoString* s) {
-  if (s && --s->refcount <= 0) {
-    free(s);  // data[] is part of the struct
-  }
-}
-```
-
-**Changes to string builtins:**
-
-| Builtin | Current behavior | New behavior |
-|---------|-----------------|--------------|
-| `String.append a b` | `malloc` + memcpy, returns `i8*` | `ko_string_alloc`, copy into `data[]`, returns `KoString*` |
-| `String.to_upper s` | `malloc` + loop, returns `i8*` | `ko_string_alloc`, fill `data[]`, returns `KoString*` |
-| `String.split s delim` | Returns `List` of `i8*` | Returns `List` of `KoString*` |
-| `len s` | Counts bytes until `\0` on `i8*` | Reads `s->byte_length` — O(1) |
-| `charAt s i` | Index into `i8*` | Index into `s->data` |
-
-**Literal strings:** Stay as `i8*` (global constants, never freed). When passed to string builtins, they are wrapped into `KoString` by the builtin implementation.
-
-**Codegen impact:** The codegen currently returns raw `i8*` for strings. Change to return `KoString*` (still an `i64` in the tagged representation, but pointing to a `KoString` instead of raw bytes).
-
-### Fix 2: Type-Aware Decref
-
-The core problem: the runtime doesn't know the types of values inside containers. Three approaches:
-
-**Approach A: Store type tags alongside values**
-
-Every heap-allocated container stores a parallel array of type tags:
-
-```c
-typedef struct {
-  i64 refcount;
-  i64 arity;
-  i64* fields;      // array of i64 values
-  i32* field_tags;  // parallel array of type tags
-} Constructor;
-```
-
-```c
-typedef struct {
-  i64 refcount;
-  i64 length;
-  i64 capacity;
-  i64* elements;
-  i32* elem_tags;   // parallel array of type tags
-} KoArray;
-```
-
-Pros: Decref is trivial — iterate the tag array and call `ko_decref_value` for each.
-Cons: Doubles memory per container. Adds allocation overhead.
-
-**Approach B: Emit decref metadata in codegen**
-
-The typechecker knows the types. At codegen time, emit a decref table per function:
-
-```c
-struct DecrefEntry {
-  i64* slot;       // pointer to the i64 value in the stack frame
-  i32 type_tag;    // what type it is
-};
-
-void decref_main_fn(struct DecrefEntry* entries, i64 count) {
-  for (i64 i = 0; i < count; i++) {
-    ko_decref_value(*entries[i].slot, entries[i].type_tag);
-  }
-}
-```
-
-Pros: No runtime overhead per container. Type information exists only at compile time.
-Cons: Doesn't help for values stored in dynamically-typed containers (e.g., `List a` where `a` is unknown).
-
-**Approach C: Conservative decref (Boehm-style)**
-
-Treat every `i64` as a potential pointer. If it looks like a pointer (aligned, in heap range), decref it.
-
-```c
-int is_heap_pointer(i64 val) {
-  void* ptr = (void*)(val - 1);  // adjust for tag bit
-  // Check if ptr is in heap range and aligned
-  return ptr >= heap_start && ptr < heap_end && ((uintptr_t)ptr % 8 == 0);
-}
-
-void ko_decref_conservative(i64 val) {
-  void* ptr = (void*)(val - 1);
-  if (is_heap_pointer(val)) {
-    i64 rc = *(i64*)ptr;
-    if (rc > 0 && rc < 1000000) {  // sanity check
-      ko_decref(ptr);
-    }
-  }
-}
-```
-
-Pros: Works for any container, no metadata needed.
-Cons: Can false-positive on integers that happen to look like pointers. Performance overhead from range checks.
-
-### Recommended Approach
-
-**Use Approach A for constructors** (we know field types at compile time, and constructors are the most common container).
-
-**Use Approach B for closures** (emit metadata for captured values).
-
-**Use Approach C as a fallback** for dynamically-typed containers like `List a` where the element type is unknown at compile time.
-
-**Implementation plan:**
-
-1. Add `i32* field_tags` to the `Constructor` struct
-2. Emit field tags during codegen for every constructor call
-3. Add `ko_decref_value(i64 val, i32 type_tag)` function
-4. Call `ko_decref_value` for each field in `ko_decref` when freeing a constructor
-5. Emit decref metadata for closure environments
-6. Use conservative decref for `List a` elements
-
-### Fix 3: Cycle Detection (Deferred)
-
-RC cannot collect cycles. Options for future consideration:
-
-**Option A: Weak references**
-
-```ko
-type Weak a = Weak (Ref (Maybe a))
-
-Weak.make : a -> Weak a           # create weak reference
-Weak.get : Weak a -> Maybe a      # dereference (Nothing if collected)
-```
-
-Weak references don't increment the RC. When the strong reference count reaches 0, the value is collected and all weak references become `Nothing`.
-
-**Option B: Epoch-based cycle collector**
-
-Periodically run a mark-sweep pass to find cycles. This is what Python does (generational GC with cycle detector).
-
-**Option C: Ignore**
-
-Document the limitation. Cycles are rare in CLI tools and compilers. If a user needs cycles, they can use `Weak` (future) or restructure their data.
-
-**Recommendation:** Ignore for now. Document the limitation. Add `Weak a` in v0.4.0 if needed.
+The current compiler still has incomplete tracking and cleanup for some intermediate tuples, records, closures, and aggregate paths. Issues #45 and #46 track the immediate correctness work.
 
 ---
 
-## 4. Allocation Strategies
+## 3. Runtime Actions
 
-### Current: Per-Object malloc
+The compiler may request these conceptual actions:
 
-Every `ko_alloc` call does `malloc`. This is simple but slow for programs that allocate many small objects (cons cells, closures).
+| Action | Meaning |
+|---|---|
+| `move` | Transfer an owning value without changing its dynamic owner count. |
+| `borrow` | Create a temporary non-owning alias; no retain. |
+| `retain` | Create or preserve another owning path. |
+| `release` | End an owning path; destroy recursively when the count reaches zero. |
+| `reuse` | Reinitialize unique, dead storage for a semantically new immutable value. |
+| `copy` | Duplicate a compiler-known copy value according to the ABI. |
 
-### Future: Arena Allocation
+These may be LIR instructions, annotations consumed during lowering, or calls after optimization. Their semantics are fixed even if encoding changes.
 
-For function-local data with known lifetime, use an arena allocator:
+---
 
-```c
-typedef struct {
-  i64* base;        // start of arena
-  i64* current;     // next allocation position
-  i64 size;         // total arena size in bytes
-  i64 used;         // bytes used
-} Arena;
+## 4. Heap Object Requirements
 
-void* arena_alloc(Arena* arena, i64 size) {
-  if (arena->used + size > arena->size) {
-    // Grow arena or fall back to malloc
-  }
-  void* ptr = arena->current;
-  arena->current += size;
-  arena->used += size;
-  return ptr;
-}
+Every heap representation must define:
 
-void arena_free_all(Arena* arena) {
-  arena->current = arena->base;
-  arena->used = 0;
-}
+- allocation size and alignment;
+- ownership header, when dynamically shared;
+- concrete type/representation identifier;
+- child-field layout;
+- which child fields own heap values;
+- destruction procedure;
+- closure capture or aggregate field metadata;
+- whether allocation reuse is legal;
+- whether the value may be immortal.
+
+Pointer-shape heuristics are not sufficient for recursive destruction.
+
+---
+
+## 5. Reference Counting
+
+Reference counting is Kō's safe dynamic-sharing fallback.
+
+Rules:
+
+1. A borrow never increments a reference count.
+2. Moving a unique owner does not increment a reference count.
+3. Creating an additional owning path retains the value.
+4. Ending an owning path releases it.
+5. Reaching zero recursively releases owned children according to representation metadata.
+6. Immortal objects ignore retain/release.
+7. Unknown non-copy ownership is treated conservatively.
+8. Compiler optimizations may remove balanced operations only when semantics are preserved.
+
+The initial implementation may keep RC headers on all heap objects while static analysis improves. “Unique” can therefore mean “dynamically one owner and statically proven not to require additional RC traffic,” not necessarily a different physical allocation layout.
+
+---
+
+## 6. Strings and Aggregates
+
+Heap strings must have a stable owned representation with length and destruction behaviour. String literals may be immortal.
+
+Constructors, tuples, records, and collections must expose enough metadata to destroy owned children correctly. The compiler knows concrete field types after specialization and should prefer representation-specific destructors over conservative pointer guessing.
+
+Generic containers receive specialized element ownership/destruction behaviour when concrete types are known.
+
+---
+
+## 7. Closures and Partial Applications
+
+Closure environments contain capture metadata derived from typed-HIR ownership analysis:
+
+```text
+Capture { representation, stored_state, destructor }
 ```
 
-Use cases:
-- Function-local temporaries (intermediate strings, lists)
-- Comptime evaluation
-- Parser allocations (AST nodes during parsing)
+- copied captures need no RC;
+- moved captures are owned by the closure;
+- shared captures are retained on environment creation;
+- borrowed captures are allowed only for proven non-escaping closures and do not become stored owning fields.
 
-### Future: Pool Allocation
-
-For frequently allocated small objects (cons cells, closures), use a free-list pool:
-
-```c
-typedef struct {
-  i64* free_list;    // linked list of free slots
-  i64* memory;       // contiguous block of slots
-  i64 slot_size;     // bytes per slot
-  i64 count;         // total slots
-} Pool;
-```
-
-Pool allocation is O(1) and avoids malloc overhead.
+Partial applications follow the same contract for applied arguments.
 
 ---
 
-## 5. The i64 Unification — Keep or Replace?
+## 8. Reuse
 
-### Current: Everything is i64
+Destructive reuse is permitted when:
 
-The i64 unification means:
-- All values are the same size (8 bytes)
-- Phi nodes in LLVM don't need type mismatches
-- Values can be stored in uniform arrays
+- the allocation is uniquely owned;
+- its previous value is dead on all continuing paths;
+- no borrow or shared alias can observe it;
+- layout and alignment are compatible, or reallocation occurs;
+- child fields that are not transferred are released correctly.
 
-But:
-- Type safety is lost at the IR level
-- Debugging requires knowing the implementation
-- The < 4096 heuristic is fragile
-
-### Alternative: Structured Tagged Union
-
-```c
-typedef struct {
-  i32 tag;     // type discriminator
-  i32 pad;     // alignment
-  i64 payload; // raw value or pointer
-} Value;
-```
-
-This is what the legacy C runtime had. It's honest about types but doubles memory per value.
-
-### Recommendation
-
-**Keep the i64 unification.** The benefits (uniform size, simple phi nodes) outweigh the costs (heuristic, lost type safety). Fix the actual bugs (string RC, recursive decref) before redesigning the value representation.
-
-The i64 approach is well-established (NaN-boxing in Lua/Dart, tagged pointers in many runtimes). The key is to make the heuristics robust and the decref correct.
+Reuse is an optimization of immutable semantics. Programs cannot observe whether storage was reused.
 
 ---
 
-## 6. Implementation Phases
+## 9. Cycles
 
-### Phase 1: Correctness (v0.3.0)
+Ordinary reference counting does not collect strong cycles.
 
-- [ ] Add `KoString` wrapper to runtime
-- [ ] Change string builtins to allocate `KoString`
-- [ ] Fix `len` to read `byte_length` (O(1))
-- [ ] Add `i32* field_tags` to `Constructor` struct
-- [ ] Add `ko_decref_value(i64 val, i32 type_tag)`
-- [ ] Update `ko_decref` to recursively decrement constructor fields
-- [ ] Emit field tags during codegen for constructor calls
+The first milestone does not introduce an automatic cycle collector. Kō must either:
 
-### Phase 2: Closures & Tuples (v0.3.0)
+- prevent creation of unsupported strong cycles through its ownership/mutation rules; or
+- document the leak boundary for explicit shared mutable graphs.
 
-- [ ] Emit decref metadata for closure environments
-- [ ] Add type tags to tuple elements (or use conservative decref)
-- [ ] Add type tags to record fields
-
-### Phase 3: Optimization (v0.4.0)
-
-- [ ] Arena allocation for function-local data
-- [ ] Pool allocation for cons cells and closures
-- [ ] Weak references for cycle support
-- [ ] Cycle collector (optional, behind a flag)
+Weak references and cycle collection require a separate design and must not be implied by ordinary `ref` syntax.
 
 ---
 
-## 7. Testing Strategy
+## 10. Allocation Strategy
 
-### Unit Tests
+Correctness precedes allocation optimization.
 
-- String allocation and deallocation (leak detection)
-- Constructor field decref (nested data structures)
-- Closure environment decref (captured values)
-- Partial application decref (applied arguments)
+Permitted future strategies include:
 
-### Integration Tests
+- stack promotion for proven non-escaping values;
+- arenas for region-compatible temporaries;
+- pools for uniform nodes;
+- allocation reuse for unique transformations;
+- specialized layouts for concrete generic types.
 
-- Programs that do heavy string manipulation (leak check)
-- Programs with nested data structures (correctness check)
-- Programs that create and discard many closures (leak check)
-
-### Stress Tests
-
-- Deeply nested constructors (1000+ levels)
-- Wide constructors (100+ fields)
-- Many closures created and discarded
-- String-heavy programs (JSON parser, etc.)
+These strategies do not change ownership semantics.
 
 ---
 
-*This document is a living design draft. It will be updated as implementation progresses.*
+## 11. Required Instrumentation
+
+Tests need runtime instrumentation for:
+
+- allocations and frees;
+- retains and releases;
+- live-object counts by representation;
+- destructor recursion;
+- reuse events;
+- double-release and invalid-object detection in debug builds.
+
+An ownership explanation view should connect these runtime facts to the HIR/LIR decisions that caused them.
+
+---
+
+## 12. Immediate Implementation Sequence
+
+1. Inventory every heap-producing LIR instruction (#45).
+2. Define representation-specific ownership/destruction metadata.
+3. Emit balanced cleanup on all control-flow exits (#46).
+4. Cover strings, tuples, records, closures, partial applications, lists, and Result paths.
+5. Add leak/double-release instrumentation.
+6. Only then add reuse and RC-elision optimizations.
+
+---
+
+*The runtime performs only the ownership work that static proof could not safely remove.*
