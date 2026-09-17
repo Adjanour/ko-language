@@ -155,6 +155,10 @@ cp ko-zig/skills/ko-language/.cursorrules /path/to/your/project/.cursorrules
 
 ## Docs
 
+- [Ownership Model](DESIGN-ownership.md) — canonical ownership semantics and compiler contract
+- [Linearity Analysis](DESIGN-linear-types.md) — use analysis over typed HIR
+- [Memory Runtime](DESIGN-memory-runtime.md) — retain, release, reuse, and heap-object rules
+- [Ownership-Aware Specialization](DESIGN-polymorphism.md) — monomorphization keys and worklist design
 - [Getting Started](docs/getting-started.md) — Start here if you're new to functional programming
 - [Language Charter](LANGUAGE_CHARTER.md) — canonical vision and syntax freeze
 - [Formal Grammar](GRAMMAR.md) — EBNF spec
