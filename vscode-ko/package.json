@@ -1,8 +1,8 @@
 {
   "name": "ko-language",
   "displayName": "Kō Language Support",
-  "description": "Syntax highlighting, symbol navigation, and language support for the Kō programming language",
-  "version": "0.5.0",
+  "description": "Syntax highlighting, diagnostics, hover, completion, go-to-definition, find-references and run support for the Kō programming language",
+  "version": "0.6.0",
   "publisher": "ko-lang",
   "engines": {
     "vscode": "^1.80.0"
@@ -41,6 +41,54 @@
         "scopeName": "source.ko",
         "path": "./syntaxes/ko.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Kō",
+      "properties": {
+        "ko.languageServer.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ko-lsp binary. Empty means auto-discover: $PATH, then the ko-zig build tree next to this extension."
+        },
+        "ko.languageServer.args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra arguments passed to ko-lsp on startup."
+        },
+        "ko.compiler.path": {
+          "type": "string",
+          "default": "ko",
+          "description": "Path to the ko compiler binary used by the 'Kō: Run Current File' command."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "ko.restartLanguageServer",
+        "title": "Kō: Restart Language Server",
+        "category": "Kō"
+      },
+      {
+        "command": "ko.runKoFile",
+        "title": "Kō: Run Current File",
+        "category": "Kō"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "ko.runKoFile",
+          "when": "editorLangId == ko",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "ko.runKoFile",
+          "when": "editorLangId == ko"
+        }
+      ]
+    }
   }
 }

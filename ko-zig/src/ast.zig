@@ -192,6 +192,7 @@ pub const TypeDef = struct {
     },
     is_pub: bool,
     doc_comments: ?[]const []const u8 = null,
+    loc: Loc = .{},
 };
 
 pub const FnParam = struct {
@@ -223,6 +224,7 @@ pub const Import = struct {
     path: []const []const u8,
     selective: ?[]const []const u8,
     alias: ?[]const u8,
+    loc: Loc = .{},
 };
 
 pub const Package = struct {
@@ -234,6 +236,7 @@ pub const ModuleDef = struct {
     definitions: []const Definition,
     is_pub: bool,
     doc_comments: ?[]const []const u8 = null,
+    loc: Loc = .{},
 };
 
 pub const Definition = union(enum) {

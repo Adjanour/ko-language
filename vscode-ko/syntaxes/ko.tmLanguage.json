@@ -80,7 +80,7 @@
       "patterns": [
         {
           "name": "keyword.other.ko",
-          "match": "\\b(fn|let|type|import|package|pub|module|comptime|as|ref)\\b"
+          "match": "\\b(fn|let|type|import|package|pub|module|comptime|as|ref|in)\\b"
         },
         {
           "name": "keyword.operator.word.ko",
@@ -116,6 +116,10 @@
     },
     "operators": {
       "patterns": [
+        {
+          "name": "keyword.operator.float.ko",
+          "match": "(\\+\\.|-\\.|\\*\\.|/\\.|<=\\.|>=\\.)"
+        },
         {
           "name": "keyword.operator.ko",
           "match": "(\\|>|=>|->|==|!=|<=|>=|&&|\\|\\||:=|::)"

@@ -442,7 +442,8 @@ pub const Parser = struct {
     // =========================================================================
 
     fn parse_import(self: *Parser) Error!Import {
-        _ = try self.expect(.keyword_import);
+        const kw = try self.expect(.keyword_import);
+        const def_loc = self.tokenLoc(kw);
         var parts: std.ArrayList([]const u8) = .empty;
         defer parts.deinit(self.allocator);
 
@@ -482,6 +483,7 @@ pub const Parser = struct {
             .path = try self.allocSlice([]const u8, parts.items),
             .selective = selective,
             .alias = alias,
+            .loc = def_loc,
         };
     }
 
@@ -495,14 +497,15 @@ pub const Parser = struct {
     }
 
     fn parse_module_def(self: *Parser) Error!ModuleDef {
-        _ = try self.expect(.keyword_module);
+        const kw = try self.expect(.keyword_module);
+        const def_loc = self.tokenLoc(kw);
         const name_token = self.current();
         if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected module name", .{});
         const name = self.slice(self.advance());
         const defs = try self.parse_block_defs();
         // Consume the dedent that ends the module block
         if (self.current().tag == .dedent) _ = self.advance();
-        return .{ .name = name, .definitions = defs, .is_pub = false };
+        return .{ .name = name, .definitions = defs, .is_pub = false, .loc = def_loc };
     }
 
     fn parse_block_defs(self: *Parser) Error![]const Definition {
@@ -562,7 +565,8 @@ pub const Parser = struct {
     // =========================================================================
 
     fn parse_type_def(self: *Parser) Error!TypeDef {
-        _ = try self.expect(.keyword_type);
+        const kw = try self.expect(.keyword_type);
+        const def_loc = self.tokenLoc(kw);
         const name_token = self.current();
         if (name_token.tag != .identifier and name_token.tag != .constructor) return self.fail("expected type name", .{});
         const name = self.slice(self.advance());
@@ -601,6 +605,7 @@ pub const Parser = struct {
                 .type_params = try self.allocSlice([]const u8, type_params.items),
                 .body = .{ .record = try self.allocSlice(RecordField, fields.items) },
                 .is_pub = false,
+                .loc = def_loc,
             };
         }
 
@@ -621,6 +626,7 @@ pub const Parser = struct {
             .type_params = try self.allocSlice([]const u8, type_params.items),
             .body = .{ .sum = try ctors.toOwnedSlice(self.allocator) },
             .is_pub = false,
+            .loc = def_loc,
         };
     }
 
@@ -639,7 +645,8 @@ pub const Parser = struct {
     }
 
     fn parse_fn_def(self: *Parser) Error!FnDef {
-        _ = try self.expect(.keyword_fn);
+        const kw = try self.expect(.keyword_fn);
+        const def_loc = self.tokenLoc(kw);
         const name = self.slice(try self.expect(.identifier));
         var params: std.ArrayList(FnParam) = .empty;
         defer params.deinit(self.allocator);
@@ -691,11 +698,13 @@ pub const Parser = struct {
             .body = body,
             .is_pub = false,
             .is_comptime = false,
+            .loc = def_loc,
         };
     }
 
     fn parse_let_binding(self: *Parser) Error!LetBinding {
-        _ = try self.expect(.keyword_let);
+        const kw = try self.expect(.keyword_let);
+        const def_loc = self.tokenLoc(kw);
         const name = self.slice(try self.expect(.identifier));
         var type_ann: ?TypeExpr = null;
         if (self.match(.colon)) {
@@ -703,7 +712,7 @@ pub const Parser = struct {
         }
         _ = try self.expect(.equal);
         const value = try self.parse_expr();
-        return .{ .name = name, .type_ann = type_ann, .value = value, .is_pub = false };
+        return .{ .name = name, .type_ann = type_ann, .value = value, .is_pub = false, .loc = def_loc };
     }
 
     // =========================================================================
@@ -1253,9 +1262,10 @@ pub const Parser = struct {
 
     fn parse_cons(self: *Parser) Error!*Expr {
         var left = try self.parse_or();
-        if (self.match(.double_colon)) {
+        if (self.current().tag == .double_colon) {
+            const op_tok = self.advance();
             const right = try self.parse_cons();
-            left = try self.newExpr(.{ .binary_op = .{ .op = .cons, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = .cons, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1263,9 +1273,9 @@ pub const Parser = struct {
     fn parse_or(self: *Parser) Error!*Expr {
         var left = try self.parse_and();
         while (self.current().tag == .or_or or self.current().tag == .keyword_or) {
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_and();
-            left = try self.newExpr(.{ .binary_op = .{ .op = .or_op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = .or_op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1273,9 +1283,9 @@ pub const Parser = struct {
     fn parse_and(self: *Parser) Error!*Expr {
         var left = try self.parse_equality();
         while (self.current().tag == .and_and or self.current().tag == .keyword_and) {
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_equality();
-            left = try self.newExpr(.{ .binary_op = .{ .op = .and_op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = .and_op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1284,9 +1294,9 @@ pub const Parser = struct {
         var left = try self.parse_compare();
         while (self.current().tag == .equal_equal or self.current().tag == .not_equal) {
             const op = if (self.current().tag == .equal_equal) BinaryOp.eq else BinaryOp.neq;
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_compare();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1304,9 +1314,9 @@ pub const Parser = struct {
                 else => null,
             };
             if (op == null) break;
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_term();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op.?, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = op.?, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1321,9 +1331,9 @@ pub const Parser = struct {
                 .minus_dot => BinaryOp.sub_dot,
                 else => unreachable,
             };
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_factor_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1339,9 +1349,9 @@ pub const Parser = struct {
                 .slash_dot => BinaryOp.div_dot,
                 else => unreachable,
             };
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_unary_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }
@@ -1381,9 +1391,9 @@ pub const Parser = struct {
                 .slash_dot => BinaryOp.div_dot,
                 else => unreachable,
             };
-            _ = self.advance();
+            const op_tok = self.advance();
             const right = try self.parse_unary_no_prefix();
-            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(self.current()));
+            left = try self.newExpr(.{ .binary_op = .{ .op = op, .left = left, .right = right } }, self.tokenLoc(op_tok));
         }
         return left;
     }

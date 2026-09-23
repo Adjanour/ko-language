@@ -2275,7 +2275,10 @@ pub const Inferer = struct {
     }
 
     fn inferExpr(self: *Inferer, env: *Env, expr: *const parser.Expr) Error!*Type {
-        self.current_loc = expr.getLoc();
+        // Literals carry no location; keep the nearest enclosing span so
+        // errors unify at a real position instead of 0:0.
+        const expr_loc = expr.getLoc();
+        if (expr_loc.line != 0) self.current_loc = expr_loc;
         const ty = try switch (expr.*) {
             .int_literal => self.newType(.int),
             .float_literal => self.newType(.float),
@@ -2441,7 +2444,8 @@ pub const Inferer = struct {
     // to inferExpr and unify the result (synthesis mode).
 
     fn checkExpr(self: *Inferer, env: *Env, expr: *const parser.Expr, expected: *Type) Error!void {
-        self.current_loc = expr.getLoc();
+        const expr_loc = expr.getLoc();
+        if (expr_loc.line != 0) self.current_loc = expr_loc;
         switch (expr.*) {
             // ── Literals: unify with expected ──
             .int_literal => try self.unify(expected, try self.newType(.int)),

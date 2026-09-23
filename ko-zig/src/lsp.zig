@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const posix = std.posix;
 const fdio = @import("fdio.zig");
 const parser = @import("parser.zig");
@@ -9,8 +10,14 @@ const JsonValue = std.json.Value;
 
 // Document Store
 //
+// Each open document owns an arena: every analysis allocation (text,
+// parse tree, type environment, error strings) comes from it, so
+// re-analyzing or closing a document frees everything with one
+// `arena.deinit()`. Only the map key (uri) lives on the store allocator.
+//
 const Document = struct {
     uri: []const u8,
+    arena: std.heap.ArenaAllocator,
     text: []const u8,
     source_z: ?[]const u8,
     version: i32,
@@ -39,50 +46,47 @@ const DocumentStore = struct {
         var it = self.documents.iterator();
         while (it.next()) |entry| {
             self.freeDocument(entry.value_ptr);
+            self.allocator.free(entry.key_ptr.*);
         }
         self.documents.deinit();
     }
 
     fn freeDocument(self: *DocumentStore, doc: *Document) void {
-        if (doc.inferer) |*inf| inf.deinit();
-        if (doc.prog) |*p| typecheck_mod.deallocProg(self.allocator, p);
-        if (doc.parse_error) |e| self.allocator.free(e);
-        if (doc.type_error) |e| self.allocator.free(e);
-        if (doc.type_error_expected) |e| self.allocator.free(e);
-        if (doc.type_error_actual) |e| self.allocator.free(e);
-        if (doc.source_z) |sz| self.allocator.free(sz.ptr[0..sz.len + 1]);
-        self.allocator.free(doc.text);
+        _ = self;
+        doc.arena.deinit();
     }
 
     fn open(self: *DocumentStore, uri: []const u8, text: []const u8, version: i32) !*Document {
+        if (self.documents.getEntry(uri)) |entry| {
+            const stored_uri = entry.value_ptr.uri;
+            self.freeDocument(entry.value_ptr);
+            entry.value_ptr.* = try self.freshDocument(stored_uri, text, version);
+            self.analyze(entry.value_ptr);
+            return entry.value_ptr;
+        }
         const owned_uri = try self.allocator.dupe(u8, uri);
-        const owned_text = try self.allocator.dupe(u8, text);
+        errdefer self.allocator.free(owned_uri);
         const result = try self.documents.getOrPut(owned_uri);
-        if (result.found_existing) self.freeDocument(result.value_ptr);
-        result.value_ptr.* = .{
-            .uri = owned_uri,
-            .text = owned_text,
-            .source_z = null,
-            .version = version,
-            .prog = null,
-            .inferer = null,
-            .parse_error = null,
-            .parse_error_loc = null,
-            .type_error = null,
-            .type_error_loc = null,
-            .type_error_expected = null,
-            .type_error_actual = null,
-        };
+        result.value_ptr.* = try self.freshDocument(result.key_ptr.*, text, version);
         self.analyze(result.value_ptr);
         return result.value_ptr;
     }
 
     fn update(self: *DocumentStore, uri: []const u8, text: []const u8, version: i32) !void {
         const entry = self.documents.getEntry(uri) orelse return;
+        const stored_uri = entry.value_ptr.uri;
         self.freeDocument(entry.value_ptr);
-        const owned_text = try self.allocator.dupe(u8, text);
-        entry.value_ptr.* = .{
-            .uri = entry.value_ptr.uri,
+        entry.value_ptr.* = try self.freshDocument(stored_uri, text, version);
+        self.analyze(entry.value_ptr);
+    }
+
+    fn freshDocument(self: *DocumentStore, stored_uri: []const u8, text: []const u8, version: i32) !Document {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const owned_text = try arena.allocator().dupe(u8, text);
+        return .{
+            .uri = stored_uri,
+            .arena = arena,
             .text = owned_text,
             .source_z = null,
             .version = version,
@@ -95,7 +99,6 @@ const DocumentStore = struct {
             .type_error_expected = null,
             .type_error_actual = null,
         };
-        self.analyze(entry.value_ptr);
     }
 
     fn close(self: *DocumentStore, uri: []const u8) void {
@@ -111,24 +114,24 @@ const DocumentStore = struct {
     }
 
     fn analyze(self: *DocumentStore, doc: *Document) void {
-        const source_z = self.allocator.dupeZ(u8, doc.text) catch return;
-        var p = parser.Parser.init(self.allocator, source_z) catch |err| {
-            doc.parse_error = std.fmt.allocPrint(self.allocator, "Parse init error: {}", .{err}) catch null;
-            self.allocator.free(source_z);
+        _ = self;
+        const alloc = doc.arena.allocator();
+        const source_z = compat.dupeZ(alloc, doc.text) catch return;
+        var p = parser.Parser.init(alloc, source_z) catch |err| {
+            doc.parse_error = std.fmt.allocPrint(alloc, "Parse init error: {}", .{err}) catch null;
             return;
         };
         defer p.deinit();
         const prog = p.parse_program() catch |err| {
-            doc.parse_error = std.fmt.allocPrint(self.allocator, "Parse error: {}", .{err}) catch null;
+            doc.parse_error = std.fmt.allocPrint(alloc, "Parse error: {}", .{err}) catch null;
             if (p.last_error) |ec| {
                 doc.parse_error_loc = ec.loc;
             }
-            self.allocator.free(source_z);
             return;
         };
         doc.source_z = source_z;
         doc.prog = prog;
-        var inferer = typecheck_mod.Inferer.init(self.allocator);
+        var inferer = typecheck_mod.Inferer.init(alloc);
         inferer.inferProgram(&prog) catch |err| {
             if (inferer.last_error) |ec| {
                 doc.type_error = ec.message;
@@ -136,9 +139,10 @@ const DocumentStore = struct {
                 doc.type_error_expected = ec.expected;
                 doc.type_error_actual = ec.actual;
             } else {
-                doc.type_error = std.fmt.allocPrint(self.allocator, "Type error: {}", .{err}) catch null;
+                doc.type_error = std.fmt.allocPrint(alloc, "Type error: {}", .{err}) catch null;
             }
-            inferer.deinit();
+            // No inferer.deinit(): every typechecker allocation comes from
+            // the document arena, which frees everything at once.
             return;
         };
         doc.inferer = inferer;
@@ -246,7 +250,7 @@ fn sendResponse(id: i64, json_body: []const u8, gpa: std.mem.Allocator) !void {
 }
 
 fn sendNullResult(id: i64, gpa: std.mem.Allocator) !void {
-    return sendResponse(id, "{\"result\":null}", gpa);
+    return sendResponse(id, "null", gpa);
 }
 
 fn sendNotification(method: []const u8, params_json: []const u8, gpa: std.mem.Allocator) !void {
@@ -266,27 +270,96 @@ fn isIdentChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c == '-';
 }
 
-fn getWordAtPosition(text: []const u8, line: usize, character: usize) ?struct { word: []const u8 } {
+/// A 0-based [start, end) span of characters within one line.
+const Span = struct { start: usize, end: usize };
+
+fn getWordAtPosition(text: []const u8, line: usize, character: usize) ?struct { word: []const u8, start: usize, end: usize } {
+    const line_text = getLine(text, line) orelse return null;
+    const pos = @min(line_text.len, character);
+    var start = pos;
+    while (start > 0 and isIdentChar(line_text[start - 1])) start -= 1;
+    var end = pos;
+    while (end < line_text.len and isIdentChar(line_text[end])) end += 1;
+    if (start >= end) return null;
+    return .{ .word = line_text[start..end], .start = start, .end = end };
+}
+
+/// Fetch a single line (0-based) without its trailing newline.
+fn getLine(text: []const u8, line: usize) ?[]const u8 {
     var current_line: usize = 0;
     var line_start: usize = 0;
     for (text, 0..) |c, i| {
         if (current_line == line) {
-            const line_text = text[line_start..];
-            const pos = @min(line_text.len, character);
-            if (pos >= line_text.len) return null;
-            var start = pos;
-            while (start > 0 and isIdentChar(line_text[start - 1])) start -= 1;
-            var end = pos;
-            while (end < line_text.len and isIdentChar(line_text[end])) end += 1;
-            if (start >= end) return null;
-            return .{ .word = line_text[start..end] };
+            var line_end = i;
+            while (line_end < text.len and text[line_end] != '\n') line_end += 1;
+            var s = text[line_start..line_end];
+            if (s.len > 0 and s[s.len - 1] == '\r') s = s[0 .. s.len - 1];
+            return s;
         }
         if (c == '\n') {
             current_line += 1;
             line_start = i + 1;
         }
     }
+    // Last line without trailing newline.
+    if (current_line == line and line_start <= text.len) {
+        var s = text[line_start..];
+        if (s.len > 0 and s[s.len - 1] == '\r') s = s[0 .. s.len - 1];
+        return s;
+    }
     return null;
+}
+
+/// Locate a definition name on its (1-based) definition line: skip leading
+/// whitespace, an optional `pub`, and the keyword, then match `name`.
+/// Returns 0-based [start, end) character offsets, or null.
+fn findDefName(line_text: []const u8, name: []const u8) ?Span {
+    var i: usize = 0;
+    while (i < line_text.len and (line_text[i] == ' ' or line_text[i] == '\t')) i += 1;
+    if (std.mem.startsWith(u8, line_text[i..], "pub")) {
+        const after = i + 3;
+        if (after < line_text.len and (line_text[after] == ' ' or line_text[after] == '\t')) {
+            i = after;
+            while (i < line_text.len and (line_text[i] == ' ' or line_text[i] == '\t')) i += 1;
+        }
+    }
+    // Skip the keyword itself.
+    while (i < line_text.len and isIdentChar(line_text[i])) i += 1;
+    while (i < line_text.len and (line_text[i] == ' ' or line_text[i] == '\t')) i += 1;
+    if (i + name.len <= line_text.len and std.mem.eql(u8, line_text[i .. i + name.len], name)) {
+        const after = i + name.len;
+        if (after >= line_text.len or !isIdentChar(line_text[after])) {
+            return .{ .start = i, .end = after };
+        }
+    }
+    // Fallback: first whole-word occurrence anywhere on the line.
+    return findWordOnLine(line_text, name);
+}
+
+/// First whole-word occurrence of `word` on one line (0-based offsets).
+fn findWordOnLine(line_text: []const u8, word: []const u8) ?Span {
+    if (word.len == 0 or word.len > line_text.len) return null;
+    var i: usize = 0;
+    while (i + word.len <= line_text.len) : (i += 1) {
+        if (std.mem.eql(u8, line_text[i .. i + word.len], word)) {
+            const before_ok = i == 0 or !isIdentChar(line_text[i - 1]);
+            const after = i + word.len;
+            const after_ok = after >= line_text.len or !isIdentChar(line_text[after]);
+            if (before_ok and after_ok) return .{ .start = i, .end = after };
+        }
+    }
+    return null;
+}
+
+/// If `pos` (0-based offset into `line_text`) sits just after a `.`,
+/// return the module qualifier preceding it (e.g. `Int` in `Int.toString`).
+fn getQualifier(line_text: []const u8, word_start: usize) ?[]const u8 {
+    if (word_start == 0 or line_text[word_start - 1] != '.') return null;
+    const end = word_start - 1;
+    var start = end;
+    while (start > 0 and isIdentChar(line_text[start - 1])) start -= 1;
+    if (start >= end) return null;
+    return line_text[start..end];
 }
 
 //
@@ -294,24 +367,72 @@ fn getWordAtPosition(text: []const u8, line: usize, character: usize) ?struct { 
 //
 
 const initialize_result =
-    \\{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"completionProvider":{"triggerCharacters":["."]},"definitionProvider":true,"documentSymbolProvider":true}}
+    \\{"capabilities":{"textDocumentSync":{"openClose":true,"change":1},"hoverProvider":true,"completionProvider":{"triggerCharacters":[".",":"]},"definitionProvider":true,"documentSymbolProvider":true,"referencesProvider":true}}
 ;
 
-const KEYWORDS = [_][]const u8{
-    "fn",      "let",    "if", "then", "else",     "match", "in",
-    "type",    "import", "as", "ref",  "comptime", "pub",   "module",
-    "package", "and",    "or", "not",  "true",     "false",
+const KEYWORD_DOCS = [_][2][]const u8{
+    .{ "fn", "Define a function: `fn add x y = x + y`. Call with spaces, no parens: `add 1 2`." },
+    .{ "let", "Immutable binding: `let x = 42`. The value must stay on the same line as `=`." },
+    .{ "type", "Algebraic data type or record: `type Maybe a = Just a | Nothing`." },
+    .{ "import", "Import a module: `import std.List`, selective `import std.List.{map}`, aliased `import std.Int as I`. Bare names import local `.ko` files." },
+    .{ "match", "Pattern match: arms use `| Pattern => expr`. No nested patterns — nest `match` instead." },
+    .{ "if", "If expression, returns a value: `if x > 0 then x else -x`. `else` may be omitted." },
+    .{ "then", "Separates the condition from the value in `if` expressions." },
+    .{ "else", "Fallback branch of `if`. Chains: `else if ... else ...`." },
+    .{ "ref", "Mutable reference cell: `let c = ref 0`, read with `!c`, write with `c := v`." },
+    .{ "comptime", "Compile-time evaluation: `let x = comptime (2 + 3)`." },
+    .{ "pub", "Export a definition from its module." },
+    .{ "module", "Declare a module block: `module Name` followed by an indented block." },
+    .{ "as", "Alias an import: `import std.Int as I`." },
+    .{ "and", "Boolean conjunction (also `&&`)." },
+    .{ "or", "Boolean disjunction (also `||`)." },
+    .{ "not", "Boolean negation (also `!`)." },
+    .{ "in", "Reserved keyword." },
 };
 
-const BUILTINS = [_][]const u8{
-    "println", "print", "inspect", "length", "head",
-    "tail",    "cons",  "empty",   "map",    "filter",
-    "fold",    "add",   "sub",     "mul",    "div",
+const BUILTIN_DOCS = [_][2][]const u8{
+    .{ "println", "`println x` — print with trailing newline (strings print unquoted)." },
+    .{ "print", "`print x` — print without trailing newline." },
+    .{ "inspect", "`inspect x` — print the debug representation (strings quoted)." },
+    .{ "Int.toString", "`Int.toString n: Int -> String`." },
+    .{ "Int.abs", "`Int.abs n: Int -> Int`." },
+    .{ "Int.min", "`Int.min a b: Int -> Int -> Int`." },
+    .{ "Int.max", "`Int.max a b: Int -> Int -> Int`." },
+    .{ "Int.pow", "`Int.pow base exp: Int -> Int -> Int`." },
+    .{ "Int.gcd", "`Int.gcd a b: Int -> Int -> Int`." },
+    .{ "Int.lcm", "`Int.lcm a b: Int -> Int -> Int`." },
+    .{ "Int.factorial", "`Int.factorial n: Int -> Int`." },
+    .{ "Int.isqrt", "`Int.isqrt n: Int -> Int` — integer square root." },
+    .{ "Float.ofInt", "`Float.ofInt n: Int -> Float`." },
+    .{ "Float.toInt", "`Float.toInt f: Float -> Int` (truncates)." },
+    .{ "Float.sqrt", "`Float.sqrt f: Float -> Float`." },
+    .{ "Float.pow", "`Float.pow b e: Float -> Float -> Float`." },
+    .{ "Float.sin", "`Float.sin f: Float -> Float`. Also `cos`, `tan`." },
+    .{ "Float.cos", "`Float.cos f: Float -> Float`." },
+    .{ "Float.tan", "`Float.tan f: Float -> Float`." },
+    .{ "Float.log", "`Float.log f: Float -> Float` — natural log. Also `log2`, `log10`." },
+    .{ "Float.exp", "`Float.exp f: Float -> Float`." },
+    .{ "Float.floor", "`Float.floor f: Float -> Float`. Also `ceil`." },
+    .{ "Float.ceil", "`Float.ceil f: Float -> Float`." },
+    .{ "Float.abs", "`Float.abs f: Float -> Float`." },
+    .{ "String.length", "`String.length s: String -> Int`." },
+    .{ "String.append", "`String.append a b: String -> String -> String`." },
+    .{ "True", "Boolean constructor." },
+    .{ "False", "Boolean constructor." },
 };
 
 //
 // Handlers
 //
+
+fn sendHoverMarkdown(id: i64, gpa: std.mem.Allocator, markdown: []const u8) !void {
+    const escaped = try escapeJsonString(gpa, markdown);
+    defer gpa.free(escaped);
+    var body = try std.ArrayList(u8).initCapacity(gpa, escaped.len + 64);
+    defer body.deinit(gpa);
+    try body.print(gpa, "{{\"contents\":{{\"kind\":\"markdown\",\"value\":\"{s}\"}}}}", .{escaped});
+    return sendResponse(id, try body.toOwnedSlice(gpa), gpa);
+}
 
 fn handleHover(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.Allocator) !void {
     const td = jsonGetObj(params, "textDocument") orelse return sendNullResult(id, gpa);
@@ -332,8 +453,41 @@ fn handleHover(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.A
     };
     for (builtins_info) |b| {
         if (std.mem.eql(u8, wi.word, b[0])) {
-            const body = try std.fmt.allocPrint(gpa, "{{\"contents\":{{\"kind\":\"markdown\",\"value\":\"**{s}**: {s}\"}}}}", .{ b[0], b[1] });
-            return sendResponse(id, body, gpa);
+            var md_buf: [256]u8 = undefined;
+            const md = try std.fmt.bufPrint(&md_buf, "**{s}**: {s}", .{ b[0], b[1] });
+            return sendHoverMarkdown(id, gpa, md);
+        }
+    }
+
+    // Qualified lookup first: `Int.toString` when hovering `toString`.
+    if (getLine(doc.text, line)) |line_text| {
+        if (getQualifier(line_text, wi.start)) |qual| {
+            var qbuf: [128]u8 = undefined;
+            if (qual.len + 1 + wi.word.len <= qbuf.len) {
+                @memcpy(qbuf[0..qual.len], qual);
+                qbuf[qual.len] = '.';
+                @memcpy(qbuf[qual.len + 1 ..][0..wi.word.len], wi.word);
+                const qualified = qbuf[0 .. qual.len + 1 + wi.word.len];
+                for (BUILTIN_DOCS) |b| {
+                    if (std.mem.eql(u8, qualified, b[0])) {
+                        return sendHoverMarkdown(id, gpa, b[1]);
+                    }
+                }
+            }
+        }
+    }
+
+    for (BUILTIN_DOCS) |b| {
+        if (std.mem.eql(u8, wi.word, b[0])) {
+            return sendHoverMarkdown(id, gpa, b[1]);
+        }
+    }
+
+    for (KEYWORD_DOCS) |k| {
+        if (std.mem.eql(u8, wi.word, k[0])) {
+            var md_buf: [512]u8 = undefined;
+            const md = try std.fmt.bufPrint(&md_buf, "**{s}** (keyword)\n\n{s}", .{ k[0], k[1] });
+            return sendHoverMarkdown(id, gpa, md);
         }
     }
 
@@ -355,52 +509,98 @@ fn handleHover(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.A
 
             try md.print(gpa, "```kō\n{s} : {s}\n```", .{ wi.word, type_str });
 
-            var body = try std.ArrayList(u8).initCapacity(gpa, 256);
-            defer body.deinit(gpa);
-            const escaped = try escapeJsonString(gpa, md.items);
-            defer gpa.free(escaped);
-            try body.print(gpa, "{{\"contents\":{{\"kind\":\"markdown\",\"value\":\"{s}\"}}}}", .{escaped});
-            return sendResponse(id, try body.toOwnedSlice(gpa), gpa);
+            return sendHoverMarkdown(id, gpa, md.items);
         }
     }
     return sendNullResult(id, gpa);
 }
 
+fn sendCompletionList(id: i64, gpa: std.mem.Allocator) !void {
+    return sendResponse(id, "{\"isIncomplete\":false,\"items\":[]}", gpa);
+}
+
 fn handleCompletion(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.Allocator) !void {
-    const td = jsonGetObj(params, "textDocument") orelse return;
-    const uri = jsonGetString(td, "uri") orelse return;
+    const td = jsonGetObj(params, "textDocument") orelse return sendCompletionList(id, gpa);
+    const uri = jsonGetString(td, "uri") orelse return sendCompletionList(id, gpa);
+    const pos = jsonGetObj(params, "position") orelse return sendCompletionList(id, gpa);
+    const line: usize = @intCast(jsonGetInt(pos, "line") orelse 0);
+    const char: usize = @intCast(jsonGetInt(pos, "character") orelse 0);
+
+    // The identifier prefix under the cursor drives filtering.
+    var prefix: []const u8 = "";
+    if (store.get(uri)) |prefix_doc| {
+        if (getLine(prefix_doc.text, line)) |line_text| {
+            const end = @min(line_text.len, char);
+            var start = end;
+            while (start > 0 and isIdentChar(line_text[start - 1])) start -= 1;
+            prefix = line_text[start..end];
+        }
+    }
 
     var body = try std.ArrayList(u8).initCapacity(gpa, 1024);
     defer body.deinit(gpa);
     try body.appendSlice(gpa, "{\"isIncomplete\":false,\"items\":[");
 
     var first = true;
-    for (KEYWORDS) |kw| {
-        if (!first) try body.append(gpa, ',');
-        first = false;
-        try body.print(gpa, "{{\"label\":\"{s}\",\"kind\":14}}", .{kw});
-    }
-    for (BUILTINS) |bi| {
-        if (!first) try body.append(gpa, ',');
-        first = false;
-        try body.print(gpa, "{{\"label\":\"{s}\",\"kind\":12}}", .{bi});
-    }
+    var order: usize = 0;
+    const emit = struct {
+        fn item(b: *std.ArrayList(u8), gpa_inner: std.mem.Allocator, first_inner: *bool, label: []const u8, kind: u8, detail: []const u8, doc: ?[]const u8, rank: usize) !void {
+            if (!first_inner.*) try b.append(gpa_inner, ',');
+            first_inner.* = false;
+            const esc_label = try escapeJsonString(gpa_inner, label);
+            defer gpa_inner.free(esc_label);
+            const esc_detail = try escapeJsonString(gpa_inner, detail);
+            defer gpa_inner.free(esc_detail);
+            try b.print(gpa_inner, "{{\"label\":\"{s}\",\"kind\":{d},\"detail\":\"{s}\",\"sortText\":\"{d:0>4}\"", .{ esc_label, kind, esc_detail, rank });
+            if (doc) |d| {
+                const esc_doc = try escapeJsonString(gpa_inner, d);
+                defer gpa_inner.free(esc_doc);
+                try b.print(gpa_inner, ",\"documentation\":{{\"kind\":\"markdown\",\"value\":\"{s}\"}}", .{esc_doc});
+            }
+            try b.append(gpa_inner, '}');
+        }
+    }.item;
+
+    const matches = struct {
+        fn prefixMatch(label: []const u8, p: []const u8) bool {
+            return p.len == 0 or std.mem.startsWith(u8, label, p);
+        }
+    }.prefixMatch;
 
     if (store.get(uri)) |doc| {
         if (doc.prog) |prog| {
             for (prog.definitions) |def| {
-                const name, const kind: u8 = switch (def) {
-                    .fn_def => |f| .{ f.name, 3 },
-                    .type_def => |t| .{ t.name, 23 },
-                    .let_binding => |l| .{ l.name, 13 },
-                    .module_def => |m| .{ m.name, 2 },
+                const name, const kind: u8, const detail: []const u8 = switch (def) {
+                    .fn_def => |f| .{ f.name, 3, "function" },
+                    .type_def => |t| .{ t.name, 8, "type" },
+                    .let_binding => |l| .{ l.name, 13, "let binding" },
+                    .module_def => |m| .{ m.name, 2, "module" },
                     else => continue,
                 };
-                if (!first) try body.append(gpa, ',');
-                first = false;
-                try body.print(gpa, "{{\"label\":\"{s}\",\"kind\":{d}}}", .{ name, kind });
+                if (!matches(name, prefix)) continue;
+                try emit(&body, gpa, &first, name, kind, detail, null, order);
+                order += 1;
+            }
+            for (prog.imports) |imp| {
+                if (imp.path.len == 0) continue;
+                const mod_name = imp.path[imp.path.len - 1];
+                if (!matches(mod_name, prefix)) continue;
+                try emit(&body, gpa, &first, mod_name, 9, "module", null, order);
+                order += 1;
             }
         }
+    }
+    for (BUILTIN_DOCS) |b| {
+        // Dotted builtins complete on their short name (`toString`).
+        const label = if (std.mem.indexOfScalar(u8, b[0], '.')) |dot| b[0][dot + 1 ..] else b[0];
+        if (!matches(label, prefix)) continue;
+        try emit(&body, gpa, &first, label, 3, b[0], b[1], 1000 + order);
+        order += 1;
+    }
+    for (KEYWORD_DOCS) |k| {
+        if (!matches(k[0], prefix)) continue;
+        try emit(&body, gpa, &first, k[0], 14, "keyword", k[1], 2000 + order);
+        order += 1;
     }
 
     try body.appendSlice(gpa, "]}");
@@ -408,9 +608,26 @@ fn handleCompletion(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.
     return sendResponse(id, owned, gpa);
 }
 
+/// Name, symbol kind, and 1-based definition line for a top-level definition.
+const DefInfo = struct { name: []const u8, kind: u8, line: usize };
+
+fn defInfo(def: ast.Definition) ?DefInfo {
+    return switch (def) {
+        .fn_def => |f| .{ .name = f.name, .kind = 12, .line = f.loc.line },
+        .type_def => |t| .{ .name = t.name, .kind = 8, .line = t.loc.line },
+        .let_binding => |l| .{ .name = l.name, .kind = 13, .line = l.loc.line },
+        .module_def => |m| .{ .name = m.name, .kind = 2, .line = m.loc.line },
+        else => null,
+    };
+}
+
+fn sendEmptyArray(id: i64, gpa: std.mem.Allocator) !void {
+    return sendResponse(id, "[]", gpa);
+}
+
 fn handleDocumentSymbol(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.Allocator) !void {
-    const td = jsonGetObj(params, "textDocument") orelse return;
-    const uri = jsonGetString(td, "uri") orelse return;
+    const td = jsonGetObj(params, "textDocument") orelse return sendEmptyArray(id, gpa);
+    const uri = jsonGetString(td, "uri") orelse return sendEmptyArray(id, gpa);
 
     var body = try std.ArrayList(u8).initCapacity(gpa, 512);
     defer body.deinit(gpa);
@@ -420,16 +637,38 @@ fn handleDocumentSymbol(id: i64, store: *DocumentStore, params: JsonValue, gpa: 
     if (store.get(uri)) |doc| {
         if (doc.prog) |prog| {
             for (prog.definitions) |def| {
-                const name, const kind: u8 = switch (def) {
-                    .fn_def => |f| .{ f.name, 12 },
-                    .type_def => |t| .{ t.name, 23 },
-                    .let_binding => |l| .{ l.name, 13 },
-                    .module_def => |m| .{ m.name, 2 },
-                    else => continue,
-                };
+                const info = defInfo(def) orelse continue;
+                const def_line: usize = if (info.line > 0) info.line - 1 else 0;
+                const line_text = getLine(doc.text, def_line) orelse "";
+                // selectionRange covers the name; range covers the whole line.
+                var sel_sc: usize = 0;
+                var sel_ec: usize = line_text.len;
+                if (findDefName(line_text, info.name)) |span| {
+                    sel_sc = span.start;
+                    sel_ec = span.end;
+                }
                 if (!first) try body.append(gpa, ',');
                 first = false;
-                try body.print(gpa, "{{\"name\":\"{s}\",\"kind\":{d},\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}},\"selectionRange\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}}}}", .{ name, kind });
+                const esc_name = try escapeJsonString(gpa, info.name);
+                defer gpa.free(esc_name);
+                try body.print(gpa, "{{\"name\":\"{s}\",\"kind\":{d},\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"selectionRange\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_name, info.kind, def_line, def_line, line_text.len, def_line, sel_sc, def_line, sel_ec });
+            }
+            for (prog.imports) |imp| {
+                if (imp.path.len == 0 or imp.loc.line == 0) continue;
+                const def_line: usize = imp.loc.line - 1;
+                const line_text = getLine(doc.text, def_line) orelse "";
+                var label = try std.ArrayList(u8).initCapacity(gpa, 64);
+                defer label.deinit(gpa);
+                try label.appendSlice(gpa, "import ");
+                for (imp.path, 0..) |part, i| {
+                    if (i > 0) try label.append(gpa, '.');
+                    try label.appendSlice(gpa, part);
+                }
+                const esc_label = try escapeJsonString(gpa, label.items);
+                defer gpa.free(esc_label);
+                if (!first) try body.append(gpa, ',');
+                first = false;
+                try body.print(gpa, "{{\"name\":\"{s}\",\"kind\":9,\"range\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":{d}}}}},\"selectionRange\":{{\"start\":{{\"line\":{d},\"character\":0}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_label, def_line, def_line, line_text.len, def_line, def_line, line_text.len });
             }
         }
     }
@@ -450,20 +689,79 @@ fn handleDefinition(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.
 
     if (doc.prog) |prog| {
         for (prog.definitions) |def| {
-            const name = switch (def) {
-                .fn_def => |f| f.name,
-                .type_def => |t| t.name,
-                .let_binding => |l| l.name,
-                .module_def => |m| m.name,
-                else => continue,
-            };
-            if (std.mem.eql(u8, wi.word, name)) {
-                const body = try std.fmt.allocPrint(gpa, "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":0,\"character\":0}},\"end\":{{\"line\":0,\"character\":0}}}}}}", .{uri});
-                return sendResponse(id, body, gpa);
+            const info = defInfo(def) orelse continue;
+            if (std.mem.eql(u8, wi.word, info.name)) {
+                if (info.line == 0) return sendNullResult(id, gpa);
+                const def_line: usize = info.line - 1;
+                const line_text = getLine(doc.text, def_line) orelse "";
+                var sel_sc: usize = 0;
+                var sel_ec: usize = line_text.len;
+                if (findDefName(line_text, info.name)) |span| {
+                    sel_sc = span.start;
+                    sel_ec = span.end;
+                }
+                const esc_uri = try escapeJsonString(gpa, uri);
+                defer gpa.free(esc_uri);
+                var body = try std.ArrayList(u8).initCapacity(gpa, 128);
+                defer body.deinit(gpa);
+                try body.print(gpa, "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_uri, def_line, sel_sc, def_line, sel_ec });
+                return sendResponse(id, try body.toOwnedSlice(gpa), gpa);
             }
         }
     }
     return sendNullResult(id, gpa);
+}
+
+fn handleReferences(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.Allocator) !void {
+    const td = jsonGetObj(params, "textDocument") orelse return sendEmptyArray(id, gpa);
+    const uri = jsonGetString(td, "uri") orelse return sendEmptyArray(id, gpa);
+    const pos = jsonGetObj(params, "position") orelse return sendEmptyArray(id, gpa);
+    const line: usize = @intCast(jsonGetInt(pos, "line") orelse 0);
+    const char: usize = @intCast(jsonGetInt(pos, "character") orelse 0);
+    const doc = store.get(uri) orelse return sendEmptyArray(id, gpa);
+    const wi = getWordAtPosition(doc.text, line, char) orelse return sendEmptyArray(id, gpa);
+
+    const esc_uri = try escapeJsonString(gpa, uri);
+    defer gpa.free(esc_uri);
+
+    var body = try std.ArrayList(u8).initCapacity(gpa, 512);
+    defer body.deinit(gpa);
+    try body.append(gpa, '[');
+
+    var first = true;
+    var lineno: usize = 0;
+    var remaining: []const u8 = doc.text;
+    while (remaining.len > 0) {
+        const nl = std.mem.indexOfScalar(u8, remaining, '\n');
+        const line_text = if (nl) |idx| remaining[0..idx] else remaining;
+        // Skip comment-only lines so `# mentions` are not reported.
+        const trimmed = std.mem.trimStart(u8, line_text, " \t");
+        if (trimmed.len == 0 or trimmed[0] != '#') {
+            var i: usize = 0;
+            while (i + wi.word.len <= line_text.len) {
+                if (std.mem.eql(u8, line_text[i .. i + wi.word.len], wi.word)) {
+                    const before_ok = i == 0 or !isIdentChar(line_text[i - 1]);
+                    const after = i + wi.word.len;
+                    const after_ok = after >= line_text.len or !isIdentChar(line_text[after]);
+                    if (before_ok and after_ok) {
+                        if (!first) try body.append(gpa, ',');
+                        first = false;
+                        try body.print(gpa, "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_uri, lineno, i, lineno, after });
+                        i = after;
+                        continue;
+                    }
+                }
+                i += 1;
+            }
+        }
+        if (nl == null) break;
+        remaining = remaining[nl.? + 1 ..];
+        lineno += 1;
+    }
+
+    try body.append(gpa, ']');
+    const owned = try body.toOwnedSlice(gpa);
+    return sendResponse(id, owned, gpa);
 }
 
 fn escapeJsonString(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
@@ -520,7 +818,18 @@ fn publishDiagnostics(store: *DocumentStore, uri: []const u8, gpa: std.mem.Alloc
     }
     if (doc.type_error) |err| {
         if (!first) try body.append(gpa, ',');
-        const escaped = try escapeJsonString(gpa, err);
+        // Surface the expected/actual types when the checker provides them.
+        var full_msg = try std.ArrayList(u8).initCapacity(gpa, err.len + 64);
+        defer full_msg.deinit(gpa);
+        try full_msg.appendSlice(gpa, err);
+        if (doc.type_error_expected) |exp| {
+            if (doc.type_error_actual) |act| {
+                if (std.mem.indexOf(u8, err, "expected") == null) {
+                    try full_msg.print(gpa, " (expected {s}, got {s})", .{ exp, act });
+                }
+            }
+        }
+        const escaped = try escapeJsonString(gpa, full_msg.items);
         defer gpa.free(escaped);
         const loc = doc.type_error_loc orelse ast.Loc{};
         const sl: usize = if (loc.line > 0) loc.line - 1 else 0;
@@ -603,6 +912,8 @@ pub fn main(_: std.process.Init.Minimal) !void {
             try handleCompletion(id, &store, params, msg_alloc);
         } else if (std.mem.eql(u8, method, "textDocument/definition")) {
             try handleDefinition(id, &store, params, msg_alloc);
+        } else if (std.mem.eql(u8, method, "textDocument/references")) {
+            try handleReferences(id, &store, params, msg_alloc);
         } else if (std.mem.eql(u8, method, "textDocument/documentSymbol")) {
             try handleDocumentSymbol(id, &store, params, msg_alloc);
         }

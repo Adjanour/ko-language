@@ -31,5 +31,11 @@
     "increaseIndentPattern": "^\\s*(fn|let|match|if|type|module)\\b.*[=:]\\s*$",
     "decreaseIndentPattern": "^\\s*$"
   },
+  "onEnterRules": [
+    {
+      "beforeText": "^\\s*\\|.*=>\\s*$",
+      "action": { "indent": "indent" }
+    }
+  ],
   "wordPattern": "(-?\\d+\\.\\d*)|([^\\`\\~\\!\\@\\#\\%\\^\\&\\*\\(\\)\\=\\+\\{\\}\\\\\\|\\;:\\'\\\"\\,\\.\\<\\>\\/\\?\\s]+)"
 }

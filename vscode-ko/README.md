@@ -1,31 +1,51 @@
 # Kō Language Support for VS Code
 
-Syntax highlighting and language support for the Kō programming language.
+Syntax highlighting, diagnostics, and LSP-powered editing for the Kō programming language.
 
 ## Features
 
-- **Syntax Highlighting**: Full syntax highlighting for Kō code
-- **Keyword Completion**: Auto-complete for keywords and built-in functions
-- **Hover Documentation**: Hover over keywords to see documentation
+- **Syntax highlighting** — keywords, constructors, float dotted operators (`+.`, `*.`, …), numbers, strings, doc comments
+- **Live diagnostics** — parse and type errors with squiggles as you type
+- **Hover** — inferred types for your functions (with `#` doc comments), signatures for builtins (`Int.toString`, `Float.sqrt`, …), keyword docs; qualified names like `Int.toString` resolve through the qualifier
+- **Completion** — prefix-filtered functions, types, modules, imports, builtins (with signatures) and keywords (with docs)
+- **Go to definition** — jumps to the exact name, not line 0
+- **Find references** — all whole-word uses in the file
+- **Document symbols + imports** — outline view with real ranges
+- **Commands** — `Kō: Run Current File` (editor title bar ▶ for `.ko` files), `Kō: Restart Language Server`
+
+## Requirements
+
+The extension launches `ko-lsp` from your `PATH`. If it is not on `PATH`, set
+`ko.languageServer.path` to the binary (e.g. `<repo>/ko-zig/zig-out/bin/ko-lsp`).
+`Kō: Run Current File` uses the `ko` binary from `ko.compiler.path` (default: `ko` on `PATH`).
+
+## Extension Settings
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `ko.languageServer.path` | `""` (auto-discover) | Path to `ko-lsp` |
+| `ko.languageServer.args` | `[]` | Extra `ko-lsp` arguments |
+| `ko.compiler.path` | `"ko"` | `ko` binary for Run Current File |
+
+Changing any `ko.languageServer.*` setting restarts the server automatically.
 
 ## Installation
 
 ### From VSIX
 
-1. Run `code --install-extension ko-language-0.1.0.vsix`
+```bash
+code --install-extension ko-language-0.6.0.vsix
+```
 
-### From Source
+### From source
 
-1. Install `@vscode/vsce`: `npm install -g @vscode/vsce`
-2. Run `vsce package` in this directory
-3. Run `code --install-extension ko-language-0.1.0.vsix`
+```bash
+npm install -g @vscode/vsce
+vsce package   # in this directory
+code --install-extension ko-language-0.6.0.vsix
+```
 
-## Supported Syntax
+## Known limitations
 
-- Keywords: `fn`, `let`, `if`, `then`, `else`, `match`, `type`, `in`
-- Built-in functions: `print`, `println`, `inspect`, `panic`
-- Types and constructors (uppercase identifiers)
-- Hex (`0xFF`), binary (`0b1010`), and decimal numbers
-- Strings and characters with escape sequences
-- Single-line (`//`, `#`) and block (`/* */`) comments
-- Operators: arithmetic, comparison, logical
+- Single-file analysis: no cross-file go-to-definition or import navigation yet.
+- `ko-lsp` is reached via stdio; very large files re-analyze fully on each keystroke.
