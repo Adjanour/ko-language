@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const Io = std.Io;
 const linux = std.os.linux;
 const llvm = @import("llvm");
@@ -546,9 +547,9 @@ pub fn main(init: std.process.Init) !void {
                 try writer.interface.flush();
             },
             .exe => {
-                const out_name_z = try init.arena.allocator().dupeZ(u8, output orelse "output");
+                const out_name_z = try compat.dupeZ(init.arena.allocator(), output orelse "output");
                 const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name_z});
-                const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
+                const obj_name = try compat.dupeZ(init.arena.allocator(), obj_name_slice);
 
                 const obj_data = try codegen_lir.emitObjectFile(lcg.module, init.arena.allocator());
                 {
@@ -665,9 +666,9 @@ pub fn main(init: std.process.Init) !void {
             try writer.interface.flush();
         },
         .exe => {
-            const out_name = try init.arena.allocator().dupeZ(u8, output orelse "output");
+            const out_name = try compat.dupeZ(init.arena.allocator(), output orelse "output");
             const obj_name_slice = try std.fmt.allocPrint(init.arena.allocator(), "{s}.o", .{out_name});
-            const obj_name = try init.arena.allocator().dupeZ(u8, obj_name_slice);
+            const obj_name = try compat.dupeZ(init.arena.allocator(), obj_name_slice);
 
             // The legacy Aot (codegen.zig) always emits for the host triple, so
             // cross-compilation is unsupported on this path.

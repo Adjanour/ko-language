@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const llvm = @import("llvm");
 const core = llvm.core;
 const types = llvm.types;
@@ -133,7 +134,7 @@ pub const Codegen = struct {
     }
 
     fn dupeZ(self: *Codegen, s: []const u8) ![*:0]const u8 {
-        return try self.allocator.dupeZ(u8, s);
+        return try compat.dupeZ(self.allocator, s);
     }
 
     /// Compute the store size of an LLVM type as an i64 constant
@@ -657,7 +658,7 @@ pub const Codegen = struct {
                         @intCast(arity),
                         0,
                     );
-                    const name_z = try self.allocator.dupeZ(u8, ctor.name);
+                    const name_z = try compat.dupeZ(self.allocator, ctor.name);
                     const wrapper_fn = core.LLVMAddFunction(self.module, name_z, fn_type);
                     try self.constructor_fns.put(ctor.name, wrapper_fn);
                 }

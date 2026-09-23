@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
 
@@ -215,7 +216,7 @@ pub const ModuleLoader = struct {
         }
 
         // Create null-terminated copy (dupeZ adds the sentinel)
-        return try self.allocator.dupeZ(u8, buf.items);
+        return try compat.dupeZ(self.allocator, buf.items);
     }
 };
 

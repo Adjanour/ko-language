@@ -6,6 +6,7 @@
 //! persistence. No raw-mode key handling or interactive completion.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const fdio = @import("fdio.zig");
 
 pub const Completions = extern struct {
@@ -56,7 +57,7 @@ pub fn linenoise(prompt: [*:0]const u8) ?[*:0]u8 {
         buf.items.len -= 1;
     }
 
-    return std.heap.c_allocator.dupeZ(u8, buf.items) catch null;
+    return compat.dupeZ(std.heap.c_allocator, buf.items) catch null;
 }
 
 pub fn linenoiseFree(ptr: ?*anyopaque) void {
@@ -72,7 +73,7 @@ pub fn linenoiseHistoryAdd(line: [*:0]const u8) c_int {
     if (g_history.items.len > 0 and std.mem.eql(u8, g_history.items[g_history.items.len - 1], entry)) {
         return 0;
     }
-    const duped = std.heap.c_allocator.dupeZ(u8, entry) catch return 1;
+    const duped = compat.dupeZ(std.heap.c_allocator, entry) catch return 1;
     g_history.append(std.heap.c_allocator, duped) catch {
         std.heap.c_allocator.free(duped);
         return 1;
@@ -118,7 +119,7 @@ pub fn linenoiseHistoryLoad(filename: [*:0]const u8) c_int {
         if (line_buf.items.len > 0 and line_buf.items[line_buf.items.len - 1] == '\r') {
             line_buf.items.len -= 1;
         }
-        const duped = std.heap.c_allocator.dupeZ(u8, line_buf.items) catch break;
+        const duped = compat.dupeZ(std.heap.c_allocator, line_buf.items) catch break;
         g_history.append(std.heap.c_allocator, duped) catch {
             std.heap.c_allocator.free(duped);
             break;

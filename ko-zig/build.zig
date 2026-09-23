@@ -63,18 +63,12 @@ pub fn build(b: *std.Build) void {
 
     const run_lsp = b.addRunArtifact(ko_lsp);
     run_lsp.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_lsp.addArgs(args);
-    }
     const lsp_step = b.step("lsp", "Run the Kō LSP server");
     lsp_step.dependOn(&run_lsp.step);
 
     // Run command
     const run_cmd = b.addRunArtifact(ko_exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
     const run_step = b.step("run", "Run the Kō compiler");
     run_step.dependOn(&run_cmd.step);
 
@@ -95,7 +89,8 @@ pub fn build(b: *std.Build) void {
     // Absolute path to std/ so inline tests can `import std.Set` regardless of
     // the working directory the test binary runs from.
     const std_options = b.addOptions();
-    std_options.addOption([]const u8, "stdlib_dir", b.path("std").getPath(b));
+    const build_root = b.root.root_dir.path orelse ".";
+    std_options.addOption([]const u8, "stdlib_dir", b.pathJoin(&.{ build_root, "std" }));
     unit_tests.root_module.addOptions("build_options", std_options);
     unit_tests.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),

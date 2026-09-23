@@ -8,6 +8,7 @@
 //! target and only references the underscored names on Windows.
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
 
@@ -36,7 +37,7 @@ pub fn close(fd: fd_t) void {
 }
 
 pub fn open(path: []const u8) isize {
-    const path_z = std.heap.c_allocator.dupeZ(u8, path) catch return -1;
+    const path_z = compat.dupeZ(std.heap.c_allocator, path) catch return -1;
     defer std.heap.c_allocator.free(path_z);
     if (comptime is_windows) return _open(path_z.ptr, 0); // _O_RDONLY
     return std.c.open(path_z.ptr, .{}); // O_RDONLY (no flags)

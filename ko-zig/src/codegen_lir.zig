@@ -21,6 +21,7 @@
 //!   lowering pass owns the final layout).
 
 const std = @import("std");
+const compat = @import("compat.zig");
 const llvm = @import("llvm");
 const core = llvm.core;
 const analysis = llvm.analysis;
@@ -123,7 +124,7 @@ pub const CodegenLir = struct {
     /// called after init and before codegenProgram. The module target triple
     /// controls the object file format emitted for --emit-obj / --emit-exe.
     pub fn setTargetTriple(self: *CodegenLir, target_triple: []const u8) void {
-        const triple_z = self.allocator.dupeZ(u8, target_triple) catch return;
+        const triple_z = compat.dupeZ(self.allocator, target_triple) catch return;
         core.LLVMSetTarget(self.module, triple_z);
         self.allocator.free(triple_z);
     }
@@ -216,7 +217,7 @@ pub const CodegenLir = struct {
     }
 
     fn dupeZ(self: *CodegenLir, s: []const u8) ![*:0]const u8 {
-        return try self.allocator.dupeZ(u8, s);
+        return try compat.dupeZ(self.allocator, s);
     }
 
     // =================================================================
@@ -295,7 +296,7 @@ pub const CodegenLir = struct {
         // Pass A: create all basic blocks.
         for (lfn.blocks) |blk| {
             var name_buf: [32]u8 = undefined;
-            const name = std.fmt.bufPrintZ(&name_buf, "bb{d}", .{blk.id}) catch "block";
+            const name = compat.bufPrintZ(&name_buf, "bb{d}", .{blk.id}, "block");
             const bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, name);
             try self.blocks.put(blk.id, bb);
         }
@@ -308,7 +309,7 @@ pub const CodegenLir = struct {
             const phis = try self.allocator.alloc(types.LLVMValueRef, blk.params.len);
             for (blk.params, 0..) |pid, i| {
                 var name_buf: [32]u8 = undefined;
-                const name = std.fmt.bufPrintZ(&name_buf, "v{d}", .{pid}) catch "param";
+                const name = compat.bufPrintZ(&name_buf, "v{d}", .{pid}, "param");
                 phis[i] = core.LLVMBuildPhi(self.builder, try self.lirType(lfn.locals[pid]), name);
                 try self.locals.put(pid, phis[i]);
             }

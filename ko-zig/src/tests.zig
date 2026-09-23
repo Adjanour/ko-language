@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const typecheck = @import("typecheck.zig");
@@ -164,7 +165,7 @@ test "parser: placeholder" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "package std.math\nimport std.core as core\nfn add x y = x + y\nlet answer = add 1 2\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -198,7 +199,7 @@ test "parser: record types and record syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "type Binding =\n  {\n    name : String,\n    value : Int\n  }\nlet binding = Binding { name = \"count\", value = 1 }\nmatch binding\n  Binding { name, .. } => name\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -250,7 +251,7 @@ test "parser: pipe and named args" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "let out = input |> normalize ~mode:\"fast\"\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -281,7 +282,7 @@ test "typechecker: infer simple program" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn add x y = x + y\nlet answer = add 1 2\nlet id = \\x -> x\nlet truth = id true\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -315,7 +316,7 @@ test "typechecker: type mismatch detected" {
     const allocator = arena.allocator();
 
     // add true 1 should fail: true + 1 is ill-typed
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn add x y = x + y\nlet bad = add true 1\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -334,7 +335,7 @@ test "typechecker: ref creates Ref type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn make_ref _ =\n    ref 0\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -358,7 +359,7 @@ test "typechecker: deref extracts Ref inner type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn get_val r =\n    !r\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -383,7 +384,7 @@ test "typechecker: ref and deref round-trip" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn bump r =\n    r := !r + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -401,7 +402,7 @@ test "typechecker: let-polymorphism" {
     const allocator = arena.allocator();
 
     // id should be usable at both int and bool types
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "let id = \\x -> x\nlet a = id 1\nlet b = id true\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -426,7 +427,7 @@ test "typechecker: record literal type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "type Point = { x: Int, y: Int }\nlet p = Point { x = 1, y = 2 }\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -449,7 +450,7 @@ test "typechecker: match arms consistent" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "type Bool = True | False\nfn negate b =\n    match b\n        True => False\n        False => True\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -476,7 +477,7 @@ test "typechecker: match arm type mismatch" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "type Bool = True | False\nfn bad_fn b =\n    match b\n        True => 1\n        False => true\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -494,7 +495,7 @@ test "typechecker: type annotation on let" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn get_val _ =\n    let x : Int = 42\n    x\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -518,7 +519,7 @@ test "typechecker: type annotation mismatch on let" {
     const allocator = arena.allocator();
 
     // Test that type mismatch is detected in binary ops
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn bad_fn _ =\n    true + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -536,7 +537,7 @@ test "typechecker: type annotation on fn return" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn double (x : Int) = x + x\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -564,7 +565,7 @@ test "parser: ref and assign" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "let counter = ref 0\ncounter := !counter + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -605,7 +606,7 @@ test "parser: type annotations" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "fn add x y = x + y\nlet answer : Int = add 1 2\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -639,7 +640,7 @@ test "parser: module with indent block" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "module Math\n  pub fn add x y = x + y\n  pub fn mul x y = x * y\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -662,7 +663,7 @@ test "parser: selective import" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "import std.math.{PI, E}\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -685,7 +686,7 @@ test "parser: constructor with type params" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "type List a = Cons a (List a) | Nil\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -719,7 +720,7 @@ test "parser: lambda with pattern params" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "let f = \\x y -> x + y\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -1190,7 +1191,7 @@ test "multi-line doc comments per function" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try allocator.dupeZ(u8,
+    const source = try compat.dupeZ(allocator,
         "# First doc line\n# Second doc line\nfn add x y = x + y\n\n# Mul doc line\nfn mul x y = x * y\n");
 
     var p = try parser.Parser.init(allocator, source);
@@ -1224,7 +1225,7 @@ test "tuple destructuring in let" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source_z = try allocator.dupeZ(u8,
+    const source_z = try compat.dupeZ(allocator,
         \\fn main =
         \\  let (x, y) = (10, 20)
         \\  println (x + y)

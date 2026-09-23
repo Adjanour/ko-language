@@ -1,4 +1,5 @@
 const std = @import("std");
+const compat = @import("compat.zig");
 const posix = std.posix;
 const builtin = @import("builtin");
 const is_windows = builtin.os.tag == .windows;
@@ -235,7 +236,7 @@ pub const Repl = struct {
 
             // If brackets are balanced and no body needed, try parsing
             if (bracket_depth <= 0 and !needs_body) {
-                const source_z = try self.allocator.dupeZ(u8, buf.items);
+                const source_z = try compat.dupeZ(self.allocator, buf.items);
                 defer self.allocator.free(source_z);
 
                 if (parser.Parser.init(self.allocator, source_z)) |p| {
@@ -281,7 +282,7 @@ pub const Repl = struct {
 
         const eval_name_raw = try std.fmt.allocPrint(self.allocator, "__repl_eval_{d}", .{self.eval_counter});
         defer self.allocator.free(eval_name_raw);
-        const eval_name = try self.allocator.dupeZ(u8, eval_name_raw);
+        const eval_name = try compat.dupeZ(self.allocator, eval_name_raw);
         defer self.allocator.free(eval_name);
         self.eval_counter += 1;
 
@@ -332,7 +333,7 @@ pub const Repl = struct {
         try source.appendSlice(self.allocator, input);
         try source.append(self.allocator, '\n');
 
-        const source_z = try self.allocator.dupeZ(u8, source.items);
+        const source_z = try compat.dupeZ(self.allocator, source.items);
         defer self.allocator.free(source_z);
         var p = try parser.Parser.init(self.allocator, source_z);
         defer p.deinit();
@@ -532,7 +533,7 @@ pub const Repl = struct {
             try source.appendSlice(self.allocator, expr);
             try source.append(self.allocator, '\n');
 
-            const source_z = try self.allocator.dupeZ(u8, source.items);
+            const source_z = try compat.dupeZ(self.allocator, source.items);
             defer self.allocator.free(source_z);
             var p = try parser.Parser.init(self.allocator, source_z);
             defer p.deinit();
