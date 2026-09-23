@@ -7,6 +7,11 @@ const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 const typecheck_mod = @import("typecheck.zig");
 const module_loader_mod = @import("module_loader.zig");
+const diagnostics_mod = @import("diagnostics.zig");
+
+/// Import load failures are reported as pinpointed LSP diagnostics by the
+/// analyzer below; the checker's stderr logging for them is silenced via
+/// `Inferer.quiet_import_errors` (std.log has no level below `err`).
 
 const JsonValue = std.json.Value;
 
@@ -19,12 +24,23 @@ const JsonValue = std.json.Value;
 //
 const Document = struct {
     uri: []const u8,
-    arena: std.heap.ArenaAllocator,
+    /// Heap-stable arena: every analysis allocation comes from it, so
+    /// re-analyzing or closing frees everything with one deinit. It must
+    /// be heap-allocated (not inline) because hashmap growth memcpys
+    /// Documents — any Allocator captured from an inline arena would
+    /// dangle after a move. The pointer itself never moves.
+    arena: *std.heap.ArenaAllocator,
     text: []const u8,
     source_z: ?[]const u8,
     version: i32,
     prog: ?ast.Program,
     inferer: ?typecheck_mod.Inferer,
+    /// Module loader for this document's imports (stdlib + siblings).
+    /// Arena-owned; doubles as the cross-file definition index.
+    loader: module_loader_mod.ModuleLoader,
+    /// All checker diagnostics (multi-error mode); may be non-empty even
+    /// when inference ultimately fails. Arena-owned.
+    diag_list: diagnostics_mod.DiagnosticList,
     parse_error: ?[]const u8,
     parse_error_loc: ?ast.Loc,
     type_error: ?[]const u8,
@@ -61,8 +77,8 @@ const DocumentStore = struct {
     }
 
     fn freeDocument(self: *DocumentStore, doc: *Document) void {
-        _ = self;
         doc.arena.deinit();
+        self.allocator.destroy(doc.arena);
     }
 
     fn open(self: *DocumentStore, uri: []const u8, text: []const u8, version: i32) !*Document {
@@ -90,9 +106,12 @@ const DocumentStore = struct {
     }
 
     fn freshDocument(self: *DocumentStore, stored_uri: []const u8, text: []const u8, version: i32) !Document {
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        const arena = try self.allocator.create(std.heap.ArenaAllocator);
+        errdefer self.allocator.destroy(arena);
+        arena.* = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
-        const owned_text = try arena.allocator().dupe(u8, text);
+        const alloc = arena.allocator();
+        const owned_text = try alloc.dupe(u8, text);
         return .{
             .uri = stored_uri,
             .arena = arena,
@@ -101,6 +120,8 @@ const DocumentStore = struct {
             .version = version,
             .prog = null,
             .inferer = null,
+            .loader = module_loader_mod.ModuleLoader.init(alloc, baseDirOf(uriToPath(stored_uri)), self.stdlib_override, self.exe_dir),
+            .diag_list = diagnostics_mod.DiagnosticList.init(alloc),
             .parse_error = null,
             .parse_error_loc = null,
             .type_error = null,
@@ -123,6 +144,7 @@ const DocumentStore = struct {
     }
 
     fn analyze(self: *DocumentStore, doc: *Document) void {
+        _ = self;
         const alloc = doc.arena.allocator();
         const source_z = compat.dupeZ(alloc, doc.text) catch return;
         var p = parser.Parser.init(alloc, source_z) catch |err| {
@@ -140,13 +162,12 @@ const DocumentStore = struct {
         doc.source_z = source_z;
         doc.prog = prog;
         var inferer = typecheck_mod.Inferer.init(alloc);
-        // Resolve imports exactly like `ko --check`: stdlib from the
-        // binary's directory (or KO_STDLIB_PATH), local modules from the
-        // document's own directory. Unresolvable imports are skipped by
-        // the checker, which then reports the unknown names as usual.
-        const base_dir = baseDirOf(uriToPath(doc.uri));
-        var loader = module_loader_mod.ModuleLoader.init(alloc, base_dir, self.stdlib_override, self.exe_dir);
-        inferer.module_loader = &loader;
+        // Resolve imports exactly like `ko --check`, and collect errors
+        // instead of aborting: definitions that check cleanly keep their
+        // schemes, so the rest of the file keeps working.
+        inferer.module_loader = &doc.loader;
+        inferer.diagnostics = &doc.diag_list;
+        inferer.quiet_import_errors = true;
         inferer.inferProgram(&prog) catch |err| {
             if (inferer.last_error) |ec| {
                 doc.type_error = ec.message;
@@ -158,9 +179,23 @@ const DocumentStore = struct {
             }
             // No inferer.deinit(): every typechecker allocation comes from
             // the document arena, which frees everything at once.
-            return;
         };
+        // The inferer holds partial results (plus dummy types for failed
+        // definitions); keep it so good definitions stay navigable.
         doc.inferer = inferer;
+        // Pinpoint unresolvable imports at the import statement itself.
+        // (The checker only reports the downstream unknown names.)
+        for (prog.imports) |imp| {
+            const loaded = doc.loader.loadModule(imp.path) catch continue;
+            if (loaded != null) continue;
+            var dotted = std.ArrayList(u8).initCapacity(alloc, 32) catch continue;
+            for (imp.path, 0..) |part, i| {
+                if (i > 0) dotted.append(alloc, '.') catch continue;
+                dotted.appendSlice(alloc, part) catch continue;
+            }
+            const msg = std.fmt.allocPrint(alloc, "cannot resolve module '{s}'", .{dotted.items}) catch continue;
+            doc.diag_list.addError(msg, imp.loc) catch {};
+        }
     }
 };
 
@@ -686,6 +721,29 @@ fn handleCompletion(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.
                 try emit(&body, gpa, &first, mod_name, 9, "module", null, order);
                 order += 1;
             }
+            // Members of imported modules (selective lists respected).
+            for (prog.imports) |imp| {
+                const short = importShortName(imp) orelse continue;
+                const mod = loadImportModule(doc, imp) orelse continue;
+                for (mod.program.definitions) |mdef| {
+                    const info = defInfo(mdef) orelse continue;
+                    if (imp.selective) |sel| {
+                        var listed = false;
+                        for (sel) |s| {
+                            if (std.mem.eql(u8, info.name, s)) {
+                                listed = true;
+                                break;
+                            }
+                        }
+                        if (!listed) continue;
+                    }
+                    if (!matches(info.name, prefix)) continue;
+                    var detail_buf: [128]u8 = undefined;
+                    const detail = std.fmt.bufPrint(&detail_buf, "{s}.{s} (imported)", .{ short, info.name }) catch short;
+                    try emit(&body, gpa, &first, info.name, info.kind, detail, null, 500 + order);
+                    order += 1;
+                }
+            }
         }
     }
     for (BUILTIN_DOCS) |b| {
@@ -776,6 +834,65 @@ fn handleDocumentSymbol(id: i64, store: *DocumentStore, params: JsonValue, gpa: 
     return sendResponse(id, owned, gpa);
 }
 
+fn sendLocation(id: i64, gpa: std.mem.Allocator, uri: []const u8, line: usize, sc: usize, ec: usize) !void {
+    const esc_uri = try escapeJsonString(gpa, uri);
+    defer gpa.free(esc_uri);
+    var body = try std.ArrayList(u8).initCapacity(gpa, 128);
+    defer body.deinit(gpa);
+    try body.print(gpa, "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_uri, line, sc, line, ec });
+    return sendResponse(id, try body.toOwnedSlice(gpa), gpa);
+}
+
+const ImportDefTarget = struct { uri: []const u8, line: usize, sc: usize, ec: usize };
+
+fn loadImportModule(doc: *Document, imp: ast.Import) ?*module_loader_mod.LoadedModule {
+    const m = doc.loader.loadModule(imp.path) catch return null;
+    return m;
+}
+
+/// Short name an import is addressed by: its alias, else its last component.
+fn importShortName(imp: ast.Import) ?[]const u8 {
+    if (imp.alias) |a| return a;
+    if (imp.path.len == 0) return null;
+    return imp.path[imp.path.len - 1];
+}
+
+fn findDefInModule(gpa: std.mem.Allocator, mod: *module_loader_mod.LoadedModule, word: []const u8) ?ImportDefTarget {
+    const uri = std.fmt.allocPrint(gpa, "file://{s}", .{mod.file_path}) catch return null;
+    for (mod.program.definitions) |def| {
+        const info = defInfo(def) orelse continue;
+        if (info.line != 0 and std.mem.eql(u8, word, info.name)) {
+            return targetForDef(gpa, uri, mod.source, info.line, info.name);
+        }
+        // Constructors live inside type definitions; jump to the type.
+        if (def == .type_def) {
+            const ctors = switch (def.type_def.body) {
+                .sum => |cs| cs,
+                else => continue,
+            };
+            for (ctors) |ctor| {
+                if (!std.mem.eql(u8, word, ctor.name)) continue;
+                if (info.line == 0) return null;
+                return targetForDef(gpa, uri, mod.source, info.line, info.name);
+            }
+        }
+    }
+    return null;
+}
+
+fn targetForDef(gpa: std.mem.Allocator, uri: []const u8, source: []const u8, def_line_1based: usize, name: []const u8) ?ImportDefTarget {
+    _ = gpa;
+    const def_line: usize = def_line_1based - 1;
+    const line_text = getLine(source, def_line) orelse "";
+    var sc: usize = 0;
+    var ec: usize = line_text.len;
+    if (findDefName(line_text, name)) |span| {
+        sc = span.start;
+        ec = span.end;
+    }
+    return .{ .uri = uri, .line = def_line, .sc = sc, .ec = ec };
+}
+
 fn handleDefinition(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.Allocator) !void {
     const td = jsonGetObj(params, "textDocument") orelse return sendNullResult(id, gpa);
     const uri = jsonGetString(td, "uri") orelse return sendNullResult(id, gpa);
@@ -804,6 +921,37 @@ fn handleDefinition(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.
                 defer body.deinit(gpa);
                 try body.print(gpa, "{{\"uri\":\"{s}\",\"range\":{{\"start\":{{\"line\":{d},\"character\":{d}}},\"end\":{{\"line\":{d},\"character\":{d}}}}}}}", .{ esc_uri, def_line, sel_sc, def_line, sel_ec });
                 return sendResponse(id, try body.toOwnedSlice(gpa), gpa);
+            }
+        }
+        // Cross-file: qualified `mod.name` access.
+        if (getLine(doc.text, line)) |line_text| {
+            if (getQualifier(line_text, wi.start)) |modname| {
+                for (prog.imports) |imp| {
+                    const short = importShortName(imp) orelse continue;
+                    if (!std.mem.eql(u8, modname, short)) continue;
+                    const mod = loadImportModule(doc, imp) orelse continue;
+                    if (findDefInModule(gpa, mod, wi.word)) |t| {
+                        return sendLocation(id, gpa, t.uri, t.line, t.sc, t.ec);
+                    }
+                }
+            }
+        }
+        // Cross-file: selectively imported names, then bare module names.
+        for (prog.imports) |imp| {
+            if (imp.selective) |sel| {
+                for (sel) |s| {
+                    if (!std.mem.eql(u8, wi.word, s)) continue;
+                    const mod = loadImportModule(doc, imp) orelse continue;
+                    if (findDefInModule(gpa, mod, wi.word)) |t| {
+                        return sendLocation(id, gpa, t.uri, t.line, t.sc, t.ec);
+                    }
+                }
+            }
+            const short = importShortName(imp) orelse continue;
+            if (std.mem.eql(u8, wi.word, short)) {
+                const mod = loadImportModule(doc, imp) orelse continue;
+                const target_uri = try std.fmt.allocPrint(gpa, "file://{s}", .{mod.file_path});
+                return sendLocation(id, gpa, target_uri, 0, 0, 0);
             }
         }
     }
@@ -878,7 +1026,9 @@ fn escapeJsonString(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return result.toOwnedSlice(alloc);
 }
 
-fn appendRange(gpa: std.mem.Allocator, body: *std.ArrayList(u8), sl: usize, sc: usize, el: usize, ec_pos: usize, escaped: []const u8) !void {
+fn appendDiag(gpa: std.mem.Allocator, body: *std.ArrayList(u8), first: *bool, severity: u8, sl: usize, sc: usize, el: usize, ec_pos: usize, escaped: []const u8) !void {
+    if (!first.*) try body.append(gpa, ',');
+    first.* = false;
     try body.appendSlice(gpa, "{\"range\":{\"start\":{\"line\":");
     var num_buf: [20]u8 = undefined;
     try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{sl}));
@@ -888,7 +1038,9 @@ fn appendRange(gpa: std.mem.Allocator, body: *std.ArrayList(u8), sl: usize, sc: 
     try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{el}));
     try body.appendSlice(gpa, ",\"character\":");
     try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{ec_pos}));
-    try body.appendSlice(gpa, "}},\"severity\":1,\"message\":\"");
+    try body.appendSlice(gpa, "}},\"severity\":");
+    try body.appendSlice(gpa, try std.fmt.bufPrint(&num_buf, "{d}", .{severity}));
+    try body.appendSlice(gpa, ",\"message\":\"");
     try body.appendSlice(gpa, escaped);
     try body.appendSlice(gpa, "\"}");
 }
@@ -911,30 +1063,50 @@ fn publishDiagnostics(store: *DocumentStore, uri: []const u8, gpa: std.mem.Alloc
         const sc: usize = if (loc.col > 0) loc.col - 1 else 0;
         const el: usize = if (loc.end_line > 0) loc.end_line - 1 else sl;
         const ec_pos: usize = if (loc.end_col > 0) loc.end_col - 1 else sc;
-        try appendRange(gpa, &body, sl, sc, el, ec_pos, escaped);
-        first = false;
+        try appendDiag(gpa, &body, &first, 1, sl, sc, el, ec_pos, escaped);
     }
-    if (doc.type_error) |err| {
-        if (!first) try body.append(gpa, ',');
-        // Surface the expected/actual types when the checker provides them.
-        var full_msg = try std.ArrayList(u8).initCapacity(gpa, err.len + 64);
+    // The checker collects per-definition errors; when it does, those
+    // (with their own locations) replace the single-error fallback below.
+    for (doc.diag_list.items.items) |d| {
+        var full_msg = try std.ArrayList(u8).initCapacity(gpa, d.message.len + 64);
         defer full_msg.deinit(gpa);
-        try full_msg.appendSlice(gpa, err);
-        if (doc.type_error_expected) |exp| {
-            if (doc.type_error_actual) |act| {
-                if (std.mem.indexOf(u8, err, "expected") == null) {
-                    try full_msg.print(gpa, " (expected {s}, got {s})", .{ exp, act });
-                }
-            }
+        try full_msg.appendSlice(gpa, d.message);
+        if (d.note) |note| {
+            try full_msg.appendSlice(gpa, " — ");
+            try full_msg.appendSlice(gpa, note);
         }
         const escaped = try escapeJsonString(gpa, full_msg.items);
         defer gpa.free(escaped);
-        const loc = doc.type_error_loc orelse ast.Loc{};
+        const loc = d.loc orelse ast.Loc{};
         const sl: usize = if (loc.line > 0) loc.line - 1 else 0;
         const sc: usize = if (loc.col > 0) loc.col - 1 else 0;
         const el: usize = if (loc.end_line > 0) loc.end_line - 1 else sl;
         const ec_pos: usize = if (loc.end_col > 0) loc.end_col - 1 else sc;
-        try appendRange(gpa, &body, sl, sc, el, ec_pos, escaped);
+        const severity: u8 = if (d.severity == .@"error") 1 else 2;
+        try appendDiag(gpa, &body, &first, severity, sl, sc, el, ec_pos, escaped);
+    }
+    if (doc.type_error) |err| {
+        if (doc.diag_list.items.items.len == 0) {
+            // Surface the expected/actual types when the checker provides them.
+            var full_msg = try std.ArrayList(u8).initCapacity(gpa, err.len + 64);
+            defer full_msg.deinit(gpa);
+            try full_msg.appendSlice(gpa, err);
+            if (doc.type_error_expected) |exp| {
+                if (doc.type_error_actual) |act| {
+                    if (std.mem.indexOf(u8, err, "expected") == null) {
+                        try full_msg.print(gpa, " (expected {s}, got {s})", .{ exp, act });
+                    }
+                }
+            }
+            const escaped = try escapeJsonString(gpa, full_msg.items);
+            defer gpa.free(escaped);
+            const loc = doc.type_error_loc orelse ast.Loc{};
+            const sl: usize = if (loc.line > 0) loc.line - 1 else 0;
+            const sc: usize = if (loc.col > 0) loc.col - 1 else 0;
+            const el: usize = if (loc.end_line > 0) loc.end_line - 1 else sl;
+            const ec_pos: usize = if (loc.end_col > 0) loc.end_col - 1 else sc;
+            try appendDiag(gpa, &body, &first, 1, sl, sc, el, ec_pos, escaped);
+        }
     }
 
     try body.appendSlice(gpa, "]}");

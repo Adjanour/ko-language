@@ -169,6 +169,9 @@ pub const Inferer = struct {
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
     diagnostics: ?*DiagnosticList = null,
+    /// Suppress stderr logging for import load failures. The LSP sets this
+    /// and reports them as pinpointed diagnostics instead.
+    quiet_import_errors: bool = false,
     enabled_warnings: diagnostics_mod.WarningSet = .{},
     used_names: std.StringHashMap(void),
     bound_names: std.StringHashMap(parser.Loc),
@@ -1036,10 +1039,10 @@ pub const Inferer = struct {
         if (self.module_loader) |loader| {
             for (program.imports) |imp| {
                 const mod = loader.loadModule(imp.path) catch |err| {
-                    std.log.err("Failed to load module: {}", .{err});
+                    if (!self.quiet_import_errors) std.log.err("Failed to load module: {}", .{err});
                     continue;
                 } orelse {
-                    std.log.err("Module not found: {s}", .{std.mem.join(self.allocator, "/", imp.path) catch "unknown"});
+                    if (!self.quiet_import_errors) std.log.err("Module not found: {s}", .{std.mem.join(self.allocator, "/", imp.path) catch "unknown"});
                     continue;
                 };
                 const module_name = imp.alias orelse imp.path[imp.path.len - 1];
@@ -1048,11 +1051,12 @@ pub const Inferer = struct {
                 var imp_inferer = try self.allocator.create(Inferer);
                 imp_inferer.* = Inferer.init(self.allocator);
                 imp_inferer.module_loader = loader;
+                imp_inferer.quiet_import_errors = self.quiet_import_errors;
                 try self.imported_inferers.append(self.allocator, imp_inferer);
 
                 // Typecheck the imported module
                 imp_inferer.inferProgram(&mod.program) catch |err| {
-                    std.log.err("Failed to typecheck imported module '{s}': {}", .{ module_name, err });
+                    if (!self.quiet_import_errors) std.log.err("Failed to typecheck imported module '{s}': {}", .{ module_name, err });
                     continue;
                 };
 
