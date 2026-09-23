@@ -1,0 +1,60 @@
+# listx.ko — list algorithms over std.List.
+# Merge sort, sieve of Eratosthenes, zipping, folds. Higher-order
+# functions throughout: callers pass single-line lambdas.
+
+import std.List
+
+pub fn sum xs = match xs
+  | Cons x rest => x + sum rest
+  | Nil => 0
+
+pub fn product xs = match xs
+  | Cons x rest => x * product rest
+  | Nil => 1
+
+pub fn range lo hi =
+  if lo > hi then Nil
+  else Cons lo (range (lo + 1) hi)
+
+pub fn sieve xs = match xs
+  | Cons p rest => Cons p (sieve (List.filter (\x -> x % p != 0) rest))
+  | Nil => Nil
+
+pub fn primesTo n = sieve (range 2 n)
+
+pub fn take n xs = List.take n xs
+
+pub fn drop n xs = List.drop n xs
+
+pub fn merge xs ys = match xs
+  | Cons x xrest => match ys
+    | Cons y yrest =>
+      if x <= y then Cons x (merge xrest ys)
+      else Cons y (merge xs yrest)
+    | Nil => Cons x xrest
+  | Nil => ys
+
+pub fn mergeSort xs =
+  let len = List.length xs
+  if len <= 1 then xs
+  else merge (mergeSort (take (len / 2) xs)) (mergeSort (drop (len / 2) xs))
+
+pub fn zipWith f xs ys = match xs
+  | Cons x xrest => match ys
+    | Cons y yrest => Cons (f x y) (zipWith f xrest yrest)
+    | Nil => Nil
+  | Nil => Nil
+
+pub fn dotProduct xs ys = sum (zipWith (\a b -> a * b) xs ys)
+
+pub fn squares xs = List.map (\x -> x * x) xs
+
+pub fn evens xs = List.filter (\x -> x % 2 == 0) xs
+
+pub fn totalOfSquares xs = List.foldl (\acc x -> acc + x * x) 0 xs
+
+pub fn countIf pred xs = List.foldl (\acc x -> if pred x then acc + 1 else acc) 0 xs
+
+pub fn allPositive xs = List.all (\x -> x > 0) xs
+
+pub fn anyZero xs = List.any (\x -> x == 0) xs

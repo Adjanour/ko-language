@@ -1,0 +1,239 @@
+# sat.ko — a DPLL SAT solver with CNF generators.
+#
+# Formulas are flat List Int: each clause is a run of nonzero
+# literals terminated by 0. Variable ids are positive Ints;
+# a negative literal is the negation of its variable.
+#   (x1 | ~x2) & (x3)   ==   1 :: -2 :: 0 :: 3 :: Nil
+# An empty formula (Nil) is SAT; a formula containing an empty
+# clause (a lone 0) is UNSAT. The solver returns an Outcome ADT
+# carrying the model (list of true literals) and a decision count.
+
+import std.List
+
+type Outcome = Sat (List Int) Int | Unsat Int
+
+pub fn neg l = 0 - l
+
+# --- flat-encoding scanners ---
+
+pub fn isEmpty f = match f
+  | Cons _ _ => false
+  | Nil => true
+
+# True if any clause is empty (a 0 at a clause boundary).
+pub fn hasEmpty f = hasEmptyAux f true
+
+pub fn hasEmptyAux f atStart = match f
+  | Cons x rest =>
+    if x == 0 then checkEmpty atStart rest
+    else hasEmptyAux rest false
+  | Nil => false
+
+pub fn checkEmpty atStart rest =
+  if atStart then true
+  else hasEmptyAux rest true
+
+# First literal of the first clause (0 if the formula is empty).
+pub fn chooseLit f = match f
+  | Cons x rest =>
+    if x == 0 then chooseLit rest
+    else x
+  | Nil => 0
+
+# The unit literal of the first single-literal clause, else 0.
+pub fn findUnit f = findUnitAux f true 0 0
+
+pub fn findUnitAux f atStart count lit = match f
+  | Cons x rest =>
+    if x == 0 then unitAtEnd atStart count lit rest
+    else findUnitAux rest false (count + 1) (keepFirst count lit x)
+  | Nil => 0
+
+pub fn keepFirst count lit x =
+  if count == 0 then x
+  else lit
+
+pub fn unitAtEnd atStart count lit rest =
+  if atStart then findUnitAux rest true 0 0
+  else if count == 1 then lit
+  else findUnitAux rest true 0 0
+
+# Number of clauses (number of 0 separators).
+pub fn countClauses f = match f
+  | Cons x rest =>
+    if x == 0 then 1 + countClauses rest
+    else countClauses rest
+  | Nil => 0
+
+# --- simplification under an assumption ---
+#
+# Assume l is true: drop satisfied clauses, delete negated lits.
+# Done one clause at a time: a clause is dropped only if it is known
+# to contain l, otherwise its surviving lits are kept.
+
+pub fn assign l f = match f
+  | Cons _ _ => assignClause l (neg l) f
+  | Nil => Nil
+
+pub fn assignClause l nl f =
+  if clauseHas l f then assign l (skipClause f)
+  else List.append (stripLit nl f) (assign l (skipClause f))
+
+# True if l occurs before the first 0.
+pub fn clauseHas l f = match f
+  | Cons x rest =>
+    if x == 0 then false
+    else if x == l then true
+    else clauseHas l rest
+  | Nil => false
+
+# Drop everything up to and including the first 0.
+pub fn skipClause f = match f
+  | Cons x rest =>
+    if x == 0 then rest
+    else skipClause rest
+  | Nil => Nil
+
+# First clause with all nl lits removed (terminating 0 kept).
+pub fn stripLit nl f = match f
+  | Cons x rest =>
+    if x == 0 then Cons 0 Nil
+    else if x == nl then stripLit nl rest
+    else Cons x (stripLit nl rest)
+  | Nil => Nil
+
+pub fn assignAll ls f = match ls
+  | Cons l rest => assignAll rest (assign l f)
+  | Nil => f
+
+# --- pure literal elimination ---
+
+pub fn posVars f = posAux f Nil
+
+pub fn posAux f acc = match f
+  | Cons x rest =>
+    if x == 0 then posAux rest acc
+    else if x > 0 then posAux rest (addNew x acc)
+    else posAux rest acc
+  | Nil => acc
+
+pub fn negVars f = negAux f Nil
+
+pub fn negAux f acc = match f
+  | Cons x rest =>
+    if x == 0 then negAux rest acc
+    else if x < 0 then negAux rest (addNew (neg x) acc)
+    else negAux rest acc
+  | Nil => acc
+
+pub fn addNew v acc =
+  if List.elem v acc then acc
+  else Cons v acc
+
+# Literals occurring in only one polarity across the formula.
+pub fn pureLits f = List.append (purePos (posVars f) (negVars f)) (pureNeg (negVars f) (posVars f))
+
+pub fn purePos poss negs = List.filter (\v -> not (List.elem v negs)) poss
+
+pub fn pureNeg negs poss = List.map (\v -> neg v) (List.filter (\v -> not (List.elem v poss)) negs)
+
+# --- the DPLL search ---
+
+pub fn solve f = dpll f Nil 0
+
+pub fn dpll f model calls =
+  if hasEmpty f then Unsat (calls + 1)
+  else if isEmpty f then Sat model (calls + 1)
+  else dpllBranch f model (calls + 1)
+
+pub fn dpllBranch f model calls =
+  let u = findUnit f
+  if u != 0 then dpll (assign u f) (Cons u model) calls
+  else dpllPure f model calls
+
+pub fn dpllPure f model calls =
+  let pure = pureLits f
+  if List.is_empty pure then dpllSplit f model calls
+  else dpll (assignAll pure f) (List.append pure model) calls
+
+pub fn dpllSplit f model calls =
+  let l = chooseLit f
+  if l == 0 then Sat model calls
+  else splitBranch l f model calls
+
+pub fn splitBranch l f model calls = match dpll (assign l f) (Cons l model) calls
+  | Sat m c => Sat m c
+  | Unsat _ => dpll (assign (neg l) f) (Cons (neg l) model) calls
+
+# --- model checking ---
+
+# True iff every clause has a literal made true by the model.
+pub fn verify model f =
+  if isEmpty f then true
+  else if clauseTrue model f then verify model (afterZero f)
+  else false
+
+pub fn clauseTrue model f = match f
+  | Cons x rest =>
+    if x == 0 then false
+    else if List.elem x model then true
+    else clauseTrue model rest
+  | Nil => false
+
+pub fn afterZero f = match f
+  | Cons x rest =>
+    if x == 0 then rest
+    else afterZero rest
+  | Nil => Nil
+
+# Render vars 1..n as x1=T x2=F ... (unassigned vars read as F).
+pub fn showModel model v n =
+  if v > n then ""
+  else showBit model v n
+
+pub fn showBit model v n =
+  String.append "x" (String.append (Int.toString v) (String.append "=" (String.append (bit model v) (showModel model (v + 1) n))))
+
+pub fn bit model v =
+  if List.elem v model then "T "
+  else "F "
+
+# --- CNF generator: k-coloring of the complete graph K_n ---
+# var(v,c) = (v-1)*k + c, for v in 1..n, c in 1..k.
+
+pub fn colorVar v c k = (v - 1) * k + c
+
+pub fn kcolorComplete n k =
+  edgeLoop 1 n k (atmostLoop 1 n k (atleastLoop 1 n k Nil))
+
+# Every vertex gets at least one color.
+pub fn atleastLoop v n k acc =
+  if v > n then acc
+  else atleastLoop (v + 1) n k (List.append (colorChoices v 1 k) acc)
+
+pub fn colorChoices v c k =
+  if c > k then 0 :: Nil
+  else colorVar v c k :: colorChoices v (c + 1) k
+
+# Every vertex gets at most one color.
+pub fn atmostLoop v n k acc =
+  if v > n then acc
+  else atmostLoop (v + 1) n k (atmostPairs v 1 2 k acc)
+
+pub fn atmostPairs v c d k acc =
+  if c > k then acc
+  else if d > k then atmostPairs v (c + 1) (c + 2) k acc
+  else atmostPairs v c (d + 1) k (Cons (neg (colorVar v c k)) (Cons (neg (colorVar v d k)) (Cons 0 acc)))
+
+# Adjacent vertices differ (complete graph: all pairs u < v).
+pub fn edgeLoop u n k acc =
+  if u > n then acc
+  else edgeLoop (u + 1) n k (edgeInner u (u + 1) n k acc)
+
+pub fn edgeInner u v n k acc =
+  if v > n then acc
+  else edgeInner u (v + 1) n k (edgeColors u v 1 k acc)
+
+pub fn edgeColors u v c k acc =
+  if c > k then acc
+  else edgeColors u v (c + 1) k (Cons (neg (colorVar u c k)) (Cons (neg (colorVar v c k)) (Cons 0 acc)))

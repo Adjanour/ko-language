@@ -1,0 +1,111 @@
+# ast.ko — expression trees and binary search trees.
+# Defines two ADTs and a full toolkit over them. All matching happens
+# in this module; importers use selective imports for constructors or
+# the query functions below.
+
+import std.List
+
+type Expr = Num Int | Add Expr Expr | Mul Expr Expr | Neg Expr | Sub Expr Expr
+
+pub fn eval e = match e
+  | Num n => n
+  | Add a b => eval a + eval b
+  | Mul a b => eval a * eval b
+  | Neg a => -(eval a)
+  | Sub a b => eval a - eval b
+
+# Number of nodes in the tree
+pub fn countNodes e = match e
+  | Num _ => 1
+  | Add a b => 1 + countNodes a + countNodes b
+  | Mul a b => 1 + countNodes a + countNodes b
+  | Neg a => 1 + countNodes a
+  | Sub a b => 1 + countNodes a + countNodes b
+
+# Depth of the tree
+pub fn depth e = match e
+  | Num _ => 1
+  | Add a b => 1 + maxInt (depth a) (depth b)
+  | Mul a b => 1 + maxInt (depth a) (depth b)
+  | Neg a => 1 + depth a
+  | Sub a b => 1 + maxInt (depth a) (depth b)
+
+pub fn maxInt a b =
+  if a > b then a
+  else b
+
+# Constant-fold one level: fold Num leaves, rebuild the rest
+pub fn simplify e = match e
+  | Num n => Num n
+  | Add a b => foldAdd (simplify a) (simplify b)
+  | Mul a b => foldMul (simplify a) (simplify b)
+  | Neg a => foldNeg (simplify a)
+  | Sub a b => foldSub (simplify a) (simplify b)
+
+pub fn foldAdd a b = match a
+  | Num x => match b
+    | Num y => Num (x + y)
+    | _ => Add a b
+  | _ => Add a b
+
+pub fn foldMul a b = match a
+  | Num x => match b
+    | Num y => Num (x * y)
+    | _ => Mul a b
+  | _ => Mul a b
+
+pub fn foldNeg a = match a
+  | Num x => Num (-x)
+  | _ => Neg a
+
+pub fn foldSub a b = match a
+  | Num x => match b
+    | Num y => Num (x - y)
+    | _ => Sub a b
+  | _ => Sub a b
+
+# Render to a string, fully parenthesised
+pub fn show e = match e
+  | Num n => Int.toString n
+  | Add a b => String.append (String.append "(" (String.append (show a) (String.append "+" (show b)))) ")"
+  | Mul a b => String.append (String.append "(" (String.append (show a) (String.append "*" (show b)))) ")"
+  | Neg a => String.append "(-" (String.append (show a) ")")
+  | Sub a b => String.append (String.append "(" (String.append (show a) (String.append "-" (show b)))) ")"
+
+# --- Binary search tree over Ints ---
+
+type Tree = Leaf | Branch Int Tree Tree
+
+pub fn mkLeaf = Leaf
+
+pub fn buildTree xs = buildAux Leaf xs
+
+pub fn buildAux t xs = match xs
+  | Cons x rest => buildAux (insert x t) rest
+  | Nil => t
+
+pub fn insert x t = match t
+  | Leaf => Branch x Leaf Leaf
+  | Branch v l r =>
+    if x < v then Branch v (insert x l) r
+    else if x > v then Branch v l (insert x r)
+    else t
+
+pub fn member x t = match t
+  | Leaf => false
+  | Branch v l r =>
+    if x == v then true
+    else if x < v then member x l
+    else member x r
+
+pub fn treeSum t = match t
+  | Leaf => 0
+  | Branch v l r => v + treeSum l + treeSum r
+
+pub fn treeHeight t = match t
+  | Leaf => 0
+  | Branch _ l r => 1 + maxInt (treeHeight l) (treeHeight r)
+
+pub fn treeSize t = match t
+  | Leaf => 0
+  | Branch _ l r => 1 + treeSize l + treeSize r

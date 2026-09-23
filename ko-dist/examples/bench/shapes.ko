@@ -1,0 +1,44 @@
+# shapes.ko — geometric shapes: ADT + Float builtins.
+# Constructors are wrapped in maker functions so importers can use
+# qualified access (Circle/Rect patterns stay inside this module).
+# NOTE: Float arithmetic uses dotted operators (+. -. *. /.),
+# and Float comparison only has <=. and >=.
+
+type Shape = Circle Float | Rect Float Float | Tri Float Float
+
+pub fn mkCircle r = Circle r
+
+pub fn mkRect w h = Rect w h
+
+pub fn mkTri b h = Tri b h
+
+pub fn area s = match s
+  | Circle r => 3.14159265 *. r *. r
+  | Rect w h => w *. h
+  | Tri b h => 0.5 *. b *. h
+
+pub fn perimeter s = match s
+  | Circle r => 2.0 *. 3.14159265 *. r
+  | Rect w h => 2.0 *. w +. 2.0 *. h
+  | Tri b h => b +. h +. Float.sqrt (b *. b +. h *. h)
+
+pub fn scale f s = match s
+  | Circle r => Circle (f *. r)
+  | Rect w h => Rect (f *. w) (f *. h)
+  | Tri b h => Tri (f *. b) (f *. h)
+
+pub fn isRound s = match s
+  | Circle _ => true
+  | _ => false
+
+# Which of two shapes has the larger area: 1, -1, or 0.
+# Only >=. exists for Floats, so equality is tested both ways.
+pub fn compare a b =
+  if area a >=. area b then
+    if area b >=. area a then 0
+    else 1
+  else -1
+
+pub fn circleArea r = 3.14159265 *. r *. r
+
+pub fn hyp w h = Float.sqrt (w *. w +. h *. h)

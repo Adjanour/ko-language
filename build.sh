@@ -7,18 +7,26 @@ DIST_DIR="$SCRIPT_DIR/ko-dist"
 
 echo "Building Kō compiler..."
 
+# Prefer the pinned toolchain from mise.toml when mise is available
+# (the repo requires Zig 0.17; a bare `zig` on PATH may be older).
+if command -v mise &> /dev/null; then
+    ZIG="mise x zig -- zig"
+else
+    ZIG="zig"
+fi
+
 # Check for Zig
-if ! command -v zig &> /dev/null; then
+if ! command -v zig &> /dev/null && ! command -v mise &> /dev/null; then
     echo "Error: zig not found. Install Zig 0.17 from https://ziglang.org/download/"
     exit 1
 fi
 
-ZIG_VERSION=$(zig version 2>/dev/null | head -1)
+ZIG_VERSION=$($ZIG version 2>/dev/null | head -1)
 echo "Found zig: $ZIG_VERSION"
 
 # Build
 cd "$KO_DIR"
-zig build
+$ZIG build
 
 if [ ! -f zig-out/bin/ko ]; then
     echo "Build failed!"
@@ -36,9 +44,15 @@ cp "$KO_DIR/zig-out/bin/ko-lsp" "$DIST_DIR/ko-lsp" 2>/dev/null || true
 # Copy stdlib
 cp -r "$KO_DIR/std" "$DIST_DIR/std"
 
-# Copy examples
+# Copy examples (flat files plus multifile program directories)
 mkdir -p "$DIST_DIR/examples"
-cp "$KO_DIR/examples/"*.ko "$DIST_DIR/examples/" 2>/dev/null || true
+cp "$KO_DIR/src/examples/"*.ko "$DIST_DIR/examples/" 2>/dev/null || true
+for d in "$KO_DIR/src/examples/"*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "$d")"
+    mkdir -p "$DIST_DIR/examples/$name"
+    cp -r "$d". "$DIST_DIR/examples/$name/"
+done
 
 # Copy VS Code extension
 mkdir -p "$DIST_DIR/editors/vscode"

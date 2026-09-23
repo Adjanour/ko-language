@@ -1,0 +1,110 @@
+# main.ko — driver for the multifile benchmark.
+# Exercises every module: ADT evaluation + simplification, BST ops,
+# number theory, sorting, sieving, folds, shapes, refs, pipes,
+# partial application, lambdas, records, and Result matching.
+
+import ast.{Num, Add, Mul, Neg, Sub}
+import ast
+import arith
+import listx
+import shapes
+import std.List
+
+# Record types live in the consuming file (cross-module records
+# do not lower yet), so Stats is defined here, not imported.
+type Stats = Stats { count : Int, total : Int }
+
+fn mkStats c t = Stats { count = c, total = t }
+
+fn mean s = s.total / s.count
+
+fn safeDiv a b =
+  if b == 0 then Err "div by zero"
+  else Ok (a / b)
+
+fn showDiv r = match r
+  | Ok v => Int.toString v
+  | Err e => e
+
+fn main =
+  # --- Expr ADTs: eval, simplify, show, depth ---
+  let e1 = Add (Num 2) (Mul (Num 3) (Num 4))
+  let e2 = Neg (Sub (Num 10) (Num 4))
+  let e3 = Mul (Add (Num 1) (Num 2)) (Add (Num 3) (Num 4))
+  println (ast.eval e1)
+  println (ast.eval e2)
+  println (ast.eval e3)
+  println (ast.show e1)
+  println (ast.countNodes e3)
+  println (ast.depth e3)
+  println (ast.eval (ast.simplify e1))
+  println (ast.show (ast.simplify (Add (Num 1) (Num 2))))
+
+  # --- BST: insert a range, then query ---
+  let keys = 7 :: 3 :: 9 :: 1 :: 5 :: 8 :: 10 :: Nil
+  let tree = ast.buildTree keys
+  println (ast.treeSize tree)
+  println (ast.treeSum tree)
+  println (ast.treeHeight tree)
+  println (ast.member 5 tree)
+  println (ast.member 6 tree)
+
+  # --- Number theory ---
+  println (arith.gcd 1071 462)
+  println (arith.lcm 21 6)
+  println (arith.factorial 10)
+  println (arith.fib 20)
+  println (arith.fibNaive 20)
+  println (arith.pow 2 16)
+  println (arith.sumRange 1 100)
+  println (arith.countPrimes 2 100)
+  println (arith.isqrt 1024)
+  println (arith.maxCollatz 1 50)
+
+  # --- Lists: sort, sieve, folds, pipes, partial application ---
+  let unsorted = 38 :: 27 :: 43 :: 3 :: 9 :: 82 :: 10 :: Nil
+  println (listx.mergeSort unsorted)
+  println (List.length (listx.primesTo 30))
+  println (listx.dotProduct (1 :: 2 :: 3 :: Nil) (4 :: 5 :: 6 :: Nil))
+  println (listx.totalOfSquares (1 :: 2 :: 3 :: 4 :: Nil))
+  println (listx.countIf (\x -> x % 2 == 0) (1 :: 2 :: 3 :: 4 :: 5 :: 6 :: Nil))
+  println (listx.allPositive (1 :: 2 :: 3 :: Nil))
+  println (listx.anyZero (1 :: 0 :: 3 :: Nil))
+  println (10 |> arith.maxInt 3 |> Int.toString)
+  let maxWith10 = \x -> arith.maxInt 10 x
+  println (maxWith10 42)
+  println (maxWith10 4)
+
+  # --- Shapes (Float ADTs, qualified makers) ---
+  let c = shapes.mkCircle 2.0
+  let r = shapes.mkRect 3.0 4.0
+  let t = shapes.mkTri 6.0 8.0
+  println (shapes.area c)
+  println (shapes.area r)
+  println (shapes.area t)
+  println (shapes.perimeter r)
+  println (shapes.perimeter t)
+  println (shapes.compare c r)
+  println (shapes.isRound c)
+  println (shapes.isRound r)
+  println (shapes.area (shapes.scale 2.0 c))
+  println (shapes.hyp 3.0 4.0)
+
+  # --- Mutable ref counter ---
+  let counter = ref 0
+  counter := !counter + 1
+  counter := !counter + 41
+  println (!counter)
+
+  # --- Result matching + string building ---
+  println (showDiv (safeDiv 100 4))
+  println (showDiv (safeDiv 10 0))
+  println ("gcd=" + Int.toString (arith.gcd 12 8) + " fib20=" + Int.toString (arith.fib 20))
+
+  # --- Local record + stdlib string ops ---
+  let st = mkStats 4 100
+  println (mean st)
+  println (String.length "hello ko")
+  println (String.append "foo" "bar")
+  println (Int.factorial 6)
+  println (Float.sqrt 81.0)

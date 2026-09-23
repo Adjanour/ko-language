@@ -1,0 +1,97 @@
+# arith.ko — number theory and integer arithmetic.
+# Pure Int functions: recursion, tail recursion, Euclidean algorithm,
+# trial division. Operates only on Ints so it composes freely
+# across module boundaries.
+
+pub fn gcdLoop a b =
+  if b == 0 then a
+  else gcdLoop b (a % b)
+
+pub fn gcd a b = gcdLoop (absVal a) (absVal b)
+
+pub fn absVal x =
+  if x < 0 then -x
+  else x
+
+pub fn lcm a b =
+  if a == 0 then 0
+  else if b == 0 then 0
+  else absVal (a / gcd a b) * b
+
+pub fn factLoop n acc =
+  if n <= 1 then acc
+  else factLoop (n - 1) (acc * n)
+
+pub fn factorial n = factLoop n 1
+
+# Naive exponential fibonacci — stresses call overhead
+pub fn fibNaive n =
+  if n <= 1 then n
+  else fibNaive (n - 1) + fibNaive (n - 2)
+
+# Linear tail-recursive fibonacci
+pub fn fibLoop n a b =
+  if n == 0 then a
+  else fibLoop (n - 1) b (a + b)
+
+pub fn fib n = fibLoop n 0 1
+
+pub fn powLoop base exp acc =
+  if exp == 0 then acc
+  else powLoop base (exp - 1) (acc * base)
+
+pub fn pow base exp = powLoop base exp 1
+
+pub fn sumRangeLoop lo hi acc =
+  if lo > hi then acc
+  else sumRangeLoop (lo + 1) hi (acc + lo)
+
+pub fn sumRange lo hi = sumRangeLoop lo hi 0
+
+# Smallest divisor search for trial-division primality
+pub fn hasDivisor n d =
+  if d * d > n then false
+  else if n % d == 0 then true
+  else hasDivisor n (d + 1)
+
+pub fn isPrime n =
+  if n < 2 then false
+  else if n == 2 then true
+  else if n % 2 == 0 then false
+  else not (hasDivisor n 3)
+
+pub fn countPrimesLoop lo hi acc =
+  if lo > hi then acc
+  else if isPrime lo then countPrimesLoop (lo + 1) hi (acc + 1)
+  else countPrimesLoop (lo + 1) hi acc
+
+pub fn countPrimes lo hi = countPrimesLoop lo hi 0
+
+pub fn isqrtLoop n x y =
+  if y < x then isqrtLoop n y ((y + n / y) / 2)
+  else x
+
+pub fn isqrt n = isqrtLoop n n ((n + 1) / 2)
+
+# Collatz steps for one starting value
+pub fn collatzSteps n =
+  if n <= 1 then 0
+  else if n % 2 == 0 then 1 + collatzSteps (n / 2)
+  else 1 + collatzSteps (3 * n + 1)
+
+# Max collatz steps over a range — quadratic-ish workload
+pub fn maxCollatzLoop lo hi best =
+  if lo > hi then best
+  else maxCollatzLoop (lo + 1) hi (maxInt (collatzSteps lo) best)
+
+pub fn maxCollatz lo hi = maxCollatzLoop lo hi 0
+
+pub fn maxInt a b =
+  if a > b then a
+  else b
+
+pub fn minInt a b =
+  if a < b then a
+  else b
+
+pub fn clampInt lo hi x = minInt hi (maxInt lo x)

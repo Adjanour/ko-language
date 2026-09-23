@@ -1,0 +1,3 @@
+fn pick (a : Int) (b : Bool) -> d : Bool = if a < 0 then true else b
+
+fn main = println (pick 1 true)

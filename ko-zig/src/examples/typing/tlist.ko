@@ -1,0 +1,33 @@
+# tlist.ko — annotated list algorithms over std.List.
+# Demonstrates generic List Int annotations and annotated lambdas
+# passed to higher-order stdlib functions.
+
+import std.List
+
+pub fn sum (xs : List Int) -> Int = match xs
+  | Cons x rest => x + sum rest
+  | Nil => 0
+
+pub fn product (xs : List Int) -> Int = match xs
+  | Cons x rest => x * product rest
+  | Nil => 1
+
+pub fn member (x : Int) (xs : List Int) -> Bool = match xs
+  | Cons y rest =>
+    if x == y then true
+    else member x rest
+  | Nil => false
+
+pub fn countEven (xs : List Int) -> Int = match xs
+  | Cons x rest =>
+    if x % 2 == 0 then 1 + countEven rest
+    else countEven rest
+  | Nil => 0
+
+pub fn range (lo : Int) (hi : Int) -> List Int =
+  if lo > hi then Nil
+  else Cons lo (range (lo + 1) hi)
+
+pub fn doubleAll (xs : List Int) -> List Int = List.map (\x -> x * 2) xs
+
+pub fn labels (xs : List Int) -> List String = List.map (\x -> Int.toString x) xs

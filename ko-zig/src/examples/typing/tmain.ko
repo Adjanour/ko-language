@@ -1,0 +1,58 @@
+# tmain.ko — annotated driver: records, custom ADTs, Result types,
+# arrow-typed lets, and fully signed cross-module calls.
+
+import talg
+import tlist
+import std.List
+
+type Pt = { x : Int, y : Int }
+
+type Color = Red | Green | Blue
+
+# Nullary functions can't be referenced as values (issue #48), so
+# origin takes an explicit dummy parameter instead of none.
+pub fn origin (dummy : Int) -> Pt = Pt { x = 0, y = 0 }
+
+pub fn moveX (p : Pt) (dx : Int) -> Pt = Pt { x = p.x + dx, y = p.y }
+
+pub fn manhattan (p : Pt) -> Int = talg.absVal p.x + talg.absVal p.y
+
+pub fn mkRed (dummy : Int) -> Color = Red
+
+pub fn isWarm (c : Color) -> Bool = match c
+  | Red => true
+  | Green => false
+  | Blue => false
+
+# NOTE: the builtin Result is `Result err ok` (error type first),
+# unlike the `Result a b` order shown in the docs (see issue #54).
+pub fn safeDiv (a : Int) (b : Int) -> Result String Int =
+  if b == 0 then Err "div by zero"
+  else Ok (a / b)
+
+pub fn showDiv (r : Result String Int) -> String = match r
+  | Ok v => Int.toString v
+  | Err e => e
+
+fn main =
+  let g : Int = talg.gcd 1071 462
+  let f20 : Int = talg.fib 20
+  let prime : Bool = talg.isPrime 97
+  let twice : Int -> Int = talg.applyTwice (talg.addN 10)
+  let comp : Int -> Int = \x -> talg.compose (talg.addN 1) (talg.addN 100) x
+  let total : Int = tlist.sum (tlist.range 1 100)
+  let has7 : Bool = tlist.member 7 (tlist.range 1 10)
+  let p : Pt = moveX (origin 0) 5
+  let dist : Int = manhattan p
+  println g
+  println f20
+  println prime
+  println (twice 5)
+  println (comp 0)
+  println total
+  println has7
+  println dist
+  println (tlist.labels (1 :: 2 :: 3 :: Nil))
+  println (isWarm (mkRed 0))
+  println (showDiv (safeDiv 100 4))
+  println (showDiv (safeDiv 1 0))

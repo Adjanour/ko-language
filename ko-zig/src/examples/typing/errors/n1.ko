@@ -1,0 +1,3 @@
+fn bad -> Int = "nope"
+
+fn main = println (bad 0)

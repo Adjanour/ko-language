@@ -1,0 +1,62 @@
+# talg.ko — arithmetic with complete static signatures.
+# Every function carries parameter and return annotations, including
+# higher-order arrow types.
+
+pub fn gcdLoop (a : Int) (b : Int) -> Int =
+  if b == 0 then a
+  else gcdLoop b (a % b)
+
+pub fn gcd (a : Int) (b : Int) -> Int = gcdLoop (absVal a) (absVal b)
+
+pub fn absVal (x : Int) -> Int =
+  if x < 0 then -x
+  else x
+
+pub fn lcm (a : Int) (b : Int) -> Int =
+  if a == 0 then 0
+  else if b == 0 then 0
+  else absVal (a / gcd a b) * b
+
+pub fn factLoop (n : Int) (acc : Int) -> Int =
+  if n <= 1 then acc
+  else factLoop (n - 1) (acc * n)
+
+pub fn factorial (n : Int) -> Int = factLoop n 1
+
+pub fn fibLoop (n : Int) (a : Int) (b : Int) -> Int =
+  if n == 0 then a
+  else fibLoop (n - 1) b (a + b)
+
+pub fn fib (n : Int) -> Int = fibLoop n 0 1
+
+pub fn hasDivisor (n : Int) (d : Int) -> Bool =
+  if d * d > n then false
+  else if n % d == 0 then true
+  else hasDivisor n (d + 1)
+
+pub fn isPrime (n : Int) -> Bool =
+  if n < 2 then false
+  else if n == 2 then true
+  else if n % 2 == 0 then false
+  else not (hasDivisor n 3)
+
+pub fn clampInt (lo : Int) (hi : Int) (x : Int) -> Int =
+  if x < lo then lo
+  else if x > hi then hi
+  else x
+
+# Higher-order: arrows in, arrow out.
+pub fn applyTwice (f : Int -> Int) (x : Int) -> Int = f (f x)
+
+pub fn compose (f : Int -> Int) (g : Int -> Int) (x : Int) -> Int = f (g x)
+
+pub fn makeAdder (n : Int) -> Int -> Int = addN n
+
+pub fn addN (n : Int) (x : Int) -> Int = n + x
+
+pub fn isEven (n : Int) -> Bool = n % 2 == 0
+
+pub fn sign (n : Int) -> Int =
+  if n < 0 then -1
+  else if n > 0 then 1
+  else 0
