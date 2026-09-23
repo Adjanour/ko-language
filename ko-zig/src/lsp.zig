@@ -1,10 +1,12 @@
 const std = @import("std");
+const Io = std.Io;
 const compat = @import("compat.zig");
 const posix = std.posix;
 const fdio = @import("fdio.zig");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
 const typecheck_mod = @import("typecheck.zig");
+const module_loader_mod = @import("module_loader.zig");
 
 const JsonValue = std.json.Value;
 
@@ -34,11 +36,18 @@ const Document = struct {
 const DocumentStore = struct {
     documents: std.StringHashMap(Document),
     allocator: std.mem.Allocator,
+    /// Directory containing the ko-lsp binary (resolves symlinks);
+    /// used to find the stdlib next to the binary. Process lifetime.
+    exe_dir: ?[]const u8,
+    /// Optional KO_STDLIB_PATH override. Process lifetime (environ memory).
+    stdlib_override: ?[]const u8,
 
-    fn init(allocator: std.mem.Allocator) DocumentStore {
+    fn init(allocator: std.mem.Allocator, exe_dir: ?[]const u8, stdlib_override: ?[]const u8) DocumentStore {
         return .{
             .documents = std.StringHashMap(Document).init(allocator),
             .allocator = allocator,
+            .exe_dir = exe_dir,
+            .stdlib_override = stdlib_override,
         };
     }
 
@@ -114,7 +123,6 @@ const DocumentStore = struct {
     }
 
     fn analyze(self: *DocumentStore, doc: *Document) void {
-        _ = self;
         const alloc = doc.arena.allocator();
         const source_z = compat.dupeZ(alloc, doc.text) catch return;
         var p = parser.Parser.init(alloc, source_z) catch |err| {
@@ -132,6 +140,13 @@ const DocumentStore = struct {
         doc.source_z = source_z;
         doc.prog = prog;
         var inferer = typecheck_mod.Inferer.init(alloc);
+        // Resolve imports exactly like `ko --check`: stdlib from the
+        // binary's directory (or KO_STDLIB_PATH), local modules from the
+        // document's own directory. Unresolvable imports are skipped by
+        // the checker, which then reports the unknown names as usual.
+        const base_dir = baseDirOf(uriToPath(doc.uri));
+        var loader = module_loader_mod.ModuleLoader.init(alloc, base_dir, self.stdlib_override, self.exe_dir);
+        inferer.module_loader = &loader;
         inferer.inferProgram(&prog) catch |err| {
             if (inferer.last_error) |ec| {
                 doc.type_error = ec.message;
@@ -148,6 +163,19 @@ const DocumentStore = struct {
         doc.inferer = inferer;
     }
 };
+
+/// Strip the `file://` scheme from a document URI. Percent-escapes are
+/// left as-is (paths with spaces are a known limitation).
+fn uriToPath(uri: []const u8) []const u8 {
+    const prefix = "file://";
+    if (std.mem.startsWith(u8, uri, prefix)) return uri[prefix.len..];
+    return uri;
+}
+
+/// Directory containing the file at `path`, or "" when unknown.
+fn baseDirOf(path: []const u8) []const u8 {
+    return std.fs.path.dirname(path) orelse "";
+}
 
 //
 // JSON helpers
@@ -512,6 +540,76 @@ fn handleHover(id: i64, store: *DocumentStore, params: JsonValue, gpa: std.mem.A
             return sendHoverMarkdown(id, gpa, md.items);
         }
     }
+
+    // Fallback: no inferred type (often because the file has errors, e.g.
+    // an unresolvable import). Still show the definition's shape from the
+    // parse tree so the rest of the file stays navigable.
+    if (doc.prog) |prog| {
+        for (prog.definitions) |def| {
+            const is_match = switch (def) {
+                .fn_def => |f| std.mem.eql(u8, wi.word, f.name),
+                .type_def => |t| std.mem.eql(u8, wi.word, t.name),
+                .let_binding => |l| std.mem.eql(u8, wi.word, l.name),
+                .module_def => |m| std.mem.eql(u8, wi.word, m.name),
+                else => false,
+            };
+            if (!is_match) continue;
+            var md = try std.ArrayList(u8).initCapacity(gpa, 256);
+            defer md.deinit(gpa);
+            switch (def) {
+                .fn_def => |f| {
+                    try md.appendSlice(gpa, "```kō\nfn ");
+                    try md.appendSlice(gpa, f.name);
+                    for (f.params) |p| {
+                        try md.append(gpa, ' ');
+                        switch (p.pattern) {
+                            .identifier => |n| try md.appendSlice(gpa, n),
+                            else => try md.append(gpa, '_'),
+                        }
+                    }
+                    try md.appendSlice(gpa, "\n```");
+                },
+                .type_def => |t| try md.print(gpa, "```kō\ntype {s}\n```", .{t.name}),
+                .let_binding => |l| try md.print(gpa, "```kō\nlet {s}\n```", .{l.name}),
+                .module_def => |m| try md.print(gpa, "```kō\nmodule {s}\n```", .{m.name}),
+                else => continue,
+            }
+            const docs: ?[]const []const u8 = switch (def) {
+                .fn_def => |f| f.doc_comments,
+                .type_def => |t| t.doc_comments,
+                .let_binding => |l| l.doc_comments,
+                .module_def => |m| m.doc_comments,
+                else => null,
+            };
+            if (docs) |lines| {
+                try md.append(gpa, '\n');
+                for (lines) |doc_line| {
+                    try md.appendSlice(gpa, doc_line);
+                    try md.append(gpa, '\n');
+                }
+            }
+            if (doc.parse_error != null or doc.type_error != null) {
+                try md.appendSlice(gpa, "\n*No inferred type — the file has errors.*");
+            }
+            return sendHoverMarkdown(id, gpa, md.items);
+        }
+        for (prog.imports) |imp| {
+            if (imp.path.len == 0) continue;
+            const short = imp.path[imp.path.len - 1];
+            const matches_alias = if (imp.alias) |a| std.mem.eql(u8, wi.word, a) else false;
+            if (!std.mem.eql(u8, wi.word, short) and !matches_alias) continue;
+            var md = try std.ArrayList(u8).initCapacity(gpa, 128);
+            defer md.deinit(gpa);
+            try md.appendSlice(gpa, "```kō\nimport ");
+            for (imp.path, 0..) |part, i| {
+                if (i > 0) try md.append(gpa, '.');
+                try md.appendSlice(gpa, part);
+            }
+            if (imp.alias) |a| try md.print(gpa, " as {s}", .{a});
+            try md.appendSlice(gpa, "\n```");
+            return sendHoverMarkdown(id, gpa, md.items);
+        }
+    }
     return sendNullResult(id, gpa);
 }
 
@@ -848,12 +946,21 @@ fn publishDiagnostics(store: *DocumentStore, uri: []const u8, gpa: std.mem.Alloc
 // Main
 //
 
-pub fn main(_: std.process.Init.Minimal) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .{};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const allocator = gpa;
 
-    var store = DocumentStore.init(allocator);
+    var threaded: Io.Threaded = .init(gpa, .{ .environ = init.minimal.environ });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    // Resolve the stdlib once, the same way `ko --check` does:
+    // KO_STDLIB_PATH wins, otherwise the binary's own directory
+    // (symlinks resolved, so exe_dir/../../std finds a repo checkout).
+    const exe_dir = std.process.executableDirPathAlloc(io, init.arena.allocator()) catch null;
+    const stdlib_override: ?[]const u8 = if (std.c.getenv("KO_STDLIB_PATH")) |p| std.mem.span(p) else null;
+
+    var store = DocumentStore.init(allocator, exe_dir, stdlib_override);
     defer store.deinit();
 
     var initialized = false;
