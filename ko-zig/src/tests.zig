@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
+const monomorphize = @import("monomorphize.zig");
 const typecheck = @import("typecheck.zig");
 const module_loader_mod = @import("module_loader.zig");
 const repl_mod = @import("repl.zig");
@@ -11,6 +12,91 @@ const llvm = @import("llvm");
 const core = llvm.core;
 const engine = llvm.engine;
 const types = llvm.types;
+const lir_liveness = @import("lir_liveness.zig");
+const comptime_boundary = @import("comptime_boundary.zig");
+const compiler_cache = @import("compiler_cache.zig");
+
+test "comptime boundary: fingerprints are stable" {
+    try std.testing.expectEqual(
+        comptime_boundary.fingerprint(&.{ "source", "target" }),
+        comptime_boundary.fingerprint(&.{ "source", "target" }),
+    );
+}
+
+test "comptime boundary: cache key changes with source input" {
+    const base = comptime_boundary.CacheInputs{
+        .compiler_build = "dev",
+        .language_version = "1",
+        .target = "x86_64-linux",
+        .flags = "debug",
+        .module_id = "workspace:main",
+        .source_hash = 1,
+        .interface_hash = 2,
+        .dependency_hash = 3,
+        .stdlib_hash = 4,
+        .comptime_input_hash = 5,
+        .representation_version = "repr-1",
+        .llvm_version = "23",
+    };
+    var changed = base;
+    changed.source_hash = 99;
+    try std.testing.expect(comptime_boundary.cacheKey(.object, base) != comptime_boundary.cacheKey(.object, changed));
+}
+
+test "compiler cache exposes content-addressed storage" {
+    const cache = compiler_cache.Cache.init(std.testing.allocator, "/tmp/ko-test-cache");
+    _ = cache;
+}
+
+fn monoSpecializedNames(result: monomorphize.Monomorphizer.MonomorphResult, names: []const []const u8) !void {
+    try std.testing.expectEqual(names.len, result.specialized_fns.len);
+    for (names) |expected| {
+        var found = false;
+        for (result.specialized_fns) |fd| {
+            if (std.mem.eql(u8, fd.name, expected)) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+}
+
+fn hasCallNamed(expr: *const parser.Expr, expected: []const u8) bool {
+    return switch (expr.*) {
+        .fn_call => |call| blk: {
+            if (call.func.* == .identifier and std.mem.eql(u8, call.func.identifier.name, expected)) break :blk true;
+            for (call.args) |arg| if (hasCallNamed(arg, expected)) break :blk true;
+            for (call.named_args) |arg| if (hasCallNamed(arg.value, expected)) break :blk true;
+            break :blk false;
+        },
+        .let_expr => |le| hasCallNamed(le.value, expected) or hasCallNamed(le.body, expected),
+        .block => |b| for (b.items) |item| {
+            if (hasCallNamed(item, expected)) break true;
+        } else false,
+        .if_expr => |ie| hasCallNamed(ie.condition, expected) or hasCallNamed(ie.then_branch, expected) or
+            (if (ie.else_branch) |eb| hasCallNamed(eb, expected) else false),
+        .binary_op => |bo| hasCallNamed(bo.left, expected) or hasCallNamed(bo.right, expected),
+        .unary_op => |uo| hasCallNamed(uo.expr, expected),
+        .tuple => |t| for (t.items) |item| {
+            if (hasCallNamed(item, expected)) break true;
+        } else false,
+        .lambda => |lam| hasCallNamed(lam.body, expected),
+        .match_expr => |me| blk: {
+            if (hasCallNamed(me.value, expected)) break :blk true;
+            for (me.arms) |arm| if (hasCallNamed(arm.body, expected)) break :blk true;
+            break :blk false;
+        },
+        .field_access => |fa| hasCallNamed(fa.object, expected),
+        .record_literal => |rec| for (rec.fields) |field| {
+            if (hasCallNamed(field.value, expected)) break true;
+        } else false,
+        .assign_expr => |ae| hasCallNamed(ae.target, expected) or hasCallNamed(ae.value, expected),
+        .ref_expr => |inner| hasCallNamed(inner, expected),
+        .comptime_expr => |inner| hasCallNamed(inner, expected),
+        else => false,
+    };
+}
 
 fn testRuntime(source: [:0]const u8) !i64 {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -165,8 +251,7 @@ test "parser: placeholder" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "package std.math\nimport std.core as core\nfn add x y = x + y\nlet answer = add 1 2\n");
+    const source = try compat.dupeZ(allocator, "package std.math\nimport std.core as core\nfn add x y = x + y\nlet answer = add 1 2\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -199,8 +284,7 @@ test "parser: record types and record syntax" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "type Binding =\n  {\n    name : String,\n    value : Int\n  }\nlet binding = Binding { name = \"count\", value = 1 }\nmatch binding\n  Binding { name, .. } => name\n");
+    const source = try compat.dupeZ(allocator, "type Binding =\n  {\n    name : String,\n    value : Int\n  }\nlet binding = Binding { name = \"count\", value = 1 }\nmatch binding\n  Binding { name, .. } => name\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -251,8 +335,7 @@ test "parser: pipe and named args" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "let out = input |> normalize ~mode:\"fast\"\n");
+    const source = try compat.dupeZ(allocator, "let out = input |> normalize ~mode:\"fast\"\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -282,8 +365,7 @@ test "typechecker: infer simple program" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn add x y = x + y\nlet answer = add 1 2\nlet id = \\x -> x\nlet truth = id true\n");
+    const source = try compat.dupeZ(allocator, "fn add x y = x + y\nlet answer = add 1 2\nlet id = \\x -> x\nlet truth = id true\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -316,8 +398,7 @@ test "typechecker: type mismatch detected" {
     const allocator = arena.allocator();
 
     // add true 1 should fail: true + 1 is ill-typed
-    const source = try compat.dupeZ(allocator,
-        "fn add x y = x + y\nlet bad = add true 1\n");
+    const source = try compat.dupeZ(allocator, "fn add x y = x + y\nlet bad = add true 1\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -335,8 +416,7 @@ test "typechecker: ref creates Ref type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn make_ref _ =\n    ref 0\n");
+    const source = try compat.dupeZ(allocator, "fn make_ref _ =\n    ref 0\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -350,8 +430,8 @@ test "typechecker: ref creates Ref type" {
     const ty = infer.resolve(scheme.body);
     try std.testing.expect(ty.* == .arrow);
     const to = infer.resolve(ty.arrow.to);
-    try std.testing.expect(to.* == .@"ref");
-    try std.testing.expect(to.@"ref".* == .int);
+    try std.testing.expect(to.* == .ref);
+    try std.testing.expect(to.ref.* == .int);
 }
 
 test "typechecker: deref extracts Ref inner type" {
@@ -359,8 +439,7 @@ test "typechecker: deref extracts Ref inner type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn get_val r =\n    !r\n");
+    const source = try compat.dupeZ(allocator, "fn get_val r =\n    !r\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -374,7 +453,7 @@ test "typechecker: deref extracts Ref inner type" {
     const ty = infer.resolve(scheme.body);
     try std.testing.expect(ty.* == .arrow);
     const from = infer.resolve(ty.arrow.from);
-    try std.testing.expect(from.* == .@"ref");
+    try std.testing.expect(from.* == .ref);
     const to = infer.resolve(ty.arrow.to);
     try std.testing.expect(to.* == .variable);
 }
@@ -384,8 +463,7 @@ test "typechecker: ref and deref round-trip" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn bump r =\n    r := !r + 1\n");
+    const source = try compat.dupeZ(allocator, "fn bump r =\n    r := !r + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -402,8 +480,7 @@ test "typechecker: let-polymorphism" {
     const allocator = arena.allocator();
 
     // id should be usable at both int and bool types
-    const source = try compat.dupeZ(allocator,
-        "let id = \\x -> x\nlet a = id 1\nlet b = id true\n");
+    const source = try compat.dupeZ(allocator, "let id = \\x -> x\nlet a = id 1\nlet b = id true\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -427,8 +504,7 @@ test "typechecker: record literal type" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "type Point = { x: Int, y: Int }\nlet p = Point { x = 1, y = 2 }\n");
+    const source = try compat.dupeZ(allocator, "type Point = { x: Int, y: Int }\nlet p = Point { x = 1, y = 2 }\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -450,8 +526,7 @@ test "typechecker: match arms consistent" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "type Bool = True | False\nfn negate b =\n    match b\n        True => False\n        False => True\n");
+    const source = try compat.dupeZ(allocator, "type Bool = True | False\nfn negate b =\n    match b\n        True => False\n        False => True\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -477,8 +552,7 @@ test "typechecker: match arm type mismatch" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "type Bool = True | False\nfn bad_fn b =\n    match b\n        True => 1\n        False => true\n");
+    const source = try compat.dupeZ(allocator, "type Bool = True | False\nfn bad_fn b =\n    match b\n        True => 1\n        False => true\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -495,8 +569,7 @@ test "typechecker: type annotation on let" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn get_val _ =\n    let x : Int = 42\n    x\n");
+    const source = try compat.dupeZ(allocator, "fn get_val _ =\n    let x : Int = 42\n    x\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -519,8 +592,7 @@ test "typechecker: type annotation mismatch on let" {
     const allocator = arena.allocator();
 
     // Test that type mismatch is detected in binary ops
-    const source = try compat.dupeZ(allocator,
-        "fn bad_fn _ =\n    true + 1\n");
+    const source = try compat.dupeZ(allocator, "fn bad_fn _ =\n    true + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -537,8 +609,7 @@ test "typechecker: type annotation on fn return" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn double (x : Int) = x + x\n");
+    const source = try compat.dupeZ(allocator, "fn double (x : Int) = x + x\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -565,8 +636,7 @@ test "parser: ref and assign" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "let counter = ref 0\ncounter := !counter + 1\n");
+    const source = try compat.dupeZ(allocator, "let counter = ref 0\ncounter := !counter + 1\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -606,8 +676,7 @@ test "parser: type annotations" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "fn add x y = x + y\nlet answer : Int = add 1 2\n");
+    const source = try compat.dupeZ(allocator, "fn add x y = x + y\nlet answer : Int = add 1 2\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -640,8 +709,7 @@ test "parser: module with indent block" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "module Math\n  pub fn add x y = x + y\n  pub fn mul x y = x * y\n");
+    const source = try compat.dupeZ(allocator, "module Math\n  pub fn add x y = x + y\n  pub fn mul x y = x * y\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -663,8 +731,7 @@ test "parser: selective import" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "import std.math.{PI, E}\n");
+    const source = try compat.dupeZ(allocator, "import std.math.{PI, E}\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -686,8 +753,7 @@ test "parser: constructor with type params" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "type List a = Cons a (List a) | Nil\n");
+    const source = try compat.dupeZ(allocator, "type List a = Cons a (List a) | Nil\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -720,8 +786,7 @@ test "parser: lambda with pattern params" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "let f = \\x y -> x + y\n");
+    const source = try compat.dupeZ(allocator, "let f = \\x y -> x + y\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -1191,8 +1256,7 @@ test "multi-line doc comments per function" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const source = try compat.dupeZ(allocator,
-        "# First doc line\n# Second doc line\nfn add x y = x + y\n\n# Mul doc line\nfn mul x y = x * y\n");
+    const source = try compat.dupeZ(allocator, "# First doc line\n# Second doc line\nfn add x y = x + y\n\n# Mul doc line\nfn mul x y = x * y\n");
 
     var p = try parser.Parser.init(allocator, source);
     defer p.deinit();
@@ -2115,7 +2179,7 @@ test "hir: pattern variants" {
         .record = .{ .fields = &.{}, .rest = false },
     };
 
-    try std.testing.expectEqual(@as(usize, 0), @intFromEnum(std.meta.activeTag(wild)));
+    try std.testing.expectEqual(@as(usize, 0), @backingInt(std.meta.activeTag(wild)));
     try std.testing.expect(wild == .wildcard);
     try std.testing.expect(bind == .bind);
     try std.testing.expect(lit == .literal);
@@ -3074,6 +3138,123 @@ test "codegen_lir: alloc + is_unique + incref/decref roundtrip" {
     try std.testing.expectEqual(@as(i64, 42), result);
 }
 
+test "lir liveness: releases owned allocation after final local use" {
+    const int_type = lir.LirType{ .int = {} };
+    var body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 0, .value = .{ .alloc = .{ .ty = .{ .int = {} }, .ownership = .owned } } } },
+        .{ .assign = .{ .dest = 1, .value = .{ .is_unique = 0 } } },
+        .{ .assign = .{ .dest = 2, .value = .{ .int = 42 } } },
+    };
+    var blocks = [_]lir.BasicBlock{.{
+        .id = 0,
+        .params = &.{},
+        .body = &body,
+        .terminator = .{ .ret = 2 },
+    }};
+    var functions = [_]lir.LirFn{.{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .blocks = &blocks,
+        .locals = &.{ .{ .ptr = &int_type }, .{ .bool = {} }, .{ .int = {} } },
+    }};
+    try lir_liveness.run(std.testing.allocator, &functions);
+    defer std.testing.allocator.free(blocks[0].body);
+
+    try std.testing.expectEqual(@as(usize, 4), blocks[0].body.len);
+    switch (blocks[0].body[2]) {
+        .effect => |value| switch (value) {
+            .decref => |id| try std.testing.expectEqual(@as(lir.LocalId, 0), id),
+            else => return error.TestExpectedEqual,
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
+test "lir liveness: releases owned allocation on each acyclic branch path" {
+    const int_type = lir.LirType{ .int = {} };
+    var entry_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 0, .value = .{ .alloc = .{ .ty = .{ .int = {} }, .ownership = .owned } } } },
+        .{ .assign = .{ .dest = 1, .value = .{ .bool = true } } },
+        .{ .assign = .{ .dest = 2, .value = .{ .ptrtoint = 0 } } },
+    };
+    var used_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 4, .value = .{ .is_unique = 3 } } },
+        .{ .assign = .{ .dest = 5, .value = .{ .int = 42 } } },
+    };
+    var unused_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 7, .value = .{ .int = 7 } } },
+    };
+    var blocks = [_]lir.BasicBlock{
+        .{
+            .id = 0,
+            .params = &.{},
+            .body = &entry_body,
+            .terminator = .{ .cond_br = .{ .cond = 1, .then = .{ .target = 1, .args = &.{0} }, .else_ = .{ .target = 2, .args = &.{2} } } },
+        },
+        .{ .id = 1, .params = &.{3}, .body = &used_body, .terminator = .{ .ret = 5 } },
+        .{ .id = 2, .params = &.{6}, .body = &unused_body, .terminator = .{ .ret = 7 } },
+    };
+    var functions = [_]lir.LirFn{.{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .blocks = &blocks,
+        .locals = &.{ .{ .ptr = &int_type }, .{ .bool = {} }, .{ .int = {} }, .{ .ptr = &int_type }, .{ .bool = {} }, .{ .int = {} }, .{ .int = {} }, .{ .int = {} } },
+    }};
+    try lir_liveness.run(std.testing.allocator, &functions);
+    defer std.testing.allocator.free(blocks[1].body);
+    defer std.testing.allocator.free(blocks[2].body);
+
+    try std.testing.expectEqual(@as(usize, 3), blocks[1].body.len);
+    try std.testing.expectEqual(@as(usize, 2), blocks[2].body.len);
+    const drops = [_]lir.LirStmt{ blocks[1].body[1], blocks[2].body[1] };
+    for (drops) |statement| switch (statement) {
+        .effect => |value| switch (value) {
+            .decref => |id| try std.testing.expectEqual(@as(lir.LocalId, 0), id),
+            else => return error.TestExpectedEqual,
+        },
+        else => return error.TestExpectedEqual,
+    };
+}
+
+test "lir liveness: releases owned allocation at a loop exit" {
+    const int_type = lir.LirType{ .int = {} };
+    var entry_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 0, .value = .{ .alloc = .{ .ty = .{ .int = {} }, .ownership = .owned } } } },
+        .{ .assign = .{ .dest = 1, .value = .{ .bool = true } } },
+    };
+    var loop_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 2, .value = .{ .is_unique = 0 } } },
+    };
+    var exit_body = [_]lir.LirStmt{
+        .{ .assign = .{ .dest = 3, .value = .{ .int = 42 } } },
+    };
+    var blocks = [_]lir.BasicBlock{
+        .{ .id = 0, .params = &.{}, .body = &entry_body, .terminator = .{ .br = .{ .target = 1 } } },
+        .{ .id = 1, .params = &.{}, .body = &loop_body, .terminator = .{ .cond_br = .{ .cond = 1, .then = .{ .target = 1 }, .else_ = .{ .target = 2 } } } },
+        .{ .id = 2, .params = &.{}, .body = &exit_body, .terminator = .{ .ret = 3 } },
+    };
+    var functions = [_]lir.LirFn{.{
+        .name = "main",
+        .params = &.{},
+        .return_type = .{ .int = {} },
+        .blocks = &blocks,
+        .locals = &.{ .{ .ptr = &int_type }, .{ .bool = {} }, .{ .bool = {} }, .{ .int = {} } },
+    }};
+    try lir_liveness.run(std.testing.allocator, &functions);
+    defer std.testing.allocator.free(blocks[2].body);
+
+    try std.testing.expectEqual(@as(usize, 2), blocks[2].body.len);
+    switch (blocks[2].body[1]) {
+        .effect => |value| switch (value) {
+            .decref => |id| try std.testing.expectEqual(@as(lir.LocalId, 0), id),
+            else => return error.TestExpectedEqual,
+        },
+        else => return error.TestExpectedEqual,
+    }
+}
+
 test "codegen_lir: string constant + runtime call" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -3187,43 +3368,44 @@ fn testRuntimeLirOpt(source: [:0]const u8) !i64 {
 
 fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionEngineRef) void {
     if (core.LLVMGetNamedFunction(mod, "ko_result_is_ok")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_is_ok)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_is_ok)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_is_err")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_is_err)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_is_err)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_unwrap")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap_panic)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_unwrap_panic)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_unwrap_or")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_unwrap_or)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_unwrap_or)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_map")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_map)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_map)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_fold")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_fold)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_fold)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_result_and_then")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_result_and_then)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_result_and_then)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_panic")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_panic)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_panic)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_panic_str")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_panic_str)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_panic_str)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_assert")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_assert)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_assert)));
     }
     if (core.LLVMGetNamedFunction(mod, "ko_assert_eq")) |fn_val| {
-        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(&stdlib.ko_assert_eq)));
+        engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(&stdlib.ko_assert_eq)));
     }
     const io_names = [_][*:0]const u8{
-        "ko_io_read_file", "ko_io_write_file", "ko_io_append_file",
-        "ko_io_file_exists", "ko_io_file_size", "ko_io_mkdir", "ko_io_rm",
-        "ko_io_cp", "ko_io_mv", "ko_io_readdir", "ko_io_read_line",
-        "ko_io_eprintln", "ko_io_eprint", "ko_io_get_env",
+        "ko_io_read_file",   "ko_io_write_file", "ko_io_append_file",
+        "ko_io_file_exists", "ko_io_file_size",  "ko_io_mkdir",
+        "ko_io_rm",          "ko_io_cp",         "ko_io_mv",
+        "ko_io_readdir",     "ko_io_read_line",  "ko_io_eprintln",
+        "ko_io_eprint",      "ko_io_get_env",
     };
     const io_ptrs = [_]*const anyopaque{
         @ptrCast(&stdlib.ko_io_read_file),
@@ -3243,7 +3425,7 @@ fn mapLirJitResultFns(mod: types.LLVMModuleRef, jit_engine: types.LLVMExecutionE
     };
     for (io_names, io_ptrs) |name, impl| {
         if (core.LLVMGetNamedFunction(mod, name)) |fn_val| {
-            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @constCast(@ptrCast(impl)));
+            engine.LLVMAddGlobalMapping(jit_engine, fn_val, @ptrCast(@constCast(impl)));
         }
     }
 }
@@ -4643,4 +4825,165 @@ test "runtime output: set remove mutates the set in place" {
     );
     defer captured.deinit();
     try std.testing.expectEqualStrings("False\nTrue\n", captured.output);
+}
+
+test "monomorphizer: specializes literal call and rewrites callee" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn main =\n  id 1\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{"id_Int"});
+    for (result.definitions) |def| switch (def) {
+        .fn_def => |fd| if (std.mem.eql(u8, fd.name, "main")) {
+            try std.testing.expect(hasCallNamed(fd.body, "id_Int"));
+            try std.testing.expect(!hasCallNamed(fd.body, "id"));
+        },
+        else => {},
+    };
+}
+
+test "monomorphizer: creates one specialization per concrete type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn main =\n  id 1\n  id \"hello\"\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{ "id_Int", "id_String" });
+}
+
+test "monomorphizer: deduplicates repeated concrete calls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn main =\n  id 1\n  id 1\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{"id_Int"});
+}
+
+test "monomorphizer: leaves opaque call argument unspecialized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn main =\n  id (println 1)\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{});
+    for (result.definitions) |def| switch (def) {
+        .fn_def => |fd| if (std.mem.eql(u8, fd.name, "main")) {
+            try std.testing.expect(hasCallNamed(fd.body, "id"));
+        },
+        else => {},
+    };
+}
+
+test "monomorphizer: uses inferred type for identifier argument" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn pass_int (x : Int) = id x\n\nfn main = pass_int 1\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+
+    var inferer = typecheck.Inferer.init(arena.allocator());
+    defer inferer.deinit();
+    try inferer.inferProgram(&program);
+
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.runTyped(program, &inferer);
+
+    var found_id_int = false;
+    for (result.specialized_fns) |fd| {
+        if (std.mem.eql(u8, fd.name, "id_Int")) found_id_int = true;
+    }
+    try std.testing.expect(found_id_int);
+    for (result.definitions) |def| switch (def) {
+        .fn_def => |fd| if (std.mem.eql(u8, fd.name, "pass_int")) {
+            try std.testing.expect(hasCallNamed(fd.body, "id_Int"));
+        },
+        else => {},
+    };
+}
+
+test "monomorphizer: rewrites recursive calls inside specialization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn loop (x : a) -> a =\n  if True then x\n  else loop x\n\nfn main =\n  loop 1\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{"loop_Int"});
+    for (result.specialized_fns) |fd| {
+        if (std.mem.eql(u8, fd.name, "loop_Int")) {
+            try std.testing.expect(hasCallNamed(fd.body, "loop_Int"));
+            try std.testing.expect(!hasCallNamed(fd.body, "loop"));
+        }
+    }
+}
+
+test "monomorphizer: keeps recursive calls in their own specialization" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn loop (x : a) -> a =\n  if True then x\n  else loop x\n\nfn main =\n  loop 1\n  loop \"hello\"\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{ "loop_Int", "loop_String" });
+    for (result.specialized_fns) |fd| {
+        if (std.mem.eql(u8, fd.name, "loop_Int")) {
+            try std.testing.expect(hasCallNamed(fd.body, "loop_Int"));
+            try std.testing.expect(!hasCallNamed(fd.body, "loop_String"));
+        } else if (std.mem.eql(u8, fd.name, "loop_String")) {
+            try std.testing.expect(hasCallNamed(fd.body, "loop_String"));
+            try std.testing.expect(!hasCallNamed(fd.body, "loop_Int"));
+        }
+    }
+}
+
+test "monomorphizer: specializes nested generic calls" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const source = try compat.dupeZ(arena.allocator(), "fn id (x : a) -> a = x\n\nfn twice (x : a) -> a =\n  id x\n\nfn main =\n  twice 1\n");
+    var p = try parser.Parser.init(arena.allocator(), source);
+    defer p.deinit();
+    const program = try p.parse_program();
+    var mono = monomorphize.Monomorphizer.init(arena.allocator());
+    defer mono.deinit();
+    const result = try mono.run(program);
+
+    try monoSpecializedNames(result, &.{ "twice_Int", "id_Int" });
+    for (result.specialized_fns) |fd| {
+        if (std.mem.eql(u8, fd.name, "twice_Int")) {
+            try std.testing.expect(hasCallNamed(fd.body, "id_Int"));
+            try std.testing.expect(!hasCallNamed(fd.body, "id"));
+        }
+    }
 }

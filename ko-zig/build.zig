@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     }));
-    ko_exe.root_module.linkSystemLibrary("LLVM-22", .{});
+    ko_exe.root_module.linkSystemLibrary("LLVM-23", .{});
     ko_exe.root_module.linkSystemLibrary("z", .{});
 
     b.installArtifact(ko_exe);
@@ -91,6 +91,8 @@ pub fn build(b: *std.Build) void {
     const std_options = b.addOptions();
     const build_root = b.root.root_dir.path orelse ".";
     std_options.addOption([]const u8, "stdlib_dir", b.pathJoin(&.{ build_root, "std" }));
+    std_options.addOption([]const u8, "llvm_version", "23");
+    ko_exe.root_module.addOptions("build_options", std_options);
     unit_tests.root_module.addOptions("build_options", std_options);
     unit_tests.root_module.addImport("llvm", b.createModule(.{
         .root_source_file = b.path("src/llvm/llvm-bindings.zig"),
@@ -98,7 +100,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     }));
-    unit_tests.root_module.linkSystemLibrary("LLVM-22", .{});
+    unit_tests.root_module.linkSystemLibrary("LLVM-23", .{});
     unit_tests.root_module.linkSystemLibrary("z", .{});
     const run_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");

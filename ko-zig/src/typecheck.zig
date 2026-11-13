@@ -2,6 +2,9 @@ const std = @import("std");
 const parser = @import("parser.zig");
 const lexer = @import("lexer.zig");
 const module_loader_mod = @import("module_loader.zig");
+const representation = @import("representation.zig");
+const symbol_identity = @import("symbol_identity.zig");
+const comptime_boundary = @import("comptime_boundary.zig");
 
 pub const Type = union(enum) {
     variable: *TypeVar,
@@ -15,7 +18,7 @@ pub const Type = union(enum) {
     tuple: []const *Type,
     con: struct { name: []const u8, args: []const *Type },
     record: struct { name: []const u8, fields: []const RecordFieldType },
-    @"ref": *Type,
+    ref: *Type,
 };
 
 pub const TypeVar = struct {
@@ -32,6 +35,12 @@ pub const RecordFieldType = struct {
 pub const Scheme = struct {
     quantified: []const usize,
     body: *Type,
+    symbol_id: ?symbol_identity.SymbolId = null,
+};
+
+pub const SymbolResolver = struct {
+    context: *anyopaque,
+    lookup: *const fn (context: *anyopaque, name: []const u8) ?Scheme,
 };
 
 pub const CtorInfo = struct {
@@ -53,6 +62,9 @@ pub const Env = struct {
     allocator: std.mem.Allocator,
     parent: ?*Env,
     bindings: std.StringHashMap(Scheme),
+    module_id: []const u8 = "workspace",
+    invalidation_generation: u64 = 0,
+    resolver: ?SymbolResolver = null,
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Env) Env {
         return .{
@@ -67,17 +79,106 @@ pub const Env = struct {
     }
 
     pub fn set(self: *Env, name: []const u8, scheme: Scheme) !void {
-        try self.bindings.put(name, scheme);
+        var indexed = scheme;
+        if (indexed.symbol_id == null) indexed.symbol_id = symbol_identity.stableId(self.module_id, name, "value");
+        try self.bindings.put(name, indexed);
+    }
+
+    pub fn invalidate(self: *Env, name: []const u8) void {
+        if (self.bindings.getPtr(name)) |scheme| scheme.symbol_id = symbol_identity.stableId(self.module_id, name, "invalidated");
+        self.invalidation_generation += 1;
     }
 
     pub fn getScheme(self: *Env, name: []const u8) ?Scheme {
         if (self.bindings.get(name)) |scheme| return scheme;
         if (self.parent) |parent| return parent.getScheme(name);
+        if (self.resolver) |resolver| if (resolver.lookup(resolver.context, name)) |scheme| return scheme;
         return null;
     }
 };
 
-pub const Error = error{ UndefinedName, TypeMismatch, OccursCheck, UnknownConstructor, UnknownType, OutOfMemory };
+pub const Error = error{ UndefinedName, TypeMismatch, OccursCheck, UnknownConstructor, UnknownType, ImportCycle, ImportFailed, OutOfMemory };
+
+const SignatureParser = struct {
+    inferer: *Inferer,
+    input: []const u8,
+    pos: usize = 0,
+    variables: std.ArrayList(usize) = .empty,
+
+    fn deinit(self: *SignatureParser) void {
+        self.variables.deinit(self.inferer.allocator);
+    }
+
+    fn skip(self: *SignatureParser) void {
+        while (self.pos < self.input.len and self.input[self.pos] == ' ') self.pos += 1;
+    }
+
+    fn name(self: *SignatureParser) []const u8 {
+        const start = self.pos;
+        while (self.pos < self.input.len) switch (self.input[self.pos]) {
+            '[', ']', '(', ')', ',', '-' => break,
+            else => self.pos += 1,
+        };
+        return self.input[start..self.pos];
+    }
+
+    fn parseType(self: *SignatureParser) Error!*Type {
+        self.skip();
+        if (std.mem.startsWith(u8, self.input[self.pos..], "fn(")) {
+            self.pos += 3;
+            const from = try self.parseType();
+            if (self.pos >= self.input.len or self.input[self.pos] != ')') return error.UnknownType;
+            self.pos += 1;
+            if (self.pos + 1 >= self.input.len or !std.mem.eql(u8, self.input[self.pos .. self.pos + 2], "->")) return error.UnknownType;
+            self.pos += 2;
+            return self.inferer.newType(.{ .arrow = .{ .from = from, .to = try self.parseType() } });
+        }
+        if (std.mem.startsWith(u8, self.input[self.pos..], "ref(")) {
+            self.pos += 4;
+            const inner = try self.parseType();
+            if (self.pos >= self.input.len or self.input[self.pos] != ')') return error.UnknownType;
+            self.pos += 1;
+            return self.inferer.newType(.{ .ref = inner });
+        }
+        if (self.pos < self.input.len and self.input[self.pos] == '(') {
+            self.pos += 1;
+            var items = std.ArrayList(*Type).empty;
+            defer items.deinit(self.inferer.allocator);
+            while (self.pos < self.input.len and self.input[self.pos] != ')') {
+                try items.append(self.inferer.allocator, try self.parseType());
+                if (self.pos < self.input.len and self.input[self.pos] == ',') self.pos += 1 else break;
+            }
+            if (self.pos >= self.input.len or self.input[self.pos] != ')') return error.UnknownType;
+            self.pos += 1;
+            return self.inferer.newType(.{ .tuple = try self.inferer.allocator.dupe(*Type, items.items) });
+        }
+        const token = self.name();
+        if (token.len == 0) return error.UnknownType;
+        if (std.mem.eql(u8, token, "int")) return self.inferer.newType(.int);
+        if (std.mem.eql(u8, token, "float")) return self.inferer.newType(.float);
+        if (std.mem.eql(u8, token, "bool")) return self.inferer.newType(.bool);
+        if (std.mem.eql(u8, token, "char")) return self.inferer.newType(.char);
+        if (std.mem.eql(u8, token, "string")) return self.inferer.newType(.string);
+        if (std.mem.eql(u8, token, "unit")) return self.inferer.newType(.unit);
+        if (std.mem.startsWith(u8, token, "record:")) return self.inferer.newType(.{ .record = .{ .name = token[7..], .fields = &.{} } });
+        if (token.len > 1 and token[0] == 'v') {
+            const id = std.fmt.parseInt(usize, token[1..], 10) catch return error.UnknownType;
+            const variable = try self.inferer.allocator.create(TypeVar);
+            variable.* = .{ .id = id, .name = token };
+            try self.variables.append(self.inferer.allocator, id);
+            return self.inferer.newType(.{ .variable = variable });
+        }
+        var args = std.ArrayList(*Type).empty;
+        defer args.deinit(self.inferer.allocator);
+        while (self.pos < self.input.len and self.input[self.pos] == '[') {
+            self.pos += 1;
+            try args.append(self.inferer.allocator, try self.parseType());
+            if (self.pos >= self.input.len or self.input[self.pos] != ']') return error.UnknownType;
+            self.pos += 1;
+        }
+        return self.inferer.newType(.{ .con = .{ .name = token, .args = try self.inferer.allocator.dupe(*Type, args.items) } });
+    }
+};
 
 fn levenshteinDistance(a: []const u8, b: []const u8) usize {
     const m = a.len;
@@ -168,6 +269,7 @@ pub const Inferer = struct {
     field_access_vars: std.AutoHashMap(*Type, void),
     module_loader: ?*module_loader_mod.ModuleLoader = null,
     imported_inferers: std.ArrayList(*Inferer),
+    imported_modules: std.ArrayList(ImportedModule),
     diagnostics: ?*DiagnosticList = null,
     /// Suppress stderr logging for import load failures. The LSP sets this
     /// and reports them as pinpointed diagnostics instead.
@@ -178,6 +280,12 @@ pub const Inferer = struct {
     param_arity: std.StringHashMap(u32), // function parameter name → arity (for function-typed params)
     var_type_tags: std.StringHashMap(i64), // variable name → type_tag (for closure capture decref)
 
+    pub const ImportedModule = struct {
+        module: *module_loader_mod.LoadedModule,
+        inferer: *Inferer,
+        alias: []const u8,
+        interface_hash: u64 = 0,
+    };
     pub const DiagnosticList = @import("diagnostics.zig").DiagnosticList;
     const diagnostics_mod = @import("diagnostics.zig");
 
@@ -202,6 +310,7 @@ pub const Inferer = struct {
             .field_access_vars = std.AutoHashMap(*Type, void).init(allocator),
             .module_loader = null,
             .imported_inferers = .empty,
+            .imported_modules = .empty,
             .enabled_warnings = .{},
             .used_names = std.StringHashMap(void).init(allocator),
             .bound_names = std.StringHashMap(parser.Loc).init(allocator),
@@ -579,6 +688,7 @@ pub const Inferer = struct {
         self.field_access_vars.deinit();
         for (self.imported_inferers.items) |imp| imp.deinit();
         self.imported_inferers.deinit(self.allocator);
+        self.imported_modules.deinit(self.allocator);
         self.used_names.deinit();
         self.bound_names.deinit();
         self.param_arity.deinit();
@@ -663,19 +773,20 @@ pub const Inferer = struct {
 
     pub fn typeToTag(self: *Inferer, ty: *Type) i64 {
         const resolved = self.resolve(ty);
-        return switch (resolved.*) {
-            .int => 0,
-            .float => 1,
-            .bool => 2,
-            .char => 3,
-            .string => 4,
-            .unit => 5,
-            .con => 6,
-            .record => 7,
-            .arrow => 8,
-            .tuple => 9,
-            .variable, .@"ref" => 100,
+        const tag: representation.InspectTypeTag = switch (resolved.*) {
+            .int => .int,
+            .float => .float,
+            .bool => .bool,
+            .char => .char,
+            .string => .string,
+            .unit => .unit,
+            .con => .constructor,
+            .record => .record,
+            .arrow => .function,
+            .tuple => .tuple,
+            .variable, .ref => .unknown,
         };
+        return representation.tagValue(tag);
     }
 
     fn recordExprType(self: *Inferer, expr: *const parser.Expr, ty: *Type) void {
@@ -712,7 +823,7 @@ pub const Inferer = struct {
                 }
                 break :blk false;
             },
-            .@"ref" => |inner| self.occurs(tv, inner),
+            .ref => |inner| self.occurs(tv, inner),
             else => false,
         };
     }
@@ -825,8 +936,8 @@ pub const Inferer = struct {
                 },
                 else => return mismatch.f(self, a, b),
             },
-            .@"ref" => |inner_a| switch (b.*) {
-                .@"ref" => |inner_b| try self.unify(inner_a, inner_b),
+            .ref => |inner_a| switch (b.*) {
+                .ref => |inner_b| try self.unify(inner_a, inner_b),
                 else => return mismatch.f(self, a, b),
             },
             .variable => unreachable,
@@ -844,7 +955,7 @@ pub const Inferer = struct {
             .tuple => |items| for (items) |item| try self.collectFree(item, out),
             .con => |c| for (c.args) |arg| try self.collectFree(arg, out),
             .record => |r| for (r.fields) |field| try self.collectFree(field.ty, out),
-            .@"ref" => |inner| try self.collectFree(inner, out),
+            .ref => |inner| try self.collectFree(inner, out),
             else => {},
         }
     }
@@ -946,7 +1057,7 @@ pub const Inferer = struct {
                 }
                 break :blk try self.newType(.{ .record = .{ .name = r.name, .fields = out } });
             },
-            .@"ref" => |inner| try self.newType(.{ .@"ref" = try self.cloneType(inner, map) }),
+            .ref => |inner| try self.newType(.{ .ref = try self.cloneType(inner, map) }),
         };
     }
 
@@ -1047,18 +1158,56 @@ pub const Inferer = struct {
                 };
                 const module_name = imp.alias orelse imp.path[imp.path.len - 1];
 
+                loader.beginTypechecking(mod) catch |err| {
+                    self.last_error = .{
+                        .message = if (err == error.ImportCycle) "import cycle detected" else "import previously failed",
+                        .loc = imp.loc,
+                    };
+                    return err;
+                };
+
                 // Create a fresh inferer for the imported module
                 var imp_inferer = try self.allocator.create(Inferer);
                 imp_inferer.* = Inferer.init(self.allocator);
                 imp_inferer.module_loader = loader;
                 imp_inferer.quiet_import_errors = self.quiet_import_errors;
                 try self.imported_inferers.append(self.allocator, imp_inferer);
+                try self.imported_modules.append(self.allocator, .{ .module = mod, .inferer = imp_inferer, .alias = module_name });
+                if (mod.cached_interface) |cached_interface| {
+                    imp_inferer.seedCachedInterface(cached_interface.payload) catch |err| {
+                        if (!self.quiet_import_errors) std.log.warn("Ignoring invalid cached interface for '{s}': {}", .{ module_name, err });
+                    };
+                }
 
                 // Typecheck the imported module
                 imp_inferer.inferProgram(&mod.program) catch |err| {
+                    loader.finishTypechecking(mod, false);
                     if (!self.quiet_import_errors) std.log.err("Failed to typecheck imported module '{s}': {}", .{ module_name, err });
-                    continue;
+                    return err;
                 };
+                loader.finishTypechecking(mod, true);
+                for (self.imported_modules.items) |*record| {
+                    if (record.inferer != imp_inferer) continue;
+                    var hash_parts = std.ArrayList([]const u8).empty;
+                    defer hash_parts.deinit(self.allocator);
+                    try hash_parts.append(self.allocator, record.module.file_path);
+                    for (mod.program.definitions) |definition| {
+                        const exported_name: []const u8 = switch (definition) {
+                            .fn_def => |fd| if (fd.is_pub) fd.name else continue,
+                            .let_binding => |lb| if (lb.is_pub) lb.name else continue,
+                            .type_def => |td| if (td.is_pub) td.name else continue,
+                            else => continue,
+                        };
+                        try hash_parts.append(self.allocator, exported_name);
+                        if (imp_inferer.global.getScheme(exported_name)) |scheme| {
+                            const signature = try typeToString(self.allocator, imp_inferer.resolve(scheme.body).*);
+                            defer self.allocator.free(signature);
+                            try hash_parts.append(self.allocator, signature);
+                        }
+                    }
+                    record.interface_hash = comptime_boundary.fingerprint(hash_parts.items);
+                    break;
+                }
 
                 // Register imported type definitions with qualified names
                 for (mod.program.definitions) |def| {
@@ -1824,6 +1973,32 @@ pub const Inferer = struct {
         self.finalizeElemTags();
         self.validateInterpolations();
         self.validateMapKeys();
+    }
+
+    pub fn seedCachedInterface(self: *Inferer, payload: []const u8) Error!void {
+        if (payload.len < 12 or !std.mem.eql(u8, payload[0..8], "KOINTER1")) return error.UnknownType;
+        var offset: usize = 8;
+        const count = std.mem.bytesToValue(u32, payload[offset .. offset + 4]);
+        offset += 4;
+        var index: usize = 0;
+        while (index < count) : (index += 1) {
+            if (offset + 4 > payload.len) return error.UnknownType;
+            const name_len = std.mem.bytesToValue(u32, payload[offset .. offset + 4]);
+            offset += 4;
+            if (offset + @as(usize, name_len) + 4 > payload.len) return error.UnknownType;
+            const name = payload[offset .. offset + @as(usize, name_len)];
+            offset += @as(usize, name_len);
+            const signature_len = std.mem.bytesToValue(u32, payload[offset .. offset + 4]);
+            offset += 4;
+            if (offset + @as(usize, signature_len) > payload.len) return error.UnknownType;
+            var signature = SignatureParser{ .inferer = self, .input = payload[offset .. offset + @as(usize, signature_len)] };
+            defer signature.deinit();
+            const body = try signature.parseType();
+            if (signature.pos != signature.input.len) return error.UnknownType;
+            const quantified = try self.allocator.dupe(usize, signature.variables.items);
+            try self.global.set(name, .{ .quantified = quantified, .body = body });
+            offset += @as(usize, signature_len);
+        }
     }
 
     /// Reject `Map k v` where `k` has no structural hash and equality.
@@ -2628,7 +2803,7 @@ pub const Inferer = struct {
             // ── Ref: infer inner, unify ref T with expected ──
             .ref_expr => |inner| {
                 const inner_ty = try self.inferExpr(env, inner);
-                try self.unify(expected, try self.newType(.{ .@"ref" = inner_ty }));
+                try self.unify(expected, try self.newType(.{ .ref = inner_ty }));
                 self.recordExprType(expr, expected);
             },
 
@@ -2699,10 +2874,10 @@ pub const Inferer = struct {
                 try self.unify(ty, try self.newType(.bool));
                 break :blk try self.newType(.bool);
             },
-            .ref => try self.newType(.{ .@"ref" = ty }),
+            .ref => try self.newType(.{ .ref = ty }),
             .deref => blk: {
                 const inner_ty = try self.newVarType(try self.freshName("deref"));
-                try self.unify(ty, try self.newType(.{ .@"ref" = inner_ty }));
+                try self.unify(ty, try self.newType(.{ .ref = inner_ty }));
                 break :blk inner_ty;
             },
             .try_op => blk: {
@@ -3191,7 +3366,7 @@ pub fn typeToString(alloc: std.mem.Allocator, t: Type) ![]const u8 {
             }
             return std.fmt.allocPrint(alloc, "{{{s}}}", .{try std.mem.join(alloc, ", ", parts.items)});
         },
-        .@"ref" => |inner| {
+        .ref => |inner| {
             const inner_str = try typeToString(alloc, inner.*);
             defer alloc.free(inner_str);
             return std.fmt.allocPrint(alloc, "ref {s}", .{inner_str});

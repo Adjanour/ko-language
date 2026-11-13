@@ -100,7 +100,7 @@ fn dumpStmt(stmt: lir.LirStmt, buf: *std.ArrayList(u8), allocator: std.mem.Alloc
             try dumpValue(a.value, buf, allocator);
         },
         .store => |s| {
-            try buf.print(allocator, "store %{} -> %{}", .{ s.value, s.dest });
+            try buf.print(allocator, "store.{s} %{} -> %{}", .{ @tagName(s.ownership), s.value, s.dest });
         },
         .effect => |v| {
             try buf.appendSlice(allocator, "effect ");

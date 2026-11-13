@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const hir = @import("hir.zig");
 const typecheck = @import("typecheck.zig");
+const representation = @import("representation.zig");
 
 /// A top-level function definition, recorded for downstream lowering
 /// (the root is the lambda expression wrapping the function body).
@@ -550,8 +551,7 @@ pub const HirLower = struct {
             .if_expr => |ife| {
                 const cond_id = try self.lowerExpr(ife.condition);
                 const then_id = try self.lowerExpr(ife.then_branch);
-                const else_id = if (ife.else_branch) |eb| try self.lowerExpr(eb) else
-                    try self.allocExpr(.{ .int = 0 }, ty, expr);
+                const else_id = if (ife.else_branch) |eb| try self.lowerExpr(eb) else try self.allocExpr(.{ .int = 0 }, ty, expr);
                 return self.allocExpr(.{ .if_ = .{ .cond = cond_id, .then = then_id, .else_ = else_id } }, ty, expr);
             },
             .match_expr => |m| {
@@ -662,13 +662,13 @@ pub const HirLower = struct {
     fn typeFromTag(self: *HirLower, expr: *const ast.Expr) *const typecheck.Type {
         if (self.inferer.expr_type_tags.get(expr)) |tag| {
             return self.inferer.newType(switch (tag) {
-                0 => .{ .int = {} },
-                1 => .{ .float = {} },
-                2 => .{ .bool = {} },
-                3 => .{ .char = {} },
-                4 => .{ .string = {} },
-                5 => .{ .unit = {} },
-                6 => .{ .con = .{ .name = "", .args = &.{} } },
+                representation.inspect.int => .{ .int = {} },
+                representation.inspect.float => .{ .float = {} },
+                representation.inspect.bool => .{ .bool = {} },
+                representation.inspect.char => .{ .char = {} },
+                representation.inspect.string => .{ .string = {} },
+                representation.inspect.unit => .{ .unit = {} },
+                representation.inspect.constructor => .{ .con = .{ .name = "", .args = &.{} } },
                 else => .{ .int = {} },
             }) catch unreachable;
         }

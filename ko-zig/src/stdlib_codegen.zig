@@ -10,6 +10,7 @@ const std = @import("std");
 const llvm = @import("llvm");
 const core = llvm.core;
 const types = llvm.types;
+const representation = @import("representation.zig");
 
 pub const StdlibCodegen = struct {
     context: types.LLVMContextRef,
@@ -2247,8 +2248,8 @@ pub const StdlibCodegen = struct {
     // Arrays are passed around as i64 (ptrtoint), like constructors and tuples.
     // ============================================================
 
-    const array_tag_scalar: u64 = 11;
-    const array_tag_heap: u64 = 12;
+    const array_tag_scalar: u64 = @intCast(representation.heap.array_scalar);
+    const array_tag_heap: u64 = @intCast(representation.heap.array_heap);
 
     /// Load a header word at `offset` (negative) from an array's element pointer.
     fn arrayHeaderPtr(self: *StdlibCodegen, ptr: types.LLVMValueRef, offset: i64, name: [*:0]const u8) types.LLVMValueRef {
@@ -2922,7 +2923,7 @@ pub const StdlibCodegen = struct {
     // free, and the whole map is one ko_alloc.
     // ============================================================
 
-    const map_type_tag: u64 = 13;
+    const map_type_tag: u64 = @intCast(representation.heap.map);
     const map_bucket_bytes: u64 = 24;
     const map_header_words: u64 = 16;
 
@@ -4029,27 +4030,27 @@ pub const StdlibCodegen = struct {
 
         // free(ptr - 32)
         core.LLVMPositionBuilderAtEnd(self.builder, free_block);
-        
+
         // Read type_tag from ptr - 24 before freeing (type_tag is 24 bytes before user data)
         var tag_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -24)), 0)};
         const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&tag_idx), 1, "tag_ptr");
         const tag_ptr_typed = core.LLVMBuildBitCast(self.builder, tag_ptr, self.ptrType(), "tag_ptr_typed");
         const type_tag = core.LLVMBuildLoad2(self.builder, self.i64Type(), tag_ptr_typed, "type_tag");
-        
+
         // Read arity from ptr - 16
         var arity_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -16)), 0)};
         const arity_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&arity_idx), 1, "arity_ptr");
         const arity_ptr_typed = core.LLVMBuildBitCast(self.builder, arity_ptr, self.ptrType(), "arity_ptr_typed");
         const arity = core.LLVMBuildLoad2(self.builder, self.i64Type(), arity_ptr_typed, "arity");
-        
+
         // Read field_bitmap from ptr - 8
         var bitmap_idx: [1]types.LLVMValueRef = .{core.LLVMConstInt(self.i64Type(), @bitCast(@as(i64, -8)), 0)};
         const bitmap_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&bitmap_idx), 1, "bitmap_ptr");
         const bitmap_ptr_typed = core.LLVMBuildBitCast(self.builder, bitmap_ptr, self.ptrType(), "bitmap_ptr_typed");
         const field_bitmap = core.LLVMBuildLoad2(self.builder, self.i64Type(), bitmap_ptr_typed, "field_bitmap");
-        
+
         // Check if type_tag == 10 (closure) — different layout from normal values
-        const is_closure = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 10, 0), "is_closure");
+        const is_closure = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), @intCast(representation.heap.closure), 0), "is_closure");
         const closure_walk_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "closure_walk");
         const array_check_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "array_check");
         const array_walk_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "array_walk");
@@ -4107,15 +4108,15 @@ pub const StdlibCodegen = struct {
         var free_args_closure: [1]types.LLVMValueRef = .{rc_ptr};
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(free_fn), free_fn, &free_args_closure, 1, "");
         self.buildBranch(done_block);
-        
+
         // In decref_value_bb: normal path — call ko_decref_value then free
         core.LLVMPositionBuilderAtEnd(self.builder, decref_value_bb);
-        
+
         // Call ko_decref_value(ptr, type_tag, arity, field_bitmap) to recursively decrement fields
         const decref_value_fn = core.LLVMGetNamedFunction(self.module, "ko_decref_value");
         var decref_args: [4]types.LLVMValueRef = .{ ptr, type_tag, arity, field_bitmap };
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(decref_value_fn), decref_value_fn, &decref_args, 4, "");
-        
+
         // free(ptr - 32)
         var free_args: [1]types.LLVMValueRef = .{rc_ptr};
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(free_fn), free_fn, &free_args, 1, "");
@@ -4177,8 +4178,7 @@ pub const StdlibCodegen = struct {
         // Lambda path: compute data_base and tag_base as regular values (not phi)
         core.LLVMPositionBuilderAtEnd(self.builder, kind_lambda);
         const lambda_data_base = core.LLVMConstInt(self.i64Type(), 24, 0);
-        const lambda_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 24, 0),
-            core.LLVMBuildMul(self.builder, count_val, core.LLVMConstInt(self.i64Type(), 8, 0), "mul1"), "lambda_tag_base");
+        const lambda_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 24, 0), core.LLVMBuildMul(self.builder, count_val, core.LLVMConstInt(self.i64Type(), 8, 0), "mul1"), "lambda_tag_base");
         // Lambda: idx starts at 0
         const lambda_init_idx = core.LLVMConstInt(self.i64Type(), 0, 0);
         self.buildBranch(loop_check);
@@ -4190,8 +4190,7 @@ pub const StdlibCodegen = struct {
         const pcount_ptr_typed = core.LLVMBuildBitCast(self.builder, pcount_ptr, self.ptrType(), "pcount_ptr_typed");
         const partial_applied = core.LLVMBuildLoad2(self.builder, self.i64Type(), pcount_ptr_typed, "partial_applied");
         const partial_data_base = core.LLVMConstInt(self.i64Type(), 32, 0);
-        const partial_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 32, 0),
-            core.LLVMBuildMul(self.builder, partial_applied, core.LLVMConstInt(self.i64Type(), 8, 0), "mul2"), "partial_tag_base");
+        const partial_tag_base = core.LLVMBuildAdd(self.builder, core.LLVMConstInt(self.i64Type(), 32, 0), core.LLVMBuildMul(self.builder, partial_applied, core.LLVMConstInt(self.i64Type(), 8, 0), "mul2"), "partial_tag_base");
         // Partial: idx starts at 0
         const partial_init_idx = core.LLVMConstInt(self.i64Type(), 0, 0);
         self.buildBranch(loop_check);
@@ -4223,8 +4222,7 @@ pub const StdlibCodegen = struct {
 
         // Loop body: read type tag from tag_base + idx*8
         core.LLVMPositionBuilderAtEnd(self.builder, loop_body);
-        const tag_offset = core.LLVMBuildAdd(self.builder, phi_tag_base,
-            core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul3"), "tag_offset");
+        const tag_offset = core.LLVMBuildAdd(self.builder, phi_tag_base, core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul3"), "tag_offset");
 
         var tag_gep_idx: [1]types.LLVMValueRef = .{tag_offset};
         const tag_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&tag_gep_idx), 1, "tag_ptr");
@@ -4240,19 +4238,15 @@ pub const StdlibCodegen = struct {
         const is_ctor = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 1, 0), "is_ctor");
         const is_tuple = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 2, 0), "is_tuple");
         const is_record = core.LLVMBuildICmp(self.builder, .LLVMIntEQ, type_tag, core.LLVMConstInt(self.i64Type(), 3, 0), "is_record");
-        const is_heap = core.LLVMBuildOr(self.builder,
-            core.LLVMBuildOr(self.builder, is_ctor, is_tuple, "or1"),
-            is_record, "is_heap");
-        const should_decref = core.LLVMBuildAnd(self.builder, is_heap,
-            core.LLVMBuildNot(self.builder, should_skip, "not_skip"), "should_decref");
+        const is_heap = core.LLVMBuildOr(self.builder, core.LLVMBuildOr(self.builder, is_ctor, is_tuple, "or1"), is_record, "is_heap");
+        const should_decref = core.LLVMBuildAnd(self.builder, is_heap, core.LLVMBuildNot(self.builder, should_skip, "not_skip"), "should_decref");
 
         const decref_bb = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "decref_val");
         self.buildCondBranch(should_decref, decref_bb, loop_next);
 
         core.LLVMPositionBuilderAtEnd(self.builder, decref_bb);
         // Read value from data_base + idx*8
-        const cap_offset = core.LLVMBuildAdd(self.builder, phi_data_base,
-            core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul4"), "cap_offset");
+        const cap_offset = core.LLVMBuildAdd(self.builder, phi_data_base, core.LLVMBuildMul(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 8, 0), "mul4"), "cap_offset");
         var cap_gep_idx: [1]types.LLVMValueRef = .{cap_offset};
         const cap_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @ptrCast(&cap_gep_idx), 1, "cap_ptr");
         const cap_ptr_typed = core.LLVMBuildBitCast(self.builder, cap_ptr, self.ptrType(), "cap_ptr_typed");
@@ -4320,6 +4314,7 @@ pub const StdlibCodegen = struct {
         const loop_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop");
         const loop_body = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_body");
         const loop_decref = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_decref");
+        const decref_managed = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "decref_managed");
         const loop_next = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_next");
         const loop_done = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "loop_done");
         const done_block = core.LLVMAppendBasicBlockInContext(self.context, fn_val, "done");
@@ -4368,7 +4363,7 @@ pub const StdlibCodegen = struct {
         const phi_idx = core.LLVMBuildPhi(self.builder, self.i64Type(), "idx");
         const phi_count = core.LLVMBuildPhi(self.builder, self.i64Type(), "count");
         const phi_start_idx = core.LLVMBuildPhi(self.builder, self.i64Type(), "start_idx");
-        
+
         // Add incoming values for phi nodes from the type-specific blocks
         var idx_incoming: [3]types.LLVMValueRef = .{
             core.LLVMConstInt(self.i64Type(), 1, 0), // constructor: skip tag
@@ -4377,11 +4372,11 @@ pub const StdlibCodegen = struct {
         };
         var idx_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
         core.LLVMAddIncoming(phi_idx, &idx_incoming, &idx_blocks, 3);
-        
+
         var count_incoming: [3]types.LLVMValueRef = .{ arity_param, arity_param, arity_param };
         var count_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
         core.LLVMAddIncoming(phi_count, &count_incoming, &count_blocks, 3);
-        
+
         var start_incoming: [3]types.LLVMValueRef = .{
             core.LLVMConstInt(self.i64Type(), 1, 0), // constructor: skip tag
             core.LLVMConstInt(self.i64Type(), 1, 0), // tuple: skip length
@@ -4389,25 +4384,25 @@ pub const StdlibCodegen = struct {
         };
         var start_blocks: [3]types.LLVMBasicBlockRef = .{ constructor_block, tuple_block, record_block };
         core.LLVMAddIncoming(phi_start_idx, &start_incoming, &start_blocks, 3);
-        
+
         // Check if idx < count
         const should_continue = core.LLVMBuildICmp(self.builder, .LLVMIntULT, phi_idx, phi_count, "should_continue");
         self.buildCondBranch(should_continue, loop_body, loop_done);
 
         // Loop body: check bitmap, decref field at index if pointer
         core.LLVMPositionBuilderAtEnd(self.builder, loop_body);
-        
+
         // Compute bitmap bit position: for constructor/tuple, bit = idx - start_idx; for record, bit = idx - 0
         const bitmap_idx = core.LLVMBuildSub(self.builder, phi_idx, phi_start_idx, "bitmap_idx");
-        
+
         // Check if bit is set: (field_bitmap >> bitmap_idx) & 1
         const shift_amt = core.LLVMBuildShl(self.builder, core.LLVMConstInt(self.i64Type(), 1, 0), bitmap_idx, "shift_amt");
         const masked = core.LLVMBuildAnd(self.builder, field_bitmap, shift_amt, "masked");
         const is_pointer = core.LLVMBuildICmp(self.builder, .LLVMIntNE, masked, core.LLVMConstInt(self.i64Type(), 0, 0), "is_pointer");
-        
+
         // Compute next_idx and branch
         const next_idx = core.LLVMBuildAdd(self.builder, phi_idx, core.LLVMConstInt(self.i64Type(), 1, 0), "next_idx");
-        
+
         // If pointer, decref the field
         self.buildCondBranch(is_pointer, loop_decref, loop_next);
 
@@ -4418,13 +4413,20 @@ pub const StdlibCodegen = struct {
         const field_ptr = core.LLVMBuildGEP2(self.builder, self.i8Type(), ptr, @constCast(&field_idx_arr), 1, "field_ptr");
         const field_ptr_typed = core.LLVMBuildBitCast(self.builder, field_ptr, self.ptrType(), "field_ptr_typed");
         const field_val = core.LLVMBuildLoad2(self.builder, self.i64Type(), field_ptr_typed, "field_val");
-        
-        // Convert i64 to ptr and call ko_decref (which reads header and recurses)
+
+        // Nullary constructors are immediate tags, not pointers. A field bitmap
+        // may conservatively mark an algebraic value as managed, so skip the
+        // small immediate range before converting the payload to a pointer.
+        const is_immediate = core.LLVMBuildICmp(self.builder, .LLVMIntULT, field_val, core.LLVMConstInt(self.i64Type(), 4096, 0), "field_is_immediate");
+        self.buildCondBranch(is_immediate, loop_next, decref_managed);
+
+        // Convert a boxed value to a pointer and release it recursively.
+        core.LLVMPositionBuilderAtEnd(self.builder, decref_managed);
         const field_as_ptr = core.LLVMBuildIntToPtr(self.builder, field_val, self.ptrType(), "field_as_ptr");
         const ko_decref_fn = core.LLVMGetNamedFunction(self.module, "ko_decref");
         var field_decref_args: [1]types.LLVMValueRef = .{field_as_ptr};
         _ = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(ko_decref_fn), ko_decref_fn, &field_decref_args, 1, "");
-        
+
         self.buildBranch(loop_next);
 
         // next block: increment idx and loop back

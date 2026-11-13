@@ -21,6 +21,7 @@ const hir = @import("hir.zig");
 const lir = @import("lir.zig");
 const typecheck = @import("typecheck.zig");
 const hir_lower = @import("hir_lower.zig");
+const representation = @import("representation.zig");
 
 pub const LowerError = error{
     Unsupported,
@@ -36,7 +37,7 @@ const CtorEntry = struct {
     type_name: []const u8,
 };
 
-    const GlobalKind = enum { user_fn, ctor, std_fn, std_special, constant };
+const GlobalKind = enum { user_fn, ctor, std_fn, std_special, constant };
 
 const GlobalEntry = struct {
     arity: usize,
@@ -51,11 +52,10 @@ const BlockBuilder = struct {
     term: ?lir.LirTerminator = null,
 };
 
-/// Tracks a heap allocation with its type tag for ownership reasoning.
+/// Tracks a heap value and the ownership policy assigned by lowering.
 const HeapAllocEntry = struct {
     id: lir.LocalId,
-    /// Type tag: 0=ref (needs RC), 1=constructor, 2=tuple, 3=record (linear, no RC).
-    type_tag: i64,
+    ownership: lir.Ownership,
 };
 
 /// Per-function emission state; saved/restored around nested lambda lifting.
@@ -65,8 +65,7 @@ const FnState = struct {
     hir_map: std.AutoHashMap(hir.LocalVarId, lir.LocalId),
     current: usize = 0,
     next_block: lir.BlockId = 0,
-    /// Heap-allocated values to decref on scope exit.
-    /// Only ref values (type_tag=0) need decref — linear values (type_tag=1/2/3) are single-owner.
+    /// Heap values with ownership metadata used for scope-exit cleanup.
     scope_heap_values: std.ArrayList(HeapAllocEntry) = .empty,
     /// Heap values consumed by parent structures (constructors, tuples, records, closures).
     /// These are NOT decreffed at scope exit — the parent owns them.
@@ -216,8 +215,12 @@ pub const LirLower = struct {
     }
 
     fn emitStore(self: *LirLower, dest: lir.LocalId, value: lir.LocalId) LowerError!void {
+        return self.emitStoreWithOwnership(dest, value, .borrow);
+    }
+
+    fn emitStoreWithOwnership(self: *LirLower, dest: lir.LocalId, value: lir.LocalId, ownership: lir.StoreOwnership) LowerError!void {
         try self.state.blocks.items[self.state.current].body.append(self.allocator, .{
-            .store = .{ .dest = dest, .value = value },
+            .store = .{ .dest = dest, .value = value, .ownership = ownership },
         });
     }
 
@@ -297,7 +300,7 @@ pub const LirLower = struct {
             .string => .{ .string = {} },
             .unit => .{ .int = {} },
             .con => .{ .int = {} },
-            .@"ref" => .{ .int = {} },
+            .ref => .{ .int = {} },
             .arrow, .tuple, .record => .{ .opaque_type = {} },
             // Unresolved (generic) type variables use the universal i64
             // representation, matching the legacy ABI. Proper support is
@@ -432,7 +435,7 @@ pub const LirLower = struct {
     // Program lowering
     // =================================================================
 
-    pub fn lowerProgram(self: *LirLower) LowerError![]const lir.LirFn {
+    pub fn lowerProgram(self: *LirLower) LowerError![]lir.LirFn {
         try self.registerBuiltins();
         for (self.defs) |def| {
             switch (def) {
@@ -1284,8 +1287,8 @@ pub const LirLower = struct {
 
     // Array type tags, matching stdlib_codegen: the element kind lives in the
     // header's type_tag so ko_decref knows whether to walk the elements.
-    const array_tag_scalar: i64 = 11;
-    const array_tag_heap: i64 = 12;
+    const array_tag_scalar = representation.heap.array_scalar;
+    const array_tag_heap = representation.heap.array_heap;
 
     /// The type tag to stamp on an array whose elements have type `elem`.
     ///
@@ -1316,7 +1319,7 @@ pub const LirLower = struct {
         if (r.* == .con) {
             if (std.mem.eql(u8, r.con.name, "Array") and r.con.args.len == 1)
                 return self.arrayTagFor(r.con.args[0]);
-            if (std.mem.eql(u8, r.con.name, "Map") and r.con.args.len == 2) return 13;
+            if (std.mem.eql(u8, r.con.name, "Map") and r.con.args.len == 2) return representation.heap.map;
         }
         return typeTag(r);
     }
@@ -1340,10 +1343,7 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ len, cap, tag_local }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        // Arrays are heap values: register for decref at scope exit. Tag 1
-        // (constructor) means "linear value, no RC needed at exit", which is the
-        // same treatment tuples and constructors get.
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
+        try self.trackHeapValue(arr, .owned);
         return arr;
     }
 
@@ -1402,7 +1402,7 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ cap, kt, fl }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = m, .type_tag = 1 });
+        try self.trackHeapValue(m, .owned);
         return m;
     }
 
@@ -1431,7 +1431,7 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ arr, kt, fl }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = m, .type_tag = 1 });
+        try self.trackHeapValue(m, .owned);
         return m;
     }
 
@@ -1452,7 +1452,7 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ a, b, m }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = out, .type_tag = 1 });
+        try self.trackHeapValue(out, .owned);
         return out;
     }
 
@@ -1472,7 +1472,7 @@ pub const LirLower = struct {
             .args = try self.dupeIds(&.{ m, which_local, tag_local }),
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
+        try self.trackHeapValue(arr, .owned);
         return arr;
     }
 
@@ -1503,7 +1503,7 @@ pub const LirLower = struct {
             .args = call_args,
             .fn_type = .{ .params = params, .returns = .{ .int = {} } },
         } }, .{ .int = {} });
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = arr, .type_tag = 1 });
+        try self.trackHeapValue(arr, .owned);
         return arr;
     }
 
@@ -1700,7 +1700,7 @@ pub const LirLower = struct {
         try self.emitLiftLevel(name, params, 0, .{ .hir_body = lam.body }, cap_infos, final_ret);
         // Mark captured values as consumed — closure takes shared ownership
         for (cap_locals) |cap| {
-            self.consumeHeapValue(cap);
+            _ = self.consumeHeapValue(cap);
         }
         return self.emit(.{ .make_closure = .{ .fn_name = name, .captures = cap_locals } }, .{ .opaque_type = {} });
     }
@@ -1888,22 +1888,19 @@ pub const LirLower = struct {
         if (entry.arity == 0) return self.emit(.{ .int = entry.tag }, .{ .int = {} });
 
         const struct_ty = try self.ctorStructType(entry.arity);
-        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 1, .arity = @intCast(entry.arity) } }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = representation.heap.constructor, .ownership = .owned, .arity = @intCast(entry.arity) } }, .{ .opaque_type = {} });
         const tag = try self.emit(.{ .int = entry.tag }, .{ .int = {} });
         const tag_slot = try self.gepStruct(struct_ty, raw, 0, .{ .int = {} });
         try self.emitStore(tag_slot, tag);
         for (args, 0..) |ah, i| {
             const boxed = try self.coerce(try self.lowerExpr(ah), .{ .int = {} });
             const slot = try self.gepStruct(struct_ty, raw, i + 1, .{ .int = {} });
-            try self.emitStore(slot, boxed);
-            // Parent takes shared ownership — incref and mark consumed
-            self.consumeHeapValue(boxed);
+            const ownership = self.consumeHeapValue(boxed);
+            try self.emitStoreWithOwnership(slot, boxed, ownership);
         }
         const result = try self.emit(.{ .ptrtoint = raw }, .{ .int = {} });
-        // Track heap-allocated constructors (arity > 0) for decref at scope exit
-        // Zero-arity constructors are raw tags, not heap-allocated
-        // Type tag 1 = constructor (linear value, no RC needed at exit)
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = result, .type_tag = 1 });
+        // Zero-arity constructors are raw tags, not heap-allocated.
+        try self.trackHeapValue(result, .owned);
         return result;
     }
 
@@ -1968,7 +1965,10 @@ pub const LirLower = struct {
         for (rows) |row| {
             switch (row.pattern) {
                 .wildcard, .bind => {},
-                else => { all_simple = false; break; },
+                else => {
+                    all_simple = false;
+                    break;
+                },
             }
         }
         if (all_simple and rows.len > 0) {
@@ -2469,12 +2469,11 @@ pub const LirLower = struct {
             field_tys[i] = self.localType(vals[i]);
         }
         const struct_ty = lir.LirType{ .struct_ = field_tys };
-        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 2 } }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = representation.heap.tuple, .ownership = .owned } }, .{ .opaque_type = {} });
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
-            try self.emitStore(slot, v);
-            // Parent takes shared ownership — incref and mark consumed
-            self.consumeHeapValue(v);
+            const ownership = self.consumeHeapValue(v);
+            try self.emitStoreWithOwnership(slot, v, ownership);
         }
         return raw;
     }
@@ -2500,12 +2499,12 @@ pub const LirLower = struct {
             vals[i] = try self.coerce(try self.lowerExpr(hf.value), field_tys[i]);
         }
         const struct_ty = lir.LirType{ .struct_ = field_tys };
-        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = 3 } }, .{ .opaque_type = {} });
+        const raw = try self.emit(.{ .alloc = .{ .ty = struct_ty, .type_tag = representation.heap.record, .ownership = .owned } }, .{ .opaque_type = {} });
         for (vals, 0..) |v, i| {
             const slot = try self.gepStruct(struct_ty, raw, i, field_tys[i]);
-            try self.emitStore(slot, v orelse return error.TypeError);
-            // Parent takes shared ownership — incref and mark consumed
-            if (v) |val| self.consumeHeapValue(val);
+            const value = v orelse return error.TypeError;
+            const ownership = self.consumeHeapValue(value);
+            try self.emitStoreWithOwnership(slot, value, ownership);
         }
         return raw;
     }
@@ -2570,14 +2569,14 @@ pub const LirLower = struct {
 
     fn lowerRef(self: *LirLower, inner: hir.HirId) LowerError!lir.LocalId {
         const v = try self.lowerExpr(inner);
-        // Allocate on the heap with ko_alloc (8 bytes for the i64 value)
-        // This gives the ref cell a proper RC header for memory management
-        const addr = try self.emit(.{ .alloc = .{ .ty = .{ .int = {} }, .type_tag = 0 } }, try self.ptrTo(.{ .int = {} }));
-        try self.emitStore(addr, v);
+        const field_is_managed = self.refFieldIsManaged(self.exprs[inner].ty);
+        // A ref cell is a one-field record. Its header owns and releases the
+        // field only when the static representation guarantees a pointer.
+        const addr = try self.emit(.{ .alloc = .{ .ty = .{ .int = {} }, .type_tag = representation.heap.record, .ownership = .shared, .arity = 1, .field_bitmap = if (field_is_managed) 1 else 0 } }, try self.ptrTo(.{ .int = {} }));
+        const ownership = self.consumeHeapValue(v);
+        try self.emitStoreWithOwnership(addr, v, ownership);
         const result = try self.emit(.{ .ptrtoint = addr }, .{ .int = {} });
-        // Track this heap allocation for decref at scope exit
-        // Type tag 0 = ref value (needs RC — decref at exit)
-        try self.state.scope_heap_values.append(self.allocator, .{ .id = result, .type_tag = 0 });
+        try self.trackHeapValue(result, .shared);
         return result;
     }
 
@@ -2594,35 +2593,38 @@ pub const LirLower = struct {
         const ptr_ty = try self.ptrTo(.{ .int = {} });
         const ptr = try self.emit(.{ .inttoptr = .{ .val = target, .ty = ptr_ty } }, ptr_ty);
         const old_val = try self.emit(.{ .load = ptr }, .{ .int = {} });
-        
-        // Decref old value if it's a ref value (type_tag=0) — ref cells hold shared data
-        if (self.findHeapAlloc(old_val)) |entry| {
-            if (entry.type_tag == 0) {
-                const decref_ptr = try self.emit(.{ .inttoptr = .{ .val = old_val, .ty = ptr_ty } }, ptr_ty);
-                try self.emitEffect(.{ .decref = decref_ptr });
-            }
+
+        const target_ty = self.resolve(self.exprs[a.target].ty);
+        const field_is_managed = target_ty.* == .ref and self.refFieldIsManaged(target_ty.ref);
+        if (field_is_managed) {
+            const decref_ptr = try self.emit(.{ .inttoptr = .{ .val = old_val, .ty = ptr_ty } }, ptr_ty);
+            try self.emitEffect(.{ .decref = decref_ptr });
         }
-        
-        // Store new value
+
         const v = try self.lowerExpr(a.value);
-        try self.emitStore(ptr, v);
-        
-        // Track new value only if it's a ref value (type_tag=0) — linear values need no RC
-        if (self.findHeapAlloc(v)) |entry| {
-            if (entry.type_tag == 0) {
-                try self.state.scope_heap_values.append(self.allocator, .{ .id = v, .type_tag = 0 });
-            }
-        }
-        
+        const ownership = self.consumeHeapValue(v);
+        try self.emitStoreWithOwnership(ptr, v, ownership);
+
         return self.emit(.{ .int = 0 }, .{ .int = {} });
     }
-    
+
+    fn refFieldIsManaged(self: *LirLower, ty: *const typecheck.Type) bool {
+        return switch (self.resolve(ty).*) {
+            .string, .record, .tuple, .arrow, .con, .ref => true,
+            else => false,
+        };
+    }
+
     /// Find a tracked heap allocation by LocalId. Returns null if not found.
     fn findHeapAlloc(self: *LirLower, id: lir.LocalId) ?HeapAllocEntry {
         for (self.state.scope_heap_values.items) |entry| {
             if (entry.id == id) return entry;
         }
         return null;
+    }
+
+    fn trackHeapValue(self: *LirLower, id: lir.LocalId, ownership: lir.Ownership) LowerError!void {
+        try self.state.scope_heap_values.append(self.allocator, .{ .id = id, .ownership = ownership });
     }
 
     /// Check if a LocalId is a tracked heap allocation.
@@ -2644,28 +2646,38 @@ pub const LirLower = struct {
     }
 
     /// When storing a value inside a parent (constructor, tuple, record, closure),
-    /// check if it's a tracked heap allocation. If so, incref it (parent takes shared
-    /// ownership) and mark it consumed (skip decref at scope exit).
-    fn consumeHeapValue(self: *LirLower, value: lir.LocalId) void {
-        if (self.findHeapAlloc(value)) |_| {
-            self.emitIncref(value);
-            self.markConsumed(value);
+    /// check if it's a tracked heap allocation. Moving an owned value transfers
+    /// it to the parent. Sharing a shared value retains one reference for the
+    /// parent. Borrowed values cannot be consumed.
+    fn consumeHeapValue(self: *LirLower, value: lir.LocalId) lir.StoreOwnership {
+        if (self.findHeapAlloc(value)) |entry| {
+            switch (entry.ownership) {
+                .borrowed => return .borrow,
+                .owned => {
+                    self.markConsumed(value);
+                    return .move;
+                },
+                .shared => {
+                    self.emitIncref(value);
+                    self.markConsumed(value);
+                    return .share;
+                },
+            }
         }
+        return .borrow;
     }
 
-    /// Emit decref for ref values (type_tag=0) in scope_heap_values[from..] that
-    /// are not the result value and not consumed by parent structures.
-    /// Linear values (type_tag=1/2/3) are NOT decreffed — the compiler proves single-owner.
-    /// However, tuples (type_tag=2) and records (type_tag=3) containing heap-allocated
-    /// values need their contents cleaned up via markConsumed when stored inside parents.
+    /// Release shared heap values in `scope_heap_values[from..]` unless they
+    /// are returned or transferred to a parent. Owned-value destruction needs
+    /// a liveness-aware placement pass; it is deliberately not inferred from
+    /// heap layout here.
     fn emitDecrefHeapValues(self: *LirLower, result: lir.LocalId, from: usize) LowerError!void {
         const ptr_ty = try self.ptrTo(.{ .int = {} });
         const items = self.state.scope_heap_values.items;
         for (items[from..]) |entry| {
             if (entry.id == result) continue;
             if (self.state.consumed_heap_values.contains(entry.id)) continue;
-            // Only decref ref values (type_tag=0). Linear values (type_tag=1/2/3) need no RC.
-            if (entry.type_tag != 0) continue;
+            if (entry.ownership != .shared) continue;
             const decref_ptr = try self.emit(.{ .inttoptr = .{ .val = entry.id, .ty = ptr_ty } }, ptr_ty);
             try self.emitEffect(.{ .decref = decref_ptr });
         }

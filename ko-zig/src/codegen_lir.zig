@@ -22,6 +22,7 @@
 
 const std = @import("std");
 const compat = @import("compat.zig");
+const representation = @import("representation.zig");
 const llvm = @import("llvm");
 const core = llvm.core;
 const analysis = llvm.analysis;
@@ -151,7 +152,7 @@ pub const CodegenLir = struct {
         }
         {
             // ko_result_unwrap: panicking version (1 param)
-            var params1 = [_]types.LLVMTypeRef{ i64_ty };
+            var params1 = [_]types.LLVMTypeRef{i64_ty};
             const fn_ty1_unwrap = core.LLVMFunctionType(i64_ty, &params1, 1, 0);
             _ = core.LLVMAddFunction(self.module, "ko_result_unwrap", fn_ty1_unwrap);
         }
@@ -173,7 +174,7 @@ pub const CodegenLir = struct {
         // pointers (i8*); Unit, Result and Maybe boxes travel as i64.
         {
             const ptr_ty = core.LLVMPointerTypeInContext(self.context, 0);
-            var fn_ty1 = [_]types.LLVMTypeRef{ ptr_ty };
+            var fn_ty1 = [_]types.LLVMTypeRef{ptr_ty};
             const fn_ty1_i64 = core.LLVMFunctionType(i64_ty, &fn_ty1, 1, 0);
             _ = core.LLVMAddFunction(self.module, "ko_io_read_file", fn_ty1_i64);
             _ = core.LLVMAddFunction(self.module, "ko_io_file_exists", fn_ty1_i64);
@@ -393,7 +394,7 @@ pub const CodegenLir = struct {
             },
             .local => |id| self.locals.get(id) orelse error.UndefinedLocal,
             .fn_ref => |name| core.LLVMGetNamedFunction(self.module, try self.dupeZ(name)) orelse error.UndefinedFunction,
-            .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag, av.arity),
+            .alloc => |av| try self.codegenAlloc(try self.lirType(av.ty), av.type_tag, av.arity, av.field_bitmap),
             .alloc_stack => |ty| core.LLVMBuildAlloca(self.builder, try self.lirType(ty), "stack"),
             .load => |id| try self.codegenLoad(id),
             .incref => |id| try self.codegenRcCall("ko_incref", id),
@@ -435,12 +436,11 @@ pub const CodegenLir = struct {
         };
     }
 
-    /// `alloc(T)` → `call ko_alloc(sizeof(T), type_tag)` (returns an untyped ptr).
-    /// type_tag: 0=raw, 1=constructor, 2=tuple, 3=record
+    /// `alloc(T)` → `call ko_alloc(sizeof(T), heap_tag)` (returns an untyped ptr).
     /// For constructor boxes (type_tag=1, arity>0) the payload slot count is
     /// stored in the header at offset -16, mirroring the legacy codegen so the
     /// runtime `inspect` can distinguish list cells from other constructor boxes.
-    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef, type_tag: i64, arity: u32) CodegenError!types.LLVMValueRef {
+    fn codegenAlloc(self: *CodegenLir, llvm_ty: types.LLVMTypeRef, type_tag: i64, arity: u32, field_bitmap: u64) CodegenError!types.LLVMValueRef {
         const alloc_fn = core.LLVMGetNamedFunction(self.module, "ko_alloc") orelse return error.UndefinedFunction;
         const dl = target.LLVMGetModuleDataLayout(self.module);
         const size = target.LLVMStoreSizeOfType(dl, llvm_ty);
@@ -449,11 +449,15 @@ pub const CodegenLir = struct {
             core.LLVMConstInt(core.LLVMInt64TypeInContext(self.context), @intCast(type_tag), 0),
         };
         const ptr = core.LLVMBuildCall2(self.builder, core.LLVMGlobalGetValueType(alloc_fn), alloc_fn, &args, 2, "alloc_ptr");
-        if (type_tag == 1 and arity > 0) {
+        if (arity > 0 or field_bitmap != 0) {
             const i64_type = core.LLVMInt64TypeInContext(self.context);
-            var arity_idx = [1]types.LLVMValueRef{core.LLVMConstInt(i64_type, @bitCast(@as(i64, -16)), 0)};
-            const arity_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), ptr, &arity_idx, 1, "arity_ptr");
-            _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(i64_type, arity, 0), arity_ptr);
+            const header_offsets = [_]i64{ -16, -8 };
+            const header_values = [_]u64{ arity, field_bitmap };
+            for (header_offsets, header_values) |offset, value| {
+                var index = [1]types.LLVMValueRef{core.LLVMConstInt(i64_type, @bitCast(offset), 0)};
+                const field_ptr = core.LLVMBuildGEP2(self.builder, core.LLVMInt8TypeInContext(self.context), ptr, &index, 1, "header_field_ptr");
+                _ = core.LLVMBuildStore(self.builder, core.LLVMConstInt(i64_type, value, 0), field_ptr);
+            }
         }
         return ptr;
     }
@@ -507,7 +511,7 @@ pub const CodegenLir = struct {
             field_types[i] = try self.lirType(self.local_types[cap]);
         }
         const closure_ty = core.LLVMStructTypeInContext(self.context, field_types.ptr, @intCast(field_types.len), 0);
-        const raw = try self.codegenAlloc(closure_ty, 10, 0); // type_tag=10 for closures
+        const raw = try self.codegenAlloc(closure_ty, representation.heap.closure, 0, 0);
 
         // Store the function pointer and each captured value.
         const i32_type = core.LLVMInt32TypeInContext(self.context);

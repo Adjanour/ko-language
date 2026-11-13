@@ -1,8 +1,26 @@
 const std = @import("std");
 const hir = @import("hir.zig");
+const representation = @import("representation.zig");
 
 pub const LocalId = usize;
 pub const BlockId = usize;
+
+/// Ownership of a heap value at an LIR program point.
+///
+/// Borrowed values are observed only. Owned values are transferred exactly
+/// once. Shared values use the runtime reference count.
+pub const Ownership = enum {
+    borrowed,
+    owned,
+    shared,
+};
+
+/// How a store relates the stored value to the destination aggregate.
+pub const StoreOwnership = enum {
+    borrow,
+    move,
+    share,
+};
 
 pub const LirFn = struct {
     name: []const u8,
@@ -36,6 +54,7 @@ pub const AssignStmt = struct {
 pub const StoreStmt = struct {
     dest: LocalId,
     value: LocalId,
+    ownership: StoreOwnership = .borrow,
 };
 
 pub const LirValue = union(enum) {
@@ -48,8 +67,7 @@ pub const LirValue = union(enum) {
     /// Reference to a top-level function by name. Materializes the function
     /// as a value so it can be called directly or stored in a closure.
     fn_ref: []const u8,
-    /// Heap allocation with type tag: alloc(type, type_tag)
-    /// type_tag: 0=raw, 1=constructor, 2=tuple, 3=record
+    /// Heap allocation with a `representation.HeapTag` ABI value.
     alloc: AllocValue,
     load: LocalId,
     alloc_stack: LirType,
@@ -86,6 +104,19 @@ pub const CallValue = struct {
     func: LocalId,
     args: []const LocalId,
     fn_type: LirFnType,
+    ownership: CallOwnership = .{},
+};
+
+/// Ownership contract at a call boundary. Empty `args` means every argument
+/// is borrowed; this keeps existing calls conservative until a callee declares
+/// a stronger contract.
+pub const CallOwnership = struct {
+    args: []const StoreOwnership = &.{},
+    result: Ownership = .borrowed,
+
+    pub fn argument(self: CallOwnership, index: usize) StoreOwnership {
+        return if (index < self.args.len) self.args[index] else .borrow;
+    }
 };
 
 pub const MakeClosure = struct {
@@ -108,8 +139,13 @@ pub const InsertValue = struct {
 
 pub const AllocValue = struct {
     ty: LirType,
-    /// Type tag: 0=raw, 1=constructor, 2=tuple, 3=record
-    type_tag: i64 = 0,
+    /// `representation.HeapTag` ABI value.
+    type_tag: i64 = representation.heap.raw,
+    /// Ownership of the newly allocated value. This controls cleanup; heap
+    /// layout must not be used as a proxy for ownership.
+    ownership: Ownership = .owned,
+    /// Bitmap of pointer-valued fields for the runtime destructor.
+    field_bitmap: u64 = 0,
     /// Payload slot count for constructor boxes (type_tag=1); stored in the
     /// box header at offset -16, mirroring the legacy codegen contract. The
     /// runtime `inspect` uses it to tell list cells (arity 2) apart from other
@@ -191,3 +227,17 @@ pub const LirFnType = struct {
     params: []const LirType,
     returns: LirType,
 };
+
+test "heap allocations carry explicit ownership" {
+    const owned = AllocValue{ .ty = .{ .int = {} } };
+    const shared = AllocValue{ .ty = .{ .int = {} }, .ownership = .shared };
+
+    try std.testing.expectEqual(Ownership.owned, owned.ownership);
+    try std.testing.expectEqual(Ownership.shared, shared.ownership);
+}
+
+test "calls default to borrowed ownership" {
+    const call = CallValue{ .func = 0, .args = &.{1}, .fn_type = .{ .params = &.{.{ .int = {} }}, .returns = .{ .int = {} } } };
+    try std.testing.expectEqual(StoreOwnership.borrow, call.ownership.argument(0));
+    try std.testing.expectEqual(Ownership.borrowed, call.ownership.result);
+}

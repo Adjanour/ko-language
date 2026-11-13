@@ -45,7 +45,7 @@ Where Haskell has monads, Kō has refs. Where Rust has ownership, Kō has refere
 - 256 correctness tests, 50 .ko integration tests
 
 ### What's Broken
-- LLVM 22 optimization bug (AOT compiles unoptimized) — fixed upstream, pending verification
+- LLVM 23 is the supported LLVM toolchain; verify AOT optimization behavior against the installed build.
 
 ### What's Missing
 - `++` string concatenation operator

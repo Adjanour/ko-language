@@ -1,14 +1,14 @@
 const std = @import("std");
 const parser = @import("parser.zig");
 const ast = @import("ast.zig");
+const typecheck = @import("typecheck.zig");
 
 /// Monomorphization pass: replaces calls to polymorphic functions with calls
 /// to specialized (monomorphized) copies.
 ///
-/// Per the frozen pipeline: parse → monomorphize → bidirectional-typecheck → linearity-check → codegen
-/// This runs BEFORE typechecking. Type arguments are determined from:
-/// 1. The callee's type signature (parameter and return types)
-/// 2. The structure of the arguments at the call site
+/// Type arguments come from inferred call-site types when they are available.
+/// The syntax-based fallback remains for specialization of newly generated
+/// function bodies, which have not been through a separate inference pass.
 ///
 /// Algorithm:
 /// 1. Walk the AST, find all function calls where the callee has a polymorphic type signature
@@ -20,6 +20,20 @@ pub const Monomorphizer = struct {
     specializations: std.StringHashMap(std.ArrayList(Specialization)),
     new_fns: std.ArrayList(parser.FnDef),
     sig_map: std.StringHashMap(FunctionSignature),
+    rewrite_context: ?RewriteContext,
+    worklist: std.ArrayList(WorkItem),
+    type_context: ?*const std.StringHashMap(TypeExpr),
+    typed_inferer: ?*typecheck.Inferer,
+
+    const RewriteContext = struct {
+        original_name: []const u8,
+        specialized_name: []const u8,
+    };
+
+    const WorkItem = struct {
+        original_name: []const u8,
+        specialized_name: []const u8,
+    };
 
     pub const Specialization = struct {
         type_args: std.ArrayList(TypeExpr),
@@ -59,6 +73,10 @@ pub const Monomorphizer = struct {
             .specializations = std.StringHashMap(std.ArrayList(Specialization)).init(allocator),
             .new_fns = .empty,
             .sig_map = std.StringHashMap(FunctionSignature).init(allocator),
+            .rewrite_context = null,
+            .worklist = .empty,
+            .type_context = null,
+            .typed_inferer = null,
         };
     }
 
@@ -72,6 +90,7 @@ pub const Monomorphizer = struct {
         }
         self.specializations.deinit();
         self.new_fns.deinit(self.allocator);
+        self.worklist.deinit(self.allocator);
         self.sig_map.deinit();
     }
 
@@ -97,18 +116,39 @@ pub const Monomorphizer = struct {
             }
         }
 
-        // Pass 2: For each specialization, clone the function with concrete types
-        var it = self.specializations.iterator();
-        while (it.next()) |entry| {
-            const original_name = entry.key_ptr.*;
-            const specs = entry.value_ptr.items;
-
-            const original_fn = self.findFunction(prog, original_name) orelse continue;
-
-            for (specs) |spec| {
-                const specialized = try self.specializeFunction(original_fn, spec);
-                try self.new_fns.append(self.allocator, specialized);
+        // Pass 2: process specializations as a worklist. Scanning a concrete
+        // clone can discover another generic call, so the list may grow.
+        var work_index: usize = 0;
+        while (work_index < self.worklist.items.len) : (work_index += 1) {
+            const work = self.worklist.items[work_index];
+            const specs = self.specializations.get(work.original_name) orelse continue;
+            var spec: ?*const Specialization = null;
+            for (specs.items) |*candidate| {
+                if (std.mem.eql(u8, candidate.specialized_name, work.specialized_name)) {
+                    spec = candidate;
+                    break;
+                }
             }
+            const selected = spec orelse continue;
+            const original_fn = self.findFunction(prog, work.original_name) orelse continue;
+            var specialized = try self.specializeFunction(original_fn, selected.*);
+
+            var local_types = std.StringHashMap(TypeExpr).init(self.allocator);
+            defer local_types.deinit();
+            try self.buildParamTypeContext(specialized, &local_types);
+            self.type_context = &local_types;
+            // Scan the clone with concrete parameter types so `id x` can
+            // discover `id_Int`, rather than being treated as unknown.
+            try self.scanWithSigs(specialized.body, &self.sig_map);
+
+            self.rewrite_context = .{
+                .original_name = work.original_name,
+                .specialized_name = work.specialized_name,
+            };
+            specialized.body = try self.rewriteExpr(specialized.body);
+            self.rewrite_context = null;
+            self.type_context = null;
+            try self.new_fns.append(self.allocator, specialized);
         }
 
         // Pass 3: Rewrite call sites in all function bodies
@@ -144,6 +184,14 @@ pub const Monomorphizer = struct {
             .definitions = try self.allocator.dupe(parser.Definition, defs.items),
             .specialized_fns = self.new_fns.items,
         };
+    }
+
+    /// Specialize an already typechecked program. The supplied inferer owns
+    /// `expr_types`, whose AST pointers refer to this exact program.
+    pub fn runTyped(self: *Monomorphizer, prog: parser.Program, inferer: *typecheck.Inferer) !MonomorphResult {
+        self.typed_inferer = inferer;
+        defer self.typed_inferer = null;
+        return self.run(prog);
     }
 
     pub const MonomorphResult = struct {
@@ -250,12 +298,15 @@ pub const Monomorphizer = struct {
     pub fn extractSignature(self: *Monomorphizer, fd: parser.FnDef) FunctionSignature {
         var has_type_params = false;
         for (fd.params) |param| {
-            if (param.type_ann != null) {
+            if (param.type_ann) |annotation| {
+                if (!typeExprContainsVariable(annotation)) continue;
                 has_type_params = true;
                 break;
             }
         }
-        if (fd.return_type != null) has_type_params = true;
+        if (fd.return_type) |return_type| {
+            has_type_params = has_type_params or typeExprContainsVariable(return_type);
+        }
 
         var param_types: std.ArrayList(ast.TypeExpr) = .empty;
         for (fd.params) |param| {
@@ -274,6 +325,22 @@ pub const Monomorphizer = struct {
             .return_type = fd.return_type,
             .has_type_params = has_type_params,
             .param_count = fd.params.len,
+        };
+    }
+
+    fn typeExprContainsVariable(expr: ast.TypeExpr) bool {
+        return switch (expr) {
+            .ident => true,
+            .constructor => false,
+            .arrow => |arrow| typeExprContainsVariable(arrow.from.*) or typeExprContainsVariable(arrow.to.*),
+            .record => |fields| blk: {
+                for (fields) |field| {
+                    if (typeExprContainsVariable(field.type_expr)) break :blk true;
+                }
+                break :blk false;
+            },
+            .group => |inner| typeExprContainsVariable(inner.*),
+            .application => |application| typeExprContainsVariable(application.func.*) or typeExprContainsVariable(application.arg.*),
         };
     }
 
@@ -494,6 +561,10 @@ pub const Monomorphizer = struct {
                                     .type_args = args,
                                     .specialized_name = specialized_name,
                                 });
+                                try self.worklist.append(self.allocator, .{
+                                    .original_name = callee_name,
+                                    .specialized_name = specialized_name,
+                                });
                             } else {
                                 var specs: std.ArrayList(Specialization) = .empty;
                                 try specs.append(self.allocator, .{
@@ -501,6 +572,10 @@ pub const Monomorphizer = struct {
                                     .specialized_name = specialized_name,
                                 });
                                 try self.specializations.put(callee_name, specs);
+                                try self.worklist.append(self.allocator, .{
+                                    .original_name = callee_name,
+                                    .specialized_name = specialized_name,
+                                });
                             }
                         }
                     }
@@ -576,8 +651,9 @@ pub const Monomorphizer = struct {
             const arg = call.args[i];
             const param_ty = self.parseTypeExpr(param) catch continue;
 
-            // Try to extract type info from the argument expression
-            const arg_ty = self.exprToType(arg) orelse continue;
+            // Prefer the typechecker's resolved call-site type. Syntax is
+            // only a fallback for generated expressions outside that map.
+            const arg_ty = self.inferredExprToType(arg) orelse self.exprToType(arg) orelse continue;
 
             // Match param_ty against arg_ty, filling in type variables
             self.matchType(param_ty, arg_ty, &type_args, &type_var_names);
@@ -586,14 +662,64 @@ pub const Monomorphizer = struct {
         // Check that all type args were determined
         for (type_args.items) |ta| {
             switch (ta) {
-                .variable => |name| {
-                    if (std.mem.eql(u8, name, "?")) return null;
-                },
+                // A variable-shaped argument (including an identifier such
+                // as the `x` in `loop x`) is not a concrete representation.
+                // Specializing it would create names such as `loop_x`.
+                .variable => return null,
                 else => {},
             }
         }
 
         return type_args;
+    }
+
+    fn inferredExprToType(self: *Monomorphizer, expr: *const parser.Expr) ?*TypeExpr {
+        const inferer = self.typed_inferer orelse return null;
+        const ty = inferer.expr_types.get(expr) orelse return null;
+        return self.typecheckTypeToExpr(inferer.resolve(ty));
+    }
+
+    fn typecheckTypeToExpr(self: *Monomorphizer, ty: *const typecheck.Type) ?*TypeExpr {
+        const out = self.allocator.create(TypeExpr) catch return null;
+        out.* = switch (ty.*) {
+            .int => .int,
+            .float => .float,
+            .bool => .bool,
+            .char => .char,
+            .string => .string,
+            .unit => .unit,
+            .variable => |variable| .{ .variable = variable.name },
+            .ref => |inner| .{ .ref = self.typecheckTypeToExpr(inner) orelse return null },
+            .arrow => |arrow| .{ .arrow = .{
+                .from = self.typecheckTypeToExpr(arrow.from) orelse return null,
+                .to = self.typecheckTypeToExpr(arrow.to) orelse return null,
+            } },
+            .tuple => |items| blk: {
+                const converted = self.allocator.alloc(*TypeExpr, items.len) catch return null;
+                for (items, 0..) |item, index| {
+                    converted[index] = self.typecheckTypeToExpr(item) orelse return null;
+                }
+                break :blk .{ .tuple = converted };
+            },
+            .con => |con| blk: {
+                const converted = self.allocator.alloc(*TypeExpr, con.args.len) catch return null;
+                for (con.args, 0..) |arg, index| {
+                    converted[index] = self.typecheckTypeToExpr(arg) orelse return null;
+                }
+                break :blk .{ .con = .{ .name = con.name, .args = converted } };
+            },
+            .record => |record| blk: {
+                const fields = self.allocator.alloc(RecordField, record.fields.len) catch return null;
+                for (record.fields, 0..) |field, index| {
+                    fields[index] = .{
+                        .name = field.name,
+                        .ty = self.typecheckTypeToExpr(field.ty) orelse return null,
+                    };
+                }
+                break :blk .{ .record = .{ .name = record.name, .fields = fields } };
+            },
+        };
+        return out;
     }
 
     /// Collect type variable names from a TypeExpr
@@ -652,6 +778,12 @@ pub const Monomorphizer = struct {
             },
             .identifier => blk: {
                 const ptr = self.allocator.create(TypeExpr) catch return null;
+                if (self.type_context) |context| {
+                    if (context.get(expr.identifier.name)) |known| {
+                        ptr.* = known;
+                        break :blk ptr;
+                    }
+                }
                 ptr.* = .{ .variable = expr.identifier.name };
                 break :blk ptr;
             },
@@ -679,6 +811,18 @@ pub const Monomorphizer = struct {
             },
             else => null, // Can't determine type from expression
         };
+    }
+
+    fn buildParamTypeContext(self: *Monomorphizer, fd: parser.FnDef, context: *std.StringHashMap(TypeExpr)) !void {
+        for (fd.params) |param| {
+            const name = switch (param.pattern) {
+                .identifier => |identifier| identifier,
+                else => continue,
+            };
+            const annotation = param.type_ann orelse continue;
+            const parsed = try self.parseTypeExpr(annotation);
+            try context.put(name, parsed.*);
+        }
     }
 
     /// Match a parameter type pattern against an argument type, filling in type variables.
@@ -1040,6 +1184,31 @@ pub const Monomorphizer = struct {
                         .loc = call.loc,
                     } });
                 };
+
+                // A cloned function's direct recursive call must target that
+                // same clone. The ordinary fallback below cannot distinguish
+                // `loop_Int` from `loop_String` when the argument is a local
+                // variable such as `x`.
+                if (self.rewrite_context) |ctx| {
+                    if (std.mem.eql(u8, callee_name, ctx.original_name)) {
+                        const new_func = try self.allocExpr(.{ .identifier = .{ .name = ctx.specialized_name } });
+                        var args = try self.allocator.alloc(*parser.Expr, call.args.len);
+                        for (call.args, 0..) |arg, i| args[i] = try self.rewriteExpr(arg);
+                        var named_args = try self.allocator.alloc(ast.NamedArg, call.named_args.len);
+                        for (call.named_args, 0..) |na, i| {
+                            named_args[i] = .{
+                                .name = na.name,
+                                .value = try self.rewriteExpr(na.value),
+                            };
+                        }
+                        break :blk try self.allocExpr(.{ .fn_call = .{
+                            .func = new_func,
+                            .args = args,
+                            .named_args = named_args,
+                            .loc = call.loc,
+                        } });
+                    }
+                }
 
                 // Check if we have a specialization for this call
                 if (self.specializations.get(callee_name)) |specs| {
